@@ -116,10 +116,13 @@ jobs:
           echo "CMAKE_GENERATOR=Ninja" >> "$GITHUB_ENV"
       # FFmpeg from vcpkg, because the FFmpeg source build of ffmpeg-sys-next does not
       # support Windows targets. The static triplet also uses the static C runtime.
+      # vcpkg checks each cached package against its own hash of the build inputs, so
+      # the newest cache is always safe to restore.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: vcpkg-cache
-          key: vcpkg-ffmpeg-x64-windows-static-${{ hashFiles('.github/workflows/build.yml') }}
+          key: vcpkg-ffmpeg-x64-windows-static-${{ github.run_id }}-${{ matrix.gpu }}
+          restore-keys: vcpkg-ffmpeg-x64-windows-static-
       - name: Install FFmpeg
         run: |
           mkdir -p vcpkg-cache
