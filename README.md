@@ -75,8 +75,9 @@ docker/build.sh linux-arm64 windows-x64     # writes dist/<target>/
 The targets are `linux-arm64`, `linux-amd64`, `linux-arm64-cuda`, `linux-amd64-cuda`,
 `linux-arm64-vulkan`, `linux-amd64-vulkan` and `windows-x64`. A target for another CPU
 type than the host's runs in emulation and is much slower. The Windows target is
-cross-compiled with MinGW-w64 and has no GPU support. For a Windows GPU build, use the
-workflow or build on Windows.
+cross-compiled with MinGW-w64 and has no GPU support. It is for local builds only: the
+release binaries for Windows come from native MSVC builds in CI. For a Windows GPU build,
+use the workflow or build on Windows.
 
 ### Build on macOS
 
@@ -109,8 +110,7 @@ static, portable binary, use `docker/build.sh`.
 The easiest way is `docker/build.sh windows-x64` (CPU only). For a native build, for
 example with CUDA, install Visual Studio 2022 with the C++ tools, LLVM (for libclang),
 Rust and vcpkg, and the CUDA toolkit or the Vulkan SDK for a GPU build. The CI
-workflow uses these steps for the GPU builds; they are not
-tested on a real Windows machine yet.
+workflow uses these steps for all Windows builds.
 FFmpeg comes from vcpkg, because the FFmpeg source build of ffmpeg-sys-next does not
 support Windows targets. In a "Developer PowerShell for VS 2022":
 

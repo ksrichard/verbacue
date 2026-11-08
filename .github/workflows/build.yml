@@ -57,35 +57,15 @@ jobs:
           name: verbacue-linux-${{ matrix.arch }}-${{ matrix.gpu }}
           path: verbacue-linux-${{ matrix.arch }}-${{ matrix.gpu }}.tar.gz
 
-  # The CPU build is cross-compiled with MinGW-w64 in Docker, the same as
-  # docker/build.sh windows-x64.
-  windows-cpu:
-    name: windows-x64-cpu
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Build in Docker
-        run: |
-          docker buildx build -f docker/windows.Dockerfile \
-            --output type=local,dest=dist .
-      - name: Package
-        run: |
-          cp LICENSE THIRD-PARTY-LICENSES.txt dist/
-          cd dist && zip ../verbacue-windows-x64-cpu.zip verbacue.exe LICENSE THIRD-PARTY-LICENSES.txt
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: verbacue-windows-x64-cpu
-          path: verbacue-windows-x64-cpu.zip
-
-  # The GPU builds use MSVC on Windows: CUDA does not work with MinGW, and the Vulkan
-  # SDK ships its import library for MSVC only.
-  windows-gpu:
+  # Windows builds use MSVC, the toolchain that whisper.cpp and llama.cpp support best.
+  # docker/build.sh windows-x64 is a MinGW-w64 alternative for local builds only.
+  windows:
     name: windows-x64-${{ matrix.gpu }}
     runs-on: windows-2022
     strategy:
       fail-fast: false
       matrix:
-        gpu: [cuda, vulkan]
+        gpu: [cpu, cuda, vulkan]
     defaults:
       run:
         shell: bash
@@ -135,9 +115,15 @@ jobs:
           "$VCPKG_INSTALLATION_ROOT/vcpkg" install \
             "ffmpeg[core,avcodec,avdevice,avfilter,avformat,swresample,swscale]:x64-windows-static"
           echo "VCPKG_ROOT=$VCPKG_INSTALLATION_ROOT" >> "$GITHUB_ENV"
+      # GPU builds skip the tests, because the runner has no GPU.
+      - name: Test
+        if: matrix.gpu == 'cpu'
+        run: cargo test --workspace --release --locked
       - name: Build
         run: |
-          cargo build --release --locked --features ${{ matrix.gpu }}
+          features=""
+          if [ "${{ matrix.gpu }}" != cpu ]; then features="--features ${{ matrix.gpu }}"; fi
+          cargo build --release --locked $features
           mkdir dist && cp target/release/verbacue.exe dist/
       # cuBLAS has no static library on Windows, so the CUDA build ships its DLLs.
       - name: Add the CUDA DLLs
@@ -189,7 +175,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, windows-cpu, windows-gpu, macos]
+    needs: [linux, windows, macos]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

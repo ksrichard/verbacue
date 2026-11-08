@@ -1,7 +1,7 @@
 # Cross-compiles a self-contained Windows x64 binary (CPU only) with MinGW-w64.
 # It links everything statically, so it needs only the DLLs that come with Windows.
-# Use docker/build.sh; it writes dist/windows-x64/verbacue.exe. CI builds Windows with
-# MSVC instead, because CUDA does not work with MinGW.
+# Use docker/build.sh; it writes dist/windows-x64/verbacue.exe. This is for local
+# builds only: CI builds Windows natively with MSVC.
 FROM rust:1.94-trixie AS build
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
