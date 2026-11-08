@@ -101,9 +101,11 @@ impl std::fmt::Display for Track {
 }
 
 fn track(t: &AudioTrack) -> Track {
+    // "und" is the ISO 639-2 code for an undetermined language.
     let language = t
         .language
         .as_deref()
+        .filter(|tag| *tag != "und")
         .map_or_else(|| "Unknown language".to_string(), language_label);
     let channels = match t.channels {
         1 => "mono".to_string(),
@@ -520,5 +522,35 @@ impl canvas::Program<Message> for Scan {
             fill,
         );
         vec![frame.into_geometry()]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn audio(language: Option<&str>) -> AudioTrack {
+        AudioTrack {
+            index: 0,
+            codec: "aac".into(),
+            language: language.map(str::to_string),
+            title: None,
+            channels: 2,
+            sample_rate: 48_000,
+        }
+    }
+
+    #[test]
+    fn track_labels_name_the_language() {
+        assert_eq!(track(&audio(Some("tur"))).label, "1 · Turkish (AAC stereo)");
+        assert_eq!(track(&audio(Some("en"))).label, "1 · English (AAC stereo)");
+        assert_eq!(
+            track(&audio(Some("und"))).label,
+            "1 · Unknown language (AAC stereo)"
+        );
+        assert_eq!(
+            track(&audio(None)).label,
+            "1 · Unknown language (AAC stereo)"
+        );
     }
 }

@@ -100,6 +100,8 @@ pub enum Message {
     RemoveModel(&'static str),
     #[cfg(debug_assertions)]
     Screenshot(iced::window::Screenshot),
+    #[cfg(debug_assertions)]
+    RecFrame(iced::window::Screenshot),
 }
 
 /// The whole state of the app.
@@ -140,6 +142,14 @@ impl App {
         settings.drop_missing();
         let mut app = Self::with_settings(settings, notice);
         app.config = verbacue::config_dir();
+        #[cfg(debug_assertions)]
+        if crate::devshot::rec_dir().is_some() {
+            app.config = None;
+            if let Some(model) = crate::devshot::model() {
+                app.settings.whisper_model = model;
+            }
+            return (app, crate::devshot::rec_begin());
+        }
         #[cfg(debug_assertions)]
         if crate::devshot::target().is_some() {
             app.config = None;
@@ -409,6 +419,11 @@ impl App {
             }
             #[cfg(debug_assertions)]
             Message::Screenshot(shot) => crate::devshot::save(&shot),
+            #[cfg(debug_assertions)]
+            Message::RecFrame(shot) => {
+                let done = self.screen == Screen::Done && self.seconds() > 4.5;
+                crate::devshot::rec_save(shot, done)
+            }
         }
     }
 
