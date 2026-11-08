@@ -46,7 +46,6 @@ square brackets (`[FILE NAME]`) are placeholders for real data.
 
 ## Non-goals
 
-- Batch conversion of many videos at once. The GUI handles one video at a time.
 - A subtitle editor.
 - Video playback inside the app. "Play" opens the system video player.
 - A macOS `.app` bundle, a Windows installer, code signing, auto-update.
@@ -222,6 +221,28 @@ file is renamed to `gui.toml.bad` and the GUI shows a short notice.
   a key is found and a button that opens the config folder.
 - "Models on this computer" lists the known models with size and state, and
   downloads (with a progress bar) or removes them.
+
+## Queue (added 2026-11-08 by the owner)
+
+The user can add several videos, and the app converts them one after another.
+
+- The file dialog takes several files, and the drop zone takes several dropped files.
+  Each file gets the same media check as one file.
+- Each video in the queue keeps its own options: output (burned in or SRT), target
+  language and audio track (owner's decision). The Preview screen shows one video at a
+  time, with a list of the queue to switch between them. "Apply to all" copies the
+  shown video's options to every waiting video.
+- The user can add videos at any time, also while the queue runs (owner's decision).
+  New videos join the end of the queue. Waiting videos can be removed.
+- "Start grilling" starts the queue. If some outputs exist, one "Replace them?" dialog
+  covers all of them.
+- A video that fails does not stop the queue; it shows as failed, and the next one
+  starts. Cancel stops the current video and the queue; the waiting videos stay.
+- The Converting screen shows the current video as before, plus the queue with the
+  state of each video and "Add videos".
+- At the end, the Done screen lists each video: its files with "Play" and "Show in
+  folder", or its error. If the only video of a run fails, the error card shows as
+  before.
 
 ## Screen behaviour
 
