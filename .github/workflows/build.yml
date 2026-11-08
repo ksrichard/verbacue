@@ -77,6 +77,10 @@ jobs:
         -C link-arg=mfuuid.lib -C link-arg=strmiids.lib
       LLAMA_STATIC_CRT: "1"
       CMAKE_TOOLCHAIN_FILE: ${{ github.workspace }}\.github\msvc-static-crt.cmake
+      # Ninja instead of the Visual Studio generator. MSBuild compiles the CUDA files
+      # of a project one after the other, and it runs the steps of ggml's Vulkan
+      # shader sub-build out of order.
+      CMAKE_GENERATOR: Ninja
       VCPKGRS_TRIPLET: x64-windows-static
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-cache
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
@@ -110,10 +114,6 @@ jobs:
           echo "VULKAN_SDK=C:\VulkanSDK" >> "$GITHUB_ENV"
           echo "CMAKE_PREFIX_PATH=C:\VulkanSDK" >> "$GITHUB_ENV"
           echo "C:\VulkanSDK\Bin" >> "$GITHUB_PATH"
-          # ggml builds its shader generator as a CMake sub-build. With the Visual
-          # Studio generator, MSBuild runs the install step of that sub-build before
-          # its configure step is done. Ninja runs the steps in order.
-          echo "CMAKE_GENERATOR=Ninja" >> "$GITHUB_ENV"
       # FFmpeg from vcpkg, because the FFmpeg source build of ffmpeg-sys-next does not
       # support Windows targets. The static triplet also uses the static C runtime.
       # vcpkg checks each cached package against its own hash of the build inputs, so
