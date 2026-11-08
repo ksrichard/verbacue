@@ -13,7 +13,10 @@ use std::{
     time::Duration,
 };
 
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+use whisper_rs::{
+    DtwMode, DtwModelPreset, DtwParameters, FullParams, SamplingStrategy, WhisperContext,
+    WhisperContextParameters,
+};
 
 use verbacue_core::{
     Progress, check_cancel,
@@ -44,7 +47,15 @@ pub struct Options<'a> {
 pub fn transcribe(pcm: &[f32], opts: &Options, progress: &dyn Progress) -> Result<Transcript> {
     check_cancel(progress)?;
     whisper_rs::install_logging_hooks();
-    let ctx = WhisperContext::new_with_params(opts.model, WhisperContextParameters::default())
+    let mut context = WhisperContextParameters::default();
+    let preset = dtw_preset(opts.model);
+    if let Some(model_preset) = preset.clone() {
+        context.dtw_parameters(DtwParameters {
+            mode: DtwMode::ModelPreset { model_preset },
+            ..DtwParameters::default()
+        });
+    }
+    let ctx = WhisperContext::new_with_params(opts.model, context)
         .with_kind(ErrorKind::Model)
         .with_context(|| format!("cannot load Whisper model {}", opts.model.display()))?;
     let mut state = ctx
@@ -129,7 +140,8 @@ pub fn transcribe(pcm: &[f32], opts: &Options, progress: &dyn Progress) -> Resul
     let language = whisper_rs::get_lang_str(state.full_lang_id_from_state())
         .unwrap_or("und")
         .to_string();
-    let cues = state
+    // Each segment as Whisper timed it, and the times of its words (DTW).
+    let (segments, words): (Vec<Cue>, Vec<Vec<u64>>) = state
         .as_iter()
         .map(|seg| {
             // Whisper timestamps are in centiseconds.
@@ -139,17 +151,95 @@ pub fn transcribe(pcm: &[f32], opts: &Options, progress: &dyn Progress) -> Resul
                 .to_str_lossy()
                 .map(|t| t.trim().to_string())
                 .unwrap_or_default();
-            Cue::new(start, end, text)
+            let words = (0..seg.n_tokens())
+                .filter_map(|i| seg.get_token(i))
+                .filter(|token| token.to_str_lossy().is_ok_and(|t| is_word(&t)))
+                .filter_map(|token| u64::try_from(token.token_data().t_dtw).ok())
+                .map(|t| t * 10)
+                .collect();
+            (Cue::new(start, end, text), words)
         })
-        .collect::<Vec<Cue>>();
-    for cue in &cues {
-        tracing::debug!("segment {}-{} ms: {:?}", cue.start_ms, cue.end_ms, cue.text);
+        .unzip();
+    for (cue, words) in segments.iter().zip(&words) {
+        tracing::debug!(
+            "segment {}-{} ms, words at {words:?} ms: {:?}",
+            cue.start_ms,
+            cue.end_ms,
+            cue.text
+        );
     }
 
-    Ok(Transcript {
-        language,
-        cues: filter_hallucinations(cues),
-    })
+    // The filter judges Whisper's own segment times; the kept segments then get the
+    // times of their words.
+    let kept = filter_hallucinations(segments.clone());
+    let mut kept = kept.iter().peekable();
+    let cues = segments
+        .iter()
+        .zip(&words)
+        .filter_map(|(segment, words)| {
+            if kept.peek() != Some(&segment) {
+                return None;
+            }
+            kept.next();
+            let (start, end) = tighten(segment.start_ms, segment.end_ms, words);
+            Some(Cue::new(start, end, segment.text.clone()))
+        })
+        .collect();
+    if preset.is_none() {
+        tracing::debug!("no word timing preset for {}", opts.model.display());
+    }
+
+    Ok(Transcript { language, cues })
+}
+
+/// True for a token with a letter or digit. Punctuation tokens often get the time of
+/// the next segment, and special tokens such as "[_TT_516]" have no word time.
+fn is_word(token: &str) -> bool {
+    !token.trim_start().starts_with("[_") && token.chars().any(char::is_alphanumeric)
+}
+
+/// A subtitle shows this long before its first word …
+const LEAD_MS: u64 = 100;
+/// … and stays this long after its last word.
+const TAIL_MS: u64 = 500;
+
+/// Whisper's segment times often cover the silence before or after the speech, so a
+/// subtitle would show seconds early or late. The word times (DTW) mark the speech;
+/// the result stays inside the segment. Without word times the segment stays as it is.
+fn tighten(start: u64, end: u64, words: &[u64]) -> (u64, u64) {
+    let (Some(first), Some(last)) = (words.iter().min(), words.iter().max()) else {
+        return (start, end);
+    };
+    (
+        first.saturating_sub(LEAD_MS).max(start),
+        (last + TAIL_MS).min(end),
+    )
+}
+
+/// The word timing preset for a standard Whisper model, from its file name
+/// (`ggml-large-v3.bin`, also quantized ones such as `ggml-small.en-q8_0.bin`).
+fn dtw_preset(model: &Path) -> Option<DtwModelPreset> {
+    let stem = model.file_name()?.to_str()?.to_lowercase();
+    let name = stem.strip_prefix("ggml-").unwrap_or(&stem);
+    // Longer names first, so "large-v3-turbo" does not match "large-v3".
+    let presets = [
+        ("large-v3-turbo", DtwModelPreset::LargeV3Turbo),
+        ("large-v3", DtwModelPreset::LargeV3),
+        ("large-v2", DtwModelPreset::LargeV2),
+        ("large-v1", DtwModelPreset::LargeV1),
+        ("medium.en", DtwModelPreset::MediumEn),
+        ("medium", DtwModelPreset::Medium),
+        ("small.en", DtwModelPreset::SmallEn),
+        ("small", DtwModelPreset::Small),
+        ("base.en", DtwModelPreset::BaseEn),
+        ("base", DtwModelPreset::Base),
+        ("tiny.en", DtwModelPreset::TinyEn),
+        ("tiny", DtwModelPreset::Tiny),
+    ];
+    presets
+        .into_iter()
+        .find(|(prefix, _)| name.starts_with(prefix))
+        .map(|(_, preset)| preset)
 }
 
 /// Phrases that Whisper adds from its training data (mostly YouTube) when nobody speaks.
@@ -253,6 +343,53 @@ fn normalize(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dtw_preset_comes_from_the_model_file_name() {
+        use whisper_rs::DtwModelPreset as P;
+        let preset = |name: &str| dtw_preset(Path::new(name));
+        assert!(matches!(preset("/c/ggml-large-v3.bin"), Some(P::LargeV3)));
+        assert!(matches!(
+            preset("ggml-large-v3-turbo.bin"),
+            Some(P::LargeV3Turbo)
+        ));
+        assert!(matches!(
+            preset("ggml-large-v3-turbo-q5_0.bin"),
+            Some(P::LargeV3Turbo)
+        ));
+        assert!(matches!(preset("ggml-tiny.bin"), Some(P::Tiny)));
+        assert!(matches!(preset("ggml-tiny.en.bin"), Some(P::TinyEn)));
+        assert!(matches!(preset("ggml-medium.bin"), Some(P::Medium)));
+        assert!(matches!(preset("ggml-small.en-q8_0.bin"), Some(P::SmallEn)));
+        assert!(preset("my-finetune.bin").is_none());
+    }
+
+    #[test]
+    fn only_tokens_with_letters_or_digits_are_words() {
+        assert!(is_word(" show"));
+        assert!(is_word("évé"));
+        assert!(is_word("42"));
+        assert!(!is_word("."));
+        assert!(!is_word(" ,"));
+        assert!(!is_word("[_TT_516]"));
+    }
+
+    #[test]
+    fn word_times_tighten_a_segment() {
+        // Whisper gave 0-10.32 s; the words were spoken from 2.14 to 4.40 s.
+        let words = [2140, 2440, 2660, 2980, 3260, 3560, 3640, 3920, 4400];
+        assert_eq!(tighten(0, 10_320, &words), (2040, 4900));
+    }
+
+    #[test]
+    fn tight_times_stay_inside_the_segment() {
+        assert_eq!(tighten(2100, 4500, &[2140, 4400]), (2100, 4500));
+    }
+
+    #[test]
+    fn a_segment_without_word_times_keeps_its_times() {
+        assert_eq!(tighten(1000, 3000, &[]), (1000, 3000));
+    }
 
     struct Stopped;
 
