@@ -12,6 +12,10 @@ macro_rules! out {
     }};
 }
 
+#[cfg(windows)]
+mod console;
+mod launch;
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -20,7 +24,7 @@ use std::{
 };
 
 use anyhow::{Context as _, Result, bail};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory as _, Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
 use tracing_subscriber::EnvFilter;
 use verbacue::{
@@ -33,6 +37,7 @@ use verbacue::{
 
 #[derive(Parser)]
 #[command(
+    name = "verbacue",
     version,
     about = "Generate translated subtitles for videos",
     args_conflicts_with_subcommands = true,
@@ -43,7 +48,6 @@ struct Cli {
     command: Option<Command>,
 
     /// Video files, or directories that contain videos.
-    #[arg(required = true)]
     inputs: Vec<PathBuf>,
 
     /// Source language code. "auto" detects it.
@@ -155,6 +159,8 @@ enum Command {
     Languages,
     /// List the audio tracks of a video.
     Tracks { video: PathBuf },
+    /// Open the desktop app. `verbacue` with no arguments also opens it.
+    Gui,
     /// Manage the model cache.
     Models {
         #[command(subcommand)]
@@ -173,9 +179,25 @@ enum ModelsAction {
 }
 
 fn main() -> Result<()> {
+    let args = std::env::args_os().len().saturating_sub(1);
+    let gui_command = std::env::args_os().nth(1).is_some_and(|a| a == "gui");
+    match launch::mode(
+        args,
+        gui_command,
+        launch::has_display(),
+        cfg!(feature = "gui"),
+    ) {
+        launch::Mode::Gui => return open_gui(),
+        launch::Mode::Help => {
+            print_help();
+            return Ok(());
+        }
+        launch::Mode::Cli => {}
+    }
     let cli = Cli::parse();
     init_logging(cli.verbose);
     match cli.command {
+        Some(Command::Gui) => bail!("this build has no GUI; see verbacue --help"),
         Some(Command::Tracks { video }) => print_tracks(&video),
         Some(Command::Languages) => {
             print_languages();
@@ -212,8 +234,31 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        None if cli.inputs.is_empty() => {
+            print_help();
+            Ok(())
+        }
         None => process_videos(&cli),
     }
+}
+
+/// Prints the help. A closed pipe (`verbacue | head`) is not an error.
+fn print_help() {
+    let _ = Cli::command().print_help();
+}
+
+#[cfg(feature = "gui")]
+fn open_gui() -> Result<()> {
+    init_logging(0);
+    #[cfg(windows)]
+    console::detach_if_alone();
+    verbacue_gui::run()
+        .map_err(|e| anyhow::anyhow!("{e}; use verbacue --help for the command line"))
+}
+
+#[cfg(not(feature = "gui"))]
+fn open_gui() -> Result<()> {
+    bail!("this build has no GUI; see verbacue --help")
 }
 
 fn init_logging(verbose: u8) {

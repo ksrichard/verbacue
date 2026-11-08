@@ -1,0 +1,27 @@
+[package]
+name = "verbacue-gui"
+description = "The verbacue desktop app: subtitles for any video with a few clicks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+# GPU support on Linux and Windows. NVIDIA only; needs the CUDA toolkit.
+cuda = ["verbacue/cuda"]
+# GPU support on Linux and Windows for any GPU with a Vulkan driver.
+vulkan = ["verbacue/vulkan"]
+
+[dependencies]
+iced = { version = "0.14.0", features = ["advanced", "canvas", "image", "svg", "tokio"] }
+rfd = { version = "~0.17.2" }
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = { version = "2.0.21" }
+tokio = { version = "1.54.1", features = ["rt", "sync"] }
+toml = { version = "~1.1.8" }
+tracing = { version = "0.1.44" }
+verbacue = { path = "../verbacue", version = "0.1.0" }
+
+[lints]
+workspace = true
