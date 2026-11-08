@@ -2,3 +2,4 @@
 
 pub mod backdrop;
 pub mod nav;
+pub mod switch;

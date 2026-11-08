@@ -1,6 +1,7 @@
 //! The app state, its messages, and the screen it shows.
 
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::{Arc, OnceLock, atomic::Ordering},
     time::Instant,
@@ -23,6 +24,7 @@ use crate::{
         choose::{Choose, OutputMode},
         convert::Convert,
         pick::Pick,
+        settings::SettingChange,
     },
     settings::{self, Recent, Settings},
     theme,
@@ -87,6 +89,15 @@ pub enum Message {
     OpenFile,
     ShowInFolder,
     Again,
+    Setting(SettingChange),
+    ChooseGlossary,
+    ChooseOutDir,
+    OpenConfigFolder,
+    DownloadModel(&'static str),
+    /// (model, bytes done, bytes total)
+    ModelProgress(&'static str, u64, u64),
+    ModelDone(&'static str, Result<(), String>),
+    RemoveModel(&'static str),
     #[cfg(debug_assertions)]
     Screenshot(iced::window::Screenshot),
 }
@@ -107,6 +118,10 @@ pub struct App {
     pub outcome: Option<Outcome>,
     /// The number of subtitle lines of the last job, for the Done screen.
     pub done_lines: usize,
+    /// Running model downloads: name → (bytes done, bytes total).
+    pub downloads: HashMap<&'static str, (u64, u64)>,
+    /// When the silence switch last changed, for its animation.
+    pub vad_changed: Instant,
     /// The pipeline thread; it starts with the first job.
     worker: Arc<OnceLock<Worker>>,
     /// Where `gui.toml` lives; `None` does not save (tests).
@@ -153,6 +168,8 @@ impl App {
             convert: Convert::for_job(&Job::new(PathBuf::new(), "en"), String::new()),
             outcome: None,
             done_lines: 0,
+            downloads: HashMap::new(),
+            vad_changed: now,
             worker: Arc::new(OnceLock::new()),
             config: None,
             opened: now,
@@ -325,6 +342,65 @@ impl App {
                 self.outcome = None;
                 self.pick = Pick::default();
                 self.show(Screen::Pick);
+                Task::none()
+            }
+            Message::Setting(change) => {
+                if matches!(change, SettingChange::Vad(_)) {
+                    self.vad_changed = Instant::now();
+                }
+                change.apply(&mut self.settings);
+                self.save_settings();
+                Task::none()
+            }
+            Message::ChooseGlossary => Task::future(async {
+                rfd::AsyncFileDialog::new()
+                    .set_title("Choose a glossary")
+                    .add_filter("Text", &["txt"])
+                    .pick_file()
+                    .await
+            })
+            .and_then(|f| {
+                Task::done(Message::Setting(SettingChange::Glossary(Some(
+                    f.path().to_path_buf(),
+                ))))
+            }),
+            Message::ChooseOutDir => Task::future(async {
+                rfd::AsyncFileDialog::new()
+                    .set_title("Save subtitles to")
+                    .pick_folder()
+                    .await
+            })
+            .and_then(|f| {
+                Task::done(Message::Setting(SettingChange::OutDir(Some(
+                    f.path().to_path_buf(),
+                ))))
+            }),
+            Message::OpenConfigFolder => {
+                if let Some(dir) = verbacue::config_dir() {
+                    let _ = std::fs::create_dir_all(&dir);
+                    crate::system::open(&dir);
+                }
+                Task::none()
+            }
+            Message::DownloadModel(name) => {
+                self.downloads.insert(name, (0, 0));
+                download(name)
+            }
+            Message::ModelProgress(name, done, total) => {
+                self.downloads.insert(name, (done, total));
+                Task::none()
+            }
+            Message::ModelDone(name, result) => {
+                self.downloads.remove(name);
+                if let Err(e) = result {
+                    self.notice = Some(format!("Download of {name} failed: {e}"));
+                }
+                Task::none()
+            }
+            Message::RemoveModel(name) => {
+                if let Err(e) = models::remove(name) {
+                    self.notice = Some(format!("Cannot remove {name}: {e}"));
+                }
                 Task::none()
             }
             Message::ToggleDetails => {
@@ -500,7 +576,8 @@ impl App {
         let animated = matches!(
             self.screen,
             Screen::Pick | Screen::Choose | Screen::Convert | Screen::Done
-        );
+        ) || (self.screen == Screen::Settings
+            && (self.vad_changed.elapsed().as_secs_f32() < 0.5 || !self.downloads.is_empty()));
         if animated {
             Subscription::batch([drops, closes, window::frames().map(Message::Tick)])
         } else {
@@ -531,14 +608,7 @@ impl App {
             Screen::Choose => screens::choose::view(self),
             Screen::Convert => screens::convert::view_screen(self),
             Screen::Done => screens::done::view(self),
-            other => container(
-                text(format!("{other:?}"))
-                    .font(theme::HEADING)
-                    .size(40)
-                    .color(theme::TEXT),
-            )
-            .padding([48, 64])
-            .into(),
+            Screen::Settings => screens::settings::view(self),
         };
         let page = match &self.notice {
             Some(notice) => column![
@@ -580,11 +650,33 @@ impl App {
     }
 }
 
+/// Downloads a known model on the blocking thread pool and reports its progress.
+fn download(name: &'static str) -> Task<Message> {
+    let (sender, mut updates) = tokio::sync::mpsc::unbounded_channel();
+    std::thread::spawn(move || {
+        let result = match models::find(name) {
+            Some(spec) => {
+                let report = |done: u64, total: u64| {
+                    let _ = sender.send(Message::ModelProgress(name, done, total));
+                };
+                models::ensure(spec, &report)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            }
+            None => Err(format!("unknown model {name}")),
+        };
+        let _ = sender.send(Message::ModelDone(name, result));
+    });
+    Task::stream(iced::futures::stream::poll_fn(move |cx| {
+        updates.poll_recv(cx)
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        screens::choose::OutputMode,
+        screens::{choose::OutputMode, settings::SettingChange},
         settings::Recent,
         worker::{Failure, Update, friendly},
     };
@@ -892,5 +984,41 @@ mod tests {
         let names = screens::done::file_names(&outcome);
         assert_eq!(names, ["movie.tr.srt", "movie.hu.srt", "movie.hu.mp4"]);
         assert_eq!(a.done_lines, 2);
+    }
+
+    #[test]
+    fn changing_a_setting_saves_the_file() {
+        let dir = std::env::temp_dir().join("verbacue-gui-settings-save");
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut a = app();
+        a.config = Some(dir.clone());
+        let _ = a.update(Message::Setting(SettingChange::Vad(false)));
+        assert!(!a.settings.vad);
+        let (saved, _) = settings::load(&dir);
+        assert!(!saved.vad);
+    }
+
+    #[test]
+    fn server_translator_shows_the_url_fields() {
+        let mut a = app();
+        assert!(!screens::settings::shows_server_fields(&a.settings));
+        let _ = a.update(Message::Setting(SettingChange::Translator(
+            verbacue::translate::Backend::OpenaiCompat,
+        )));
+        assert!(screens::settings::shows_server_fields(&a.settings));
+    }
+
+    #[test]
+    fn model_download_reports_progress_and_marks_downloaded() {
+        let mut a = app();
+        let _ = a.update(Message::ModelProgress("small", 50, 200));
+        assert_eq!(a.downloads.get("small"), Some(&(50, 200)));
+        let _ = a.update(Message::ModelDone("small", Ok(())));
+        assert!(!a.downloads.contains_key("small"));
+        let _ = a.update(Message::ModelDone("small", Err("network down".into())));
+        assert_eq!(
+            a.notice.as_deref(),
+            Some("Download of small failed: network down")
+        );
     }
 }
