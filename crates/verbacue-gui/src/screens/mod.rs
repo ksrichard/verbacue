@@ -2,4 +2,5 @@
 
 pub mod choose;
 pub mod convert;
+pub mod done;
 pub mod pick;

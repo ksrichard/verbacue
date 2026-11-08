@@ -84,6 +84,9 @@ pub enum Message {
     CloseRequested,
     ConfirmClose(bool),
     ToggleDetails,
+    OpenFile,
+    ShowInFolder,
+    Again,
     #[cfg(debug_assertions)]
     Screenshot(iced::window::Screenshot),
 }
@@ -102,6 +105,8 @@ pub struct App {
     pub convert: Convert,
     /// The result of the last job.
     pub outcome: Option<Outcome>,
+    /// The number of subtitle lines of the last job, for the Done screen.
+    pub done_lines: usize,
     /// The pipeline thread; it starts with the first job.
     worker: Arc<OnceLock<Worker>>,
     /// Where `gui.toml` lives; `None` does not save (tests).
@@ -147,6 +152,7 @@ impl App {
             running: None,
             convert: Convert::for_job(&Job::new(PathBuf::new(), "en"), String::new()),
             outcome: None,
+            done_lines: 0,
             worker: Arc::new(OnceLock::new()),
             config: None,
             opened: now,
@@ -302,6 +308,25 @@ impl App {
                 }
                 Task::none()
             }
+            Message::OpenFile => {
+                if let Some(file) = self.outcome.as_ref().and_then(screens::done::main_file) {
+                    crate::system::open(file);
+                }
+                Task::none()
+            }
+            Message::ShowInFolder => {
+                if let Some(file) = self.outcome.as_ref().and_then(screens::done::main_file) {
+                    crate::system::show_in_folder(file);
+                }
+                Task::none()
+            }
+            Message::Again => {
+                self.selection = None;
+                self.outcome = None;
+                self.pick = Pick::default();
+                self.show(Screen::Pick);
+                Task::none()
+            }
             Message::ToggleDetails => {
                 self.convert.show_details = !self.convert.show_details;
                 Task::none()
@@ -333,6 +358,18 @@ impl App {
                     }
                     self.save_settings();
                 }
+                let target = self
+                    .running
+                    .as_ref()
+                    .map(|job| pipeline::output_path(job, &job.target));
+                let subtitles = target.filter(|p| outcome.files.contains(p)).or_else(|| {
+                    outcome
+                        .files
+                        .iter()
+                        .find(|p| p.extension().is_some_and(|e| e == "srt" || e == "vtt"))
+                        .cloned()
+                });
+                self.done_lines = subtitles.map_or(0, |p| screens::done::count_cues(&p));
                 self.outcome = Some(outcome);
                 self.show(Screen::Done);
             }
@@ -493,6 +530,7 @@ impl App {
             Screen::Pick => screens::pick::view(self),
             Screen::Choose => screens::choose::view(self),
             Screen::Convert => screens::convert::view_screen(self),
+            Screen::Done => screens::done::view(self),
             other => container(
                 text(format!("{other:?}"))
                     .font(theme::HEADING)
@@ -519,9 +557,20 @@ impl App {
             rule::vertical(1).style(theme::divider),
             container(page).width(Length::Fill).height(Length::Fill),
         ];
-        let glow = Backdrop {
-            center: (0.7, -0.1),
-            glow: theme::GLOW,
+        // Each page of the mockups has its own glow.
+        let glow = match self.screen {
+            Screen::Convert => Backdrop {
+                center: (0.5, 1.1),
+                glow: iced::Color::from_rgb8(0x3a, 0x1c, 0x10),
+            },
+            Screen::Done => Backdrop {
+                center: (0.5, 0.0),
+                glow: iced::Color::from_rgb8(0x24, 0x30, 0x1f),
+            },
+            _ => Backdrop {
+                center: (0.7, -0.1),
+                glow: theme::GLOW,
+            },
         };
         stack![
             canvas(glow).width(Length::Fill).height(Length::Fill),
@@ -805,5 +854,43 @@ mod tests {
         assert_eq!(a.outcome.as_ref(), Some(&outcome));
         assert_eq!(a.settings.recent[0].path, video);
         assert_eq!(a.settings.target, "hu");
+    }
+
+    fn done(dir: &str) -> (App, Outcome) {
+        let mut a = converting(dir);
+        let video = a.selection.as_ref().unwrap().video.clone();
+        let srt = video.with_extension("hu.srt");
+        std::fs::write(
+            &srt,
+            "1\n00:00:01,000 --> 00:00:02,000\nSzia\n\n2\n00:00:03,000 --> 00:00:04,000\nHelló\n",
+        )
+        .unwrap();
+        let outcome = Outcome {
+            source_language: "tr".into(),
+            files: vec![
+                video.with_extension("tr.srt"),
+                srt,
+                video.with_extension("hu.mp4"),
+            ],
+            skipped: false,
+        };
+        update(&mut a, Update::Finished(Ok(outcome.clone())));
+        (a, outcome)
+    }
+
+    #[test]
+    fn again_returns_to_pick() {
+        let (mut a, _) = done("again");
+        let _ = a.update(Message::Again);
+        assert_eq!(a.screen, Screen::Pick);
+        assert!(a.selection.is_none());
+    }
+
+    #[test]
+    fn done_lists_every_written_file() {
+        let (a, outcome) = done("files");
+        let names = screens::done::file_names(&outcome);
+        assert_eq!(names, ["movie.tr.srt", "movie.hu.srt", "movie.hu.mp4"]);
+        assert_eq!(a.done_lines, 2);
     }
 }

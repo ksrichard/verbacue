@@ -1,5 +1,6 @@
 //! Canvas drawings that move: the grill, the skewer and the confetti.
 
+pub mod confetti;
 pub mod grill;
 pub mod skewer;
 
