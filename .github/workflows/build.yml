@@ -76,6 +76,9 @@ jobs:
       VCPKGRS_TRIPLET: x64-windows-static
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-cache
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
+      # A short target folder. The Vulkan shader build of whisper.cpp nests deep, and
+      # MSBuild fails on paths longer than 260 characters.
+      CARGO_TARGET_DIR: C:\t
       # Do not tune the code for the CPU of the runner; x86-64-v3 needs AVX2.
       GGML_NATIVE: "OFF"
       GGML_AVX: "ON"
@@ -124,7 +127,7 @@ jobs:
           features=""
           if [ "${{ matrix.gpu }}" != cpu ]; then features="--features ${{ matrix.gpu }}"; fi
           cargo build --release --locked $features
-          mkdir dist && cp target/release/verbacue.exe dist/
+          mkdir dist && cp /c/t/release/verbacue.exe dist/
       # cuBLAS has no static library on Windows, so the CUDA build ships its DLLs.
       - name: Add the CUDA DLLs
         if: matrix.gpu == 'cuda'
