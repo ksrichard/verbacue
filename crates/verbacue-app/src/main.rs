@@ -170,7 +170,16 @@ enum Command {
     /// List the audio tracks of a video.
     Tracks { video: PathBuf },
     /// Open the desktop app. `verbacue` with no arguments also opens it.
-    Gui,
+    Gui {
+        /// Videos to put in the queue.
+        files: Vec<PathBuf>,
+        /// Start the queue at once.
+        #[arg(long)]
+        start: bool,
+        /// With --start: overwrite outputs that exist, without asking.
+        #[arg(long, requires = "start")]
+        replace: bool,
+    },
     /// Manage the model cache.
     Models {
         #[command(subcommand)]
@@ -197,7 +206,16 @@ fn main() -> Result<()> {
         launch::has_display(),
         cfg!(feature = "gui"),
     ) {
-        launch::Mode::Gui => return open_gui(),
+        launch::Mode::Gui => {
+            return match Cli::try_parse().ok().and_then(|cli| cli.command) {
+                Some(Command::Gui {
+                    files,
+                    start,
+                    replace,
+                }) => open_gui(files, start, replace),
+                _ => open_gui(Vec::new(), false, false),
+            };
+        }
         launch::Mode::Help => {
             print_help();
             return Ok(());
@@ -207,10 +225,10 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     init_logging(cli.verbose);
     match cli.command {
-        Some(Command::Gui) if cfg!(feature = "gui") => {
+        Some(Command::Gui { .. }) if cfg!(feature = "gui") => {
             bail!("cannot open a window: no display (DISPLAY or WAYLAND_DISPLAY is not set)")
         }
-        Some(Command::Gui) => bail!("this build has no GUI; see verbacue --help"),
+        Some(Command::Gui { .. }) => bail!("this build has no GUI; see verbacue --help"),
         Some(Command::Tracks { video }) => print_tracks(&video),
         Some(Command::Languages) => {
             print_languages();
@@ -261,16 +279,16 @@ fn print_help() {
 }
 
 #[cfg(feature = "gui")]
-fn open_gui() -> Result<()> {
+fn open_gui(files: Vec<PathBuf>, start: bool, replace: bool) -> Result<()> {
     init_logging(0);
     #[cfg(windows)]
     console::detach_if_alone();
-    verbacue_gui::run()
+    verbacue_gui::run_with(files, start, replace)
         .map_err(|e| anyhow::anyhow!("{e}; use verbacue --help for the command line"))
 }
 
 #[cfg(not(feature = "gui"))]
-fn open_gui() -> Result<()> {
+fn open_gui(_files: Vec<PathBuf>, _start: bool, _replace: bool) -> Result<()> {
     bail!("this build has no GUI; see verbacue --help")
 }
 

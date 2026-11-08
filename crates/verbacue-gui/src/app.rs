@@ -149,6 +149,8 @@ pub struct App {
     recent_options: HashMap<PathBuf, (String, bool)>,
     /// The id of each file being checked, given in the order the user chose them.
     chosen: HashMap<PathBuf, u64>,
+    /// Start the queue when all opened files are checked; true also replaces outputs.
+    autostart: Option<bool>,
     pub choose: Choose,
     pub convert: Convert,
     /// Running model downloads: name → (bytes done, bytes total).
@@ -172,6 +174,27 @@ pub struct App {
 }
 
 impl App {
+    /// Opens the app with `files` in the queue. `start` starts it as soon as every file
+    /// is checked; `replace` then overwrites outputs without asking.
+    pub fn with_files(files: Vec<PathBuf>, start: bool, replace: bool) -> (Self, Task<Message>) {
+        let (mut app, task) = Self::new();
+        let open = app.open(files, start, replace);
+        (app, Task::batch([task, open]))
+    }
+
+    /// Adds `files` to the queue; see [`App::with_files`].
+    pub fn open(&mut self, files: Vec<PathBuf>, start: bool, replace: bool) -> Task<Message> {
+        if start && !files.is_empty() {
+            self.autostart = Some(replace);
+        }
+        Task::batch(
+            files
+                .into_iter()
+                .map(|file| self.check(file, None))
+                .collect::<Vec<_>>(),
+        )
+    }
+
     pub fn new() -> (Self, Task<Message>) {
         let (mut settings, notice) = verbacue::config_dir()
             .map(|dir| settings::load(&dir))
@@ -220,6 +243,7 @@ impl App {
             next_id: 0,
             recent_options: HashMap::new(),
             chosen: HashMap::new(),
+            autostart: None,
             choose: Choose::default(),
             convert: Convert::for_job(&Job::new(PathBuf::new(), "en"), String::new()),
             downloads: HashMap::new(),
@@ -381,12 +405,37 @@ impl App {
             },
             Message::MediaChecked(result) => {
                 self.pick.checking = None;
-                match result {
-                    Ok((video, info)) => return self.add(video, info),
-                    Err(error) if self.screen == Screen::Pick => self.pick.error = Some(error),
-                    Err(error) => self.notice = Some(error),
+                let task = match result {
+                    Ok((video, info)) => self.add(video, info),
+                    Err(error) => {
+                        if let Some((path, _)) = self
+                            .chosen
+                            .iter()
+                            .find(|(p, _)| error.contains(&*p.to_string_lossy()))
+                        {
+                            let path = path.clone();
+                            self.chosen.remove(&path);
+                        }
+                        if self.screen == Screen::Pick {
+                            self.pick.error = Some(error);
+                        } else {
+                            self.notice = Some(error);
+                        }
+                        Task::none()
+                    }
+                };
+                // Files opened with --start begin once all of them are checked.
+                if self.chosen.is_empty()
+                    && let Some(replace) = self.autostart.take()
+                {
+                    let start = if replace {
+                        self.begin(true)
+                    } else {
+                        self.update(Message::Start)
+                    };
+                    return Task::batch([task, start]);
                 }
-                Task::none()
+                task
             }
             Message::PreviewLoaded(video, frames) => {
                 let handles: Vec<_> = frames
@@ -1617,5 +1666,21 @@ mod tests {
         let s = Settings::default();
         assert!(s.film_notes);
         assert!(s.review_notes);
+    }
+
+    #[test]
+    fn opened_files_start_when_all_are_checked() {
+        let base = std::env::temp_dir().join("verbacue-autostart");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let (a1, a2) = (base.join("ep23.mp4"), base.join("ep24.mp4"));
+        let mut a = app();
+        let _ = a.open(vec![a1.clone(), a2.clone()], true, true);
+        let _ = a.update(Message::MediaChecked(Ok((a1, info()))));
+        assert_eq!(a.screen, Screen::Choose, "waits for the second check");
+        let _ = a.update(Message::MediaChecked(Ok((a2, info()))));
+        assert_eq!(a.screen, Screen::Convert);
+        assert!(a.running_job().unwrap().force);
+        assert_eq!(a.queue.len(), 2);
     }
 }

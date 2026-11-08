@@ -25,8 +25,18 @@ const ICON: &[u8] = include_bytes!("../assets/icon.png");
 /// # Errors
 /// Returns an error if the window cannot open.
 pub fn run() -> Result<(), Error> {
+    run_with(Vec::new(), false, false)
+}
+
+/// Opens the app window with `files` in the queue. `start` starts the queue once every
+/// file is checked, and `replace` then overwrites existing outputs without asking.
+///
+/// # Errors
+/// Returns an error if the window cannot open.
+pub fn run_with(files: Vec<std::path::PathBuf>, start: bool, replace: bool) -> Result<(), Error> {
     let icon = iced::window::icon::from_file_data(ICON, None).ok();
-    let mut app = iced::application(app::App::new, app::App::update, app::App::view)
+    let boot = move || app::App::with_files(files.clone(), start, replace);
+    let mut app = iced::application(boot, app::App::update, app::App::view)
         .title(app::App::title)
         .subscription(app::App::subscription)
         .theme(|_: &app::App| theme::app_theme())
