@@ -150,14 +150,21 @@ impl Convert {
         }
     }
 
+    /// The part of the whole job that is done, 0 to 1. Each step counts the same.
+    pub fn overall(&self) -> f32 {
+        let Some(current) = self.current else {
+            return 0.0;
+        };
+        (current as f32 + self.progress()) / self.steps.len().max(1) as f32
+    }
+
     /// How many verb chunks are cooked, and which one cooks now (4 chunks for the
     /// steps, whatever their number).
     fn chunks(&self) -> (usize, Option<usize>) {
-        let Some(current) = self.current else {
+        if self.current.is_none() {
             return (0, None);
-        };
-        let n = self.steps.len().max(1);
-        let progress = (current as f32 + self.progress()) / n as f32;
+        }
+        let progress = self.overall();
         let cooked = ((progress * 4.0).floor() as usize).min(4);
         (cooked, (cooked < 4).then_some(cooked))
     }

@@ -55,6 +55,9 @@ pub struct Selection {
     pub track: usize,
 }
 
+/// How long iced may still report sizes with the old scale after a change.
+const SETTLE: std::time::Duration = std::time::Duration::from_millis(400);
+
 /// The target value for "Keep the original language".
 pub const KEEP: &str = "";
 
@@ -67,6 +70,10 @@ pub enum Message {
     Show(Screen),
     /// A frame of the animations.
     Tick(Instant),
+    /// The window size as iced reports it, after the app scale.
+    Resized(iced::Size),
+    /// The window size, read once the last scale change is applied.
+    SizeChecked(iced::Size),
     /// Opens the file dialog.
     PickFile,
     FileChosen(PathBuf),
@@ -124,6 +131,10 @@ pub struct App {
     pub downloads: HashMap<&'static str, (u64, u64)>,
     /// When the silence switch last changed, for its animation.
     pub vad_changed: Instant,
+    /// How much larger than the mockups the whole interface draws.
+    pub scale: f32,
+    /// When the scale last changed.
+    scale_changed: Option<Instant>,
     /// The pipeline thread; it starts with the first job.
     worker: Arc<OnceLock<Worker>>,
     /// Where `gui.toml` lives; `None` does not save (tests).
@@ -180,11 +191,45 @@ impl App {
             done_lines: 0,
             downloads: HashMap::new(),
             vad_changed: now,
+            scale: 1.0,
+            scale_changed: None,
             worker: Arc::new(OnceLock::new()),
             config: None,
             opened: now,
             now,
             logo: nav::logo(),
+        }
+    }
+
+    /// Sets the scale for a window of `size` (as iced reports it, divided by the
+    /// current scale). After a change it reads the size again when iced has applied
+    /// the new scale.
+    fn rescale(&mut self, size: iced::Size) -> Task<Message> {
+        let scale = ui_scale(size * self.scale);
+        if scale == self.scale {
+            self.scale_changed = None;
+            return Task::none();
+        }
+        self.scale = scale;
+        self.scale_changed = Some(Instant::now());
+        // The sleep is made inside the task, so `update` works without a runtime.
+        Task::future(async { tokio::time::sleep(SETTLE).await })
+            .then(|()| window::latest())
+            .and_then(window::size)
+            .map(Message::SizeChecked)
+    }
+
+    /// The window title: the app name, and during a conversion the file and the
+    /// progress of the whole job.
+    pub fn title(&self) -> String {
+        let video = self.running.as_ref().and_then(|job| job.video.file_name());
+        match video {
+            Some(name) if self.is_running() => format!(
+                "VERBACUE — {} — {:.0} %",
+                name.to_string_lossy(),
+                self.convert.overall() * 100.0
+            ),
+            _ => "VERBACUE".to_string(),
         }
     }
 
@@ -211,6 +256,15 @@ impl App {
                 self.now = now;
                 Task::none()
             }
+            Message::Resized(size) => {
+                // A resize event right after a scale change can still use the old
+                // scale, so it waits for the check after the settle time.
+                if self.scale_changed.is_some_and(|t| t.elapsed() < SETTLE) {
+                    return Task::none();
+                }
+                self.rescale(size)
+            }
+            Message::SizeChecked(size) => self.rescale(size),
             Message::PickFile => Task::future(async {
                 rfd::AsyncFileDialog::new()
                     .set_title("Choose a video")
@@ -588,15 +642,16 @@ impl App {
             _ => None,
         });
         let closes = window::close_requests().map(|_| Message::CloseRequested);
+        let resizes = window::resize_events().map(|(_, size)| Message::Resized(size));
         let animated = matches!(
             self.screen,
             Screen::Pick | Screen::Choose | Screen::Convert | Screen::Done
         ) || (self.screen == Screen::Settings
             && (self.vad_changed.elapsed().as_secs_f32() < 0.5 || !self.downloads.is_empty()));
         if animated {
-            Subscription::batch([drops, closes, window::frames().map(Message::Tick)])
+            Subscription::batch([drops, closes, resizes, window::frames().map(Message::Tick)])
         } else {
-            Subscription::batch([drops, closes])
+            Subscription::batch([drops, closes, resizes])
         }
     }
 
@@ -663,6 +718,14 @@ impl App {
         ]
         .into()
     }
+}
+
+/// The interface scale for a window of `size` (without the app scale). The mockups
+/// are drawn for 1280 x 800; a larger window draws everything larger, up to 2.5 times,
+/// in steps of 0.05 so that small resizes do not change it.
+pub fn ui_scale(size: iced::Size) -> f32 {
+    let fit = (size.width / 1280.0).min(size.height / 800.0);
+    ((fit * 20.0).round() / 20.0).clamp(1.0, 2.5)
 }
 
 /// Downloads a known model on the blocking thread pool and reports its progress.
@@ -1035,5 +1098,65 @@ mod tests {
             a.notice.as_deref(),
             Some("Download of small failed: network down")
         );
+    }
+
+    #[test]
+    fn ui_scale_grows_with_the_window() {
+        assert_eq!(ui_scale(iced::Size::new(1280.0, 800.0)), 1.0);
+        assert_eq!(ui_scale(iced::Size::new(960.0, 640.0)), 1.0);
+        assert_eq!(ui_scale(iced::Size::new(1920.0, 1080.0)), 1.35);
+        assert_eq!(ui_scale(iced::Size::new(2560.0, 1600.0)), 2.0);
+        assert_eq!(ui_scale(iced::Size::new(5120.0, 2880.0)), 2.5);
+    }
+
+    #[test]
+    fn resize_events_do_not_feed_back_into_the_scale() {
+        let mut a = app();
+        let _ = a.update(Message::Resized(iced::Size::new(2560.0, 1600.0)));
+        assert_eq!(a.scale, 2.0);
+        // iced reports the size after the app scale: the same window is now 1280 x 800.
+        let _ = a.update(Message::Resized(iced::Size::new(1280.0, 800.0)));
+        assert_eq!(a.scale, 2.0);
+        // Later the user makes the window small again.
+        let _ = a.update(Message::SizeChecked(iced::Size::new(640.0, 400.0)));
+        assert_eq!(a.scale, 1.0);
+    }
+
+    #[test]
+    fn resize_events_right_after_a_scale_change_are_ignored() {
+        let mut a = app();
+        let _ = a.update(Message::Resized(iced::Size::new(2400.0, 1500.0)));
+        assert_eq!(a.scale, 1.9);
+        // iced made this event before it applied 1.9 (the window is clamped to
+        // 2400 x 1378): its size is still divided by 1, so it is wrong now.
+        let _ = a.update(Message::Resized(iced::Size::new(2400.0, 1378.0)));
+        assert_eq!(a.scale, 1.9);
+        // The check after the settle time reads the size with 1.9 applied.
+        let _ = a.update(Message::SizeChecked(iced::Size::new(
+            2400.0 / 1.9,
+            1378.0 / 1.9,
+        )));
+        assert_eq!(a.scale, 1.7);
+        let _ = a.update(Message::SizeChecked(iced::Size::new(
+            2400.0 / 1.7,
+            1378.0 / 1.7,
+        )));
+        assert_eq!(a.scale, 1.7);
+    }
+
+    #[test]
+    fn window_title_names_the_file_while_converting() {
+        let mut a = converting("title");
+        update(&mut a, Update::Step(Step::Transcribe));
+        update(
+            &mut a,
+            Update::Progress {
+                done: 42,
+                total: 100,
+            },
+        );
+        // Transcribe is step 2 of 4 and 42 % done: (1 + 0.42) / 4 is about 36 %.
+        assert_eq!(a.title(), "VERBACUE — movie.mkv — 36 %");
+        assert_eq!(app().title(), "VERBACUE");
     }
 }
