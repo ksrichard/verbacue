@@ -2,6 +2,8 @@
 //! a few seconds after start, then closes the app. It lets developers compare the
 //! screens with the mockups without screen-capture rights. `VERBACUE_GUI_SHOT_FILE`
 //! opens a video first, and `VERBACUE_GUI_SHOT_SCREEN=settings` opens Settings.
+//! `VERBACUE_GUI_SHOT_START=1` presses Start, and `VERBACUE_GUI_SHOT_MODEL` sets the
+//! Whisper model. In this mode the app never saves `gui.toml`.
 
 use std::{path::PathBuf, time::Duration};
 
@@ -24,6 +26,19 @@ pub fn take() -> Task<Message> {
         .then(|()| window::latest())
         .and_then(window::screenshot)
         .map(Message::Screenshot)
+}
+
+/// The Whisper model to use instead of the setting.
+pub fn model() -> Option<String> {
+    std::env::var("VERBACUE_GUI_SHOT_MODEL").ok()
+}
+
+/// Presses Start once the preview had time to load.
+pub fn start() -> Task<Message> {
+    if std::env::var_os("VERBACUE_GUI_SHOT_START").is_none() {
+        return Task::none();
+    }
+    Task::future(tokio::time::sleep(Duration::from_millis(1500))).map(|()| Message::Start)
 }
 
 /// The messages that bring the app to the screen to capture.

@@ -14,10 +14,6 @@ use crate::Error;
 /// The settings file in the config folder.
 pub const FILE: &str = "gui.toml";
 /// How many recent files the start screen lists.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the Converting screen uses it in a later task")
-)]
 const RECENT: usize = 8;
 
 /// Everything the Settings screen changes, plus the last choices and recent files.
@@ -77,10 +73,6 @@ impl Default for Settings {
 
 impl Settings {
     /// Puts `recent` first. An older entry for the same file goes away.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the Converting screen uses it in a later task")
-    )]
     pub fn remember(&mut self, recent: Recent) {
         self.recent.retain(|r| r.path != recent.path);
         self.recent.insert(0, recent);
@@ -121,10 +113,6 @@ pub fn load(dir: &Path) -> (Settings, Option<String>) {
 ///
 /// # Errors
 /// Returns an error if the file cannot be written.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the Settings screen uses it in a later task")
-)]
 pub fn save(dir: &Path, settings: &Settings) -> Result<(), Error> {
     let text = toml::to_string_pretty(settings).map_err(|e| Error::Settings(e.to_string()))?;
     std::fs::create_dir_all(dir).map_err(|e| Error::Settings(e.to_string()))?;

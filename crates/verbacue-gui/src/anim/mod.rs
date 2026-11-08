@@ -1,6 +1,7 @@
 //! Canvas drawings that move: the grill, the skewer and the confetti.
 
 pub mod grill;
+pub mod skewer;
 
 use std::f32::consts::TAU;
 

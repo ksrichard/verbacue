@@ -1,6 +1,10 @@
 //! The app state, its messages, and the screen it shows.
 
-use std::{path::PathBuf, time::Instant};
+use std::{
+    path::PathBuf,
+    sync::{Arc, OnceLock, atomic::Ordering},
+    time::Instant,
+};
 
 use iced::{
     Element, Length, Subscription, Task,
@@ -8,8 +12,8 @@ use iced::{
     window,
 };
 use verbacue::{
-    models,
-    pipeline::{self, Job, Translation},
+    ErrorKind, models,
+    pipeline::{self, Job, Outcome, Translation},
     video::{MediaInfo, PreviewFrame},
 };
 
@@ -17,11 +21,13 @@ use crate::{
     screens::{
         self,
         choose::{Choose, OutputMode},
+        convert::Convert,
         pick::Pick,
     },
-    settings::{self, Settings},
+    settings::{self, Recent, Settings},
     theme,
     widgets::{backdrop::Backdrop, nav},
+    worker::{Update, Worker},
 };
 
 /// The screens of the app, in the order of the main flow.
@@ -31,7 +37,6 @@ pub enum Screen {
     Pick,
     Choose,
     Convert,
-    #[expect(dead_code, reason = "the Done screen comes in a later task")]
     Done,
     Settings,
 }
@@ -74,6 +79,11 @@ pub enum Message {
     PlayVideo,
     Start,
     ConfirmReplace(bool),
+    Pipeline(Update),
+    Cancel,
+    CloseRequested,
+    ConfirmClose(bool),
+    ToggleDetails,
     #[cfg(debug_assertions)]
     Screenshot(iced::window::Screenshot),
 }
@@ -89,6 +99,13 @@ pub struct App {
     pub choose: Choose,
     /// The job that runs or ran last.
     pub running: Option<Job>,
+    pub convert: Convert,
+    /// The result of the last job.
+    pub outcome: Option<Outcome>,
+    /// The pipeline thread; it starts with the first job.
+    worker: Arc<OnceLock<Worker>>,
+    /// Where `gui.toml` lives; `None` does not save (tests).
+    config: Option<PathBuf>,
     /// When the current screen opened, and the time of the last frame.
     opened: Instant,
     now: Instant,
@@ -101,11 +118,19 @@ impl App {
             .map(|dir| settings::load(&dir))
             .unwrap_or_default();
         settings.drop_missing();
-        let app = Self::with_settings(settings, notice);
+        let mut app = Self::with_settings(settings, notice);
+        app.config = verbacue::config_dir();
         #[cfg(debug_assertions)]
         if crate::devshot::target().is_some() {
+            app.config = None;
+            if let Some(model) = crate::devshot::model() {
+                app.settings.whisper_model = model;
+            }
             let setup = crate::devshot::setup().into_iter().map(Task::done);
-            return (app, Task::batch(setup.chain([crate::devshot::take()])));
+            return (
+                app,
+                Task::batch(setup.chain([crate::devshot::start(), crate::devshot::take()])),
+            );
         }
         (app, Task::none())
     }
@@ -120,6 +145,10 @@ impl App {
             selection: None,
             choose: Choose::default(),
             running: None,
+            convert: Convert::for_job(&Job::new(PathBuf::new(), "en"), String::new()),
+            outcome: None,
+            worker: Arc::new(OnceLock::new()),
+            config: None,
             opened: now,
             now,
             logo: nav::logo(),
@@ -247,8 +276,81 @@ impl App {
                     _ => Task::none(),
                 }
             }
+            Message::Pipeline(Update::Finished(result)) => self.finished(result),
+            Message::Pipeline(update) => {
+                self.convert.apply(update);
+                Task::none()
+            }
+            Message::Cancel => {
+                self.convert.cancel.store(true, Ordering::Relaxed);
+                self.convert.stopping = true;
+                Task::none()
+            }
+            Message::CloseRequested => {
+                if self.is_running() {
+                    self.convert.confirm_close = true;
+                    Task::none()
+                } else {
+                    window::latest().and_then(window::close)
+                }
+            }
+            Message::ConfirmClose(close) => {
+                self.convert.confirm_close = false;
+                if close {
+                    self.convert.close_after = true;
+                    return self.update(Message::Cancel);
+                }
+                Task::none()
+            }
+            Message::ToggleDetails => {
+                self.convert.show_details = !self.convert.show_details;
+                Task::none()
+            }
             #[cfg(debug_assertions)]
             Message::Screenshot(shot) => crate::devshot::save(&shot),
+        }
+    }
+
+    /// True while a job runs.
+    fn is_running(&self) -> bool {
+        self.screen == Screen::Convert && self.convert.error.is_none()
+    }
+
+    fn finished(&mut self, result: Result<Outcome, crate::worker::Failure>) -> Task<Message> {
+        if self.convert.close_after {
+            return window::latest().and_then(window::close);
+        }
+        match result {
+            Ok(outcome) => {
+                if let Some(s) = &self.selection {
+                    self.settings.remember(Recent {
+                        path: s.video.clone(),
+                        target: s.target.clone(),
+                        burn: s.burn,
+                    });
+                    if s.target != KEEP {
+                        self.settings.target = s.target.clone();
+                    }
+                    self.save_settings();
+                }
+                self.outcome = Some(outcome);
+                self.show(Screen::Done);
+            }
+            Err(failure) if failure.kind == ErrorKind::Cancelled => self.show(Screen::Choose),
+            Err(failure) => {
+                tracing::warn!("{}", failure.message);
+                self.convert.error = Some(failure);
+            }
+        }
+        Task::none()
+    }
+
+    /// Writes `gui.toml`; a failure shows as a notice.
+    pub fn save_settings(&mut self) {
+        if let Some(dir) = &self.config
+            && let Err(e) = settings::save(dir, &self.settings)
+        {
+            self.notice = Some(e.to_string());
         }
     }
 
@@ -280,11 +382,41 @@ impl App {
         Some(job)
     }
 
-    /// Opens the Converting screen for `job`.
+    /// Opens the Converting screen and runs `job` on the pipeline thread.
     fn start(&mut self, job: Job) -> Task<Message> {
-        self.running = Some(job);
+        self.convert = Convert::for_job(&job, self.summary());
+        self.running = Some(job.clone());
+        self.outcome = None;
         self.show(Screen::Convert);
-        Task::none()
+        let worker = Arc::clone(&self.worker);
+        let cancel = Arc::clone(&self.convert.cancel);
+        // The thread starts only when the task runs, so tests never start the pipeline.
+        let updates =
+            iced::futures::stream::once(
+                async move { worker.get_or_init(Worker::new).run(job, cancel) },
+            );
+        Task::run(
+            iced::futures::StreamExt::flatten(updates),
+            Message::Pipeline,
+        )
+    }
+
+    /// "movie.mkv · Hungarian · burned in"
+    fn summary(&self) -> String {
+        let Some(s) = &self.selection else {
+            return String::new();
+        };
+        let name = s
+            .video
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        let language = if s.target == KEEP {
+            "original language".to_string()
+        } else {
+            verbacue::translate::language_name(&s.target).to_string()
+        };
+        let mode = if s.burn { "burned in" } else { "subtitle file" };
+        format!("{name} · {language} · {mode}")
     }
 
     /// Decodes the preview frames on the blocking thread pool.
@@ -327,11 +459,15 @@ impl App {
             window::Event::FileDropped(path) => Some(Message::FileChosen(path)),
             _ => None,
         });
-        let animated = matches!(self.screen, Screen::Pick | Screen::Choose);
+        let closes = window::close_requests().map(|_| Message::CloseRequested);
+        let animated = matches!(
+            self.screen,
+            Screen::Pick | Screen::Choose | Screen::Convert | Screen::Done
+        );
         if animated {
-            Subscription::batch([drops, window::frames().map(Message::Tick)])
+            Subscription::batch([drops, closes, window::frames().map(Message::Tick)])
         } else {
-            drops
+            Subscription::batch([drops, closes])
         }
     }
 
@@ -356,6 +492,7 @@ impl App {
         let page: Element<'_, Message> = match self.screen {
             Screen::Pick => screens::pick::view(self),
             Screen::Choose => screens::choose::view(self),
+            Screen::Convert => screens::convert::view_screen(self),
             other => container(
                 text(format!("{other:?}"))
                     .font(theme::HEADING)
@@ -397,8 +534,18 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{screens::choose::OutputMode, settings::Recent};
+    use crate::{
+        screens::choose::OutputMode,
+        settings::Recent,
+        worker::{Failure, Update, friendly},
+    };
     use std::path::PathBuf;
+    use std::sync::atomic::Ordering;
+    use verbacue::{
+        ErrorKind,
+        pipeline::{Outcome, Step},
+        subtitle::Cue,
+    };
     use verbacue::{audio::AudioTrack, video::MediaInfo};
 
     fn app() -> App {
@@ -540,5 +687,123 @@ mod tests {
         let _ = a.update(Message::ConfirmReplace(true));
         assert_eq!(a.screen, Screen::Convert);
         assert!(a.running.as_ref().unwrap().force);
+    }
+
+    fn converting(dir: &str) -> App {
+        let mut a = chosen(dir);
+        let _ = a.update(Message::Start);
+        assert_eq!(a.screen, Screen::Convert);
+        a
+    }
+
+    fn update(a: &mut App, u: Update) {
+        let _ = a.update(Message::Pipeline(u));
+    }
+
+    #[test]
+    fn step_events_move_the_steps_row() {
+        let mut a = converting("steps");
+        assert_eq!(a.convert.steps.len(), 4);
+        update(&mut a, Update::Step(Step::Decode));
+        assert_eq!(a.convert.current, Some(0));
+        update(&mut a, Update::Step(Step::Download("large-v3")));
+        assert_eq!(a.convert.steps.len(), 5);
+        assert_eq!(a.convert.steps[1].label, "Download large-v3");
+        update(&mut a, Update::Step(Step::Transcribe));
+        assert_eq!(a.convert.current, Some(2));
+        update(
+            &mut a,
+            Update::Progress {
+                done: 40,
+                total: 100,
+            },
+        );
+        assert_eq!(a.convert.progress(), 0.4);
+    }
+
+    #[test]
+    fn cue_events_keep_the_newest_three() {
+        let mut a = converting("cues");
+        for i in 0..5 {
+            update(
+                &mut a,
+                Update::Cue(Cue::new(i * 1000, i * 1000 + 900, format!("line {i}"))),
+            );
+        }
+        let texts: Vec<_> = a.convert.cues.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, ["line 2", "line 3", "line 4"]);
+    }
+
+    #[test]
+    fn cancel_sets_the_flag_and_shows_stopping() {
+        let mut a = converting("cancel");
+        let _ = a.update(Message::Cancel);
+        assert!(a.convert.stopping);
+        assert!(a.convert.cancel.load(Ordering::Relaxed));
+        update(
+            &mut a,
+            Update::Finished(Err(Failure::new(ErrorKind::Cancelled, "cancelled"))),
+        );
+        assert_eq!(a.screen, Screen::Choose);
+    }
+
+    #[test]
+    fn close_request_during_a_run_asks_first() {
+        let mut a = converting("close");
+        let _ = a.update(Message::CloseRequested);
+        assert!(a.convert.confirm_close);
+        assert!(!a.convert.cancel.load(Ordering::Relaxed));
+        let _ = a.update(Message::ConfirmClose(true));
+        assert!(a.convert.cancel.load(Ordering::Relaxed));
+        assert!(a.convert.close_after);
+    }
+
+    #[test]
+    fn missing_key_error_shows_the_settings_hint() {
+        let mut a = converting("key");
+        update(
+            &mut a,
+            Update::Finished(Err(Failure::new(ErrorKind::MissingKey, "no DEEPL_API_KEY"))),
+        );
+        assert_eq!(a.screen, Screen::Convert);
+        let error = a.convert.error.as_ref().unwrap();
+        assert_eq!(
+            friendly(error.kind),
+            "Add your key for this service in Settings."
+        );
+        assert_eq!(error.message, "no DEEPL_API_KEY");
+    }
+
+    #[test]
+    fn write_error_shows_a_card_not_a_panic() {
+        let mut a = converting("write");
+        update(
+            &mut a,
+            Update::Finished(Err(Failure::new(
+                ErrorKind::Other,
+                "cannot write /x/movie.hu.srt",
+            ))),
+        );
+        assert_eq!(a.screen, Screen::Convert);
+        assert_eq!(
+            friendly(a.convert.error.as_ref().unwrap().kind),
+            "Something went wrong."
+        );
+    }
+
+    #[test]
+    fn success_opens_the_done_screen_and_remembers_the_file() {
+        let mut a = converting("done");
+        let video = a.selection.as_ref().unwrap().video.clone();
+        let outcome = Outcome {
+            source_language: "tr".into(),
+            files: vec![video.with_extension("hu.mp4")],
+            skipped: false,
+        };
+        update(&mut a, Update::Finished(Ok(outcome.clone())));
+        assert_eq!(a.screen, Screen::Done);
+        assert_eq!(a.outcome.as_ref(), Some(&outcome));
+        assert_eq!(a.settings.recent[0].path, video);
+        assert_eq!(a.settings.target, "hu");
     }
 }

@@ -13,6 +13,7 @@ mod settings;
 mod system;
 mod theme;
 mod widgets;
+mod worker;
 
 pub use error::Error;
 
@@ -28,6 +29,7 @@ pub fn run() -> Result<(), Error> {
         .title("verbacue")
         .subscription(app::App::subscription)
         .theme(|_: &app::App| theme::app_theme())
+        .exit_on_close_request(false)
         .default_font(theme::BODY);
     for font in theme::FONTS {
         app = app.font(font);

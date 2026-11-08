@@ -1,5 +1,4 @@
 //! Colors, fonts and widget styles from the approved mockups.
-#![expect(dead_code, reason = "the screens of the later tasks use the rest")]
 
 use iced::{
     Background, Border, Color, Font, Shadow, Vector,
