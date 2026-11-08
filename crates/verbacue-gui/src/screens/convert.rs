@@ -11,7 +11,7 @@ use iced::{
     widget::{
         button, canvas,
         canvas::{Frame, Geometry, Path, gradient::Linear},
-        column, container, row, text,
+        column, container, row, scrollable, text,
     },
 };
 use verbacue::{
@@ -22,6 +22,7 @@ use verbacue::{
 use crate::{
     anim::{cycle, skewer::Skewer, wave},
     app::{App, Message},
+    queue::Status,
     theme,
     worker::{Failure, Update, friendly},
 };
@@ -340,19 +341,82 @@ pub fn view_screen(app: &App) -> Element<'_, Message> {
         );
     }
 
+    let content = column![
+        header,
+        skewer,
+        progress,
+        live,
+        actions.align_y(Alignment::Center),
+        queue_panel(app),
+    ]
+    .spacing(26)
+    .align_x(Alignment::Center);
+    container(scrollable(content))
+        .padding([40, 56])
+        .center_x(Length::Fill)
+        .into()
+}
+
+/// The queue during a run: each video with its state, "Add videos", and × for the
+/// waiting ones.
+fn queue_panel(app: &App) -> Element<'_, Message> {
+    let (position, total) = app.run_position();
+    let rows = app
+        .queue
+        .iter()
+        .enumerate()
+        .map(|(i, item)| -> Element<'_, Message> {
+            let color = match item.status {
+                Status::Running | Status::Failed(_) => theme::ACCENT_TEXT,
+                Status::Done(..) => theme::SUCCESS_TEXT,
+                Status::Waiting => theme::TEXT_SOFT,
+            };
+            let mut line = row![
+                text(item.name())
+                    .size(14)
+                    .color(theme::TEXT)
+                    .width(Length::Fill),
+                text(item.status.label()).size(13).color(color),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center);
+            if item.status == Status::Waiting {
+                line = line.push(
+                    button(text("×").size(14).color(theme::MUTED))
+                        .padding([2, 8])
+                        .style(|_, _| button::Style::default())
+                        .on_press(Message::Remove(i)),
+                );
+            }
+            line.into()
+        });
+    let title = if total > 1 {
+        format!("QUEUE · VIDEO {position} OF {total}")
+    } else {
+        "QUEUE".to_string()
+    };
     container(
         column![
-            header,
-            skewer,
-            progress,
-            live,
-            actions.align_y(Alignment::Center)
+            row![
+                text(title)
+                    .size(12)
+                    .font(theme::BODY_BOLD)
+                    .color(theme::FAINT)
+                    .width(Length::Fill),
+                button(text("+ Add videos").size(13))
+                    .padding([6, 12])
+                    .style(theme::ghost)
+                    .on_press(Message::PickFile),
+            ]
+            .align_y(Alignment::Center),
+            column(rows).spacing(6),
         ]
-        .spacing(26)
-        .align_x(Alignment::Center),
+        .spacing(10),
     )
-    .padding([40, 56])
-    .center_x(Length::Fill)
+    .padding([14, 18])
+    .width(Length::Fill)
+    .max_width(640)
+    .style(theme::card(18.0))
     .into()
 }
 

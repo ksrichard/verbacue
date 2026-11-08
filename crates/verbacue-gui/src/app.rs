@@ -19,6 +19,7 @@ use verbacue::{
 };
 
 use crate::{
+    queue::{Item, Status},
     screens::{
         self,
         choose::{Choose, OutputMode},
@@ -29,7 +30,7 @@ use crate::{
     settings::{self, Recent, Settings},
     theme,
     widgets::{backdrop::Backdrop, nav},
-    worker::{Update, Worker},
+    worker::{Failure, Update, Worker},
 };
 
 /// The screens of the app, in the order of the main flow.
@@ -74,14 +75,20 @@ pub enum Message {
     Resized(iced::Size),
     /// The window size, read once the last scale change is applied.
     SizeChecked(iced::Size),
-    /// Opens the file dialog.
+    /// Opens the file dialog; it takes several files.
     PickFile,
     FileChosen(PathBuf),
     /// A file is dragged over the window (true) or away from it (false).
     Hover(bool),
     MediaChecked(Result<(PathBuf, MediaInfo), String>),
     OpenRecent(usize),
-    PreviewLoaded(Vec<PreviewFrame>),
+    PreviewLoaded(PathBuf, Vec<PreviewFrame>),
+    /// Shows this queue item on the Preview screen.
+    Select(usize),
+    /// Removes this queue item, unless it runs.
+    Remove(usize),
+    /// Copies the shown video's options to every waiting video.
+    ApplyToAll,
     Mode(OutputMode),
     Target(String),
     Track(usize),
@@ -93,8 +100,9 @@ pub enum Message {
     CloseRequested,
     ConfirmClose(bool),
     ToggleDetails,
-    OpenFile,
-    ShowInFolder,
+    /// Opens the main file of this queue item.
+    OpenFile(usize),
+    ShowInFolder(usize),
     Again,
     Setting(SettingChange),
     ChooseGlossary,
@@ -118,15 +126,23 @@ pub struct App {
     /// A notice about the settings file, shown once.
     pub notice: Option<String>,
     pub pick: Pick,
-    pub selection: Option<Selection>,
+    /// The videos, in order.
+    pub queue: Vec<Item>,
+    /// The queue item that the Preview screen shows.
+    pub current: usize,
+    /// The id of the running item and its job.
+    running: Option<(u64, Job)>,
+    /// The ids of the items that the current run started, for the end screen.
+    run: Vec<u64>,
+    /// Overwrite existing outputs in the current run.
+    force: bool,
+    next_id: u64,
+    /// The options of recent entries, for the files being checked.
+    recent_options: HashMap<PathBuf, (String, bool)>,
+    /// The id of each file being checked, given in the order the user chose them.
+    chosen: HashMap<PathBuf, u64>,
     pub choose: Choose,
-    /// The job that runs or ran last.
-    pub running: Option<Job>,
     pub convert: Convert,
-    /// The result of the last job.
-    pub outcome: Option<Outcome>,
-    /// The number of subtitle lines of the last job, for the Done screen.
-    pub done_lines: usize,
     /// Running model downloads: name → (bytes done, bytes total).
     pub downloads: HashMap<&'static str, (u64, u64)>,
     /// When the silence switch last changed, for its animation.
@@ -183,12 +199,16 @@ impl App {
             settings,
             notice,
             pick: Pick::default(),
-            selection: None,
-            choose: Choose::default(),
+            queue: Vec::new(),
+            current: 0,
             running: None,
+            run: Vec::new(),
+            force: false,
+            next_id: 0,
+            recent_options: HashMap::new(),
+            chosen: HashMap::new(),
+            choose: Choose::default(),
             convert: Convert::for_job(&Job::new(PathBuf::new(), "en"), String::new()),
-            outcome: None,
-            done_lines: 0,
             downloads: HashMap::new(),
             vad_changed: now,
             scale: 1.0,
@@ -222,15 +242,66 @@ impl App {
     /// The window title: the app name, and during a conversion the file and the
     /// progress of the whole job.
     pub fn title(&self) -> String {
-        let video = self.running.as_ref().and_then(|job| job.video.file_name());
+        let video = self.running_job().and_then(|job| job.video.file_name());
         match video {
-            Some(name) if self.is_running() => format!(
-                "VERBACUE — {} — {:.0} %",
-                name.to_string_lossy(),
-                self.convert.overall() * 100.0
-            ),
+            Some(name) if self.is_running() => {
+                let mut title = format!(
+                    "VERBACUE — {} — {:.0} %",
+                    name.to_string_lossy(),
+                    self.convert.overall() * 100.0
+                );
+                let (position, total) = self.run_position();
+                if total > 1 {
+                    title.push_str(&format!(" ({position}/{total})"));
+                }
+                title
+            }
             _ => "VERBACUE".to_string(),
         }
+    }
+
+    /// The video that the Preview screen shows.
+    pub fn selection(&self) -> Option<&Selection> {
+        self.queue.get(self.current).map(|item| &item.selection)
+    }
+
+    fn selection_mut(&mut self) -> Option<&mut Selection> {
+        self.queue
+            .get_mut(self.current)
+            .map(|item| &mut item.selection)
+    }
+
+    /// The job that runs now.
+    pub fn running_job(&self) -> Option<&Job> {
+        self.running.as_ref().map(|(_, job)| job)
+    }
+
+    /// (position of the running video, videos in this run), both from 1.
+    pub fn run_position(&self) -> (usize, usize) {
+        let running = self.running.as_ref().map(|(id, _)| *id);
+        let position = self
+            .run
+            .iter()
+            .position(|id| Some(*id) == running)
+            .map_or(0, |i| i + 1);
+        let waiting = self
+            .queue
+            .iter()
+            .filter(|item| item.status == Status::Waiting && !self.run.contains(&item.id))
+            .count();
+        (position, self.run.len() + waiting)
+    }
+
+    /// The items of the current or last run, with their queue index.
+    pub fn run_items(&self) -> Vec<(usize, &Item)> {
+        self.run
+            .iter()
+            .filter_map(|id| self.index_of(*id).map(|i| (i, &self.queue[i])))
+            .collect()
+    }
+
+    fn index_of(&self, id: u64) -> Option<usize> {
+        self.queue.iter().position(|item| item.id == id)
     }
 
     /// Seconds since the current screen opened, for the animations.
@@ -275,10 +346,16 @@ impl App {
                         ],
                     )
                     .add_filter("All files", &["*"])
-                    .pick_file()
+                    .pick_files()
                     .await
             })
-            .and_then(|file| Task::done(Message::FileChosen(file.path().to_path_buf()))),
+            .and_then(|files| {
+                Task::batch(
+                    files
+                        .into_iter()
+                        .map(|f| Task::done(Message::FileChosen(f.path().to_path_buf()))),
+                )
+            }),
             Message::FileChosen(path) => self.check(path, None),
             Message::Hover(hovering) => {
                 self.pick.hovering = hovering;
@@ -290,77 +367,105 @@ impl App {
             },
             Message::MediaChecked(result) => {
                 self.pick.checking = None;
-                let options = self.pick.recent_options.take();
                 match result {
-                    Ok((video, info)) => {
-                        let (target, burn) =
-                            options.unwrap_or_else(|| (self.settings.target.clone(), true));
-                        self.selection = Some(Selection {
-                            video,
-                            info,
-                            burn,
-                            target,
-                            track: 0,
-                        });
-                        self.pick.error = None;
-                        self.choose = Choose::default();
-                        self.show(Screen::Choose);
-                        return self.load_preview();
-                    }
-                    Err(error) => self.pick.error = Some(error),
+                    Ok((video, info)) => return self.add(video, info),
+                    Err(error) if self.screen == Screen::Pick => self.pick.error = Some(error),
+                    Err(error) => self.notice = Some(error),
                 }
                 Task::none()
             }
-            Message::PreviewLoaded(frames) => {
-                self.choose.frames = frames
+            Message::PreviewLoaded(video, frames) => {
+                let handles: Vec<_> = frames
                     .into_iter()
                     .map(|f| iced::widget::image::Handle::from_rgba(f.width, f.height, f.rgba))
                     .collect();
+                if let Some(item) = self
+                    .queue
+                    .iter_mut()
+                    .find(|item| item.selection.video == video && item.frames.is_empty())
+                {
+                    item.frames = handles;
+                }
+                Task::none()
+            }
+            Message::Select(index) => {
+                if index < self.queue.len() {
+                    self.current = index;
+                    self.choose.confirm_replace = false;
+                    self.show(Screen::Choose);
+                }
+                Task::none()
+            }
+            Message::Remove(index) => {
+                self.remove(index);
+                Task::none()
+            }
+            Message::ApplyToAll => {
+                if let Some(shown) = self.selection().cloned() {
+                    for item in &mut self.queue {
+                        if item.status == Status::Waiting {
+                            item.selection.burn = shown.burn;
+                            item.selection.target.clone_from(&shown.target);
+                            if shown.track < item.selection.info.audio.len() {
+                                item.selection.track = shown.track;
+                            }
+                        }
+                    }
+                }
                 Task::none()
             }
             Message::Mode(mode) => {
-                if let Some(s) = &mut self.selection {
+                if let Some(s) = self.selection_mut() {
                     s.burn = mode == OutputMode::Burn;
                     self.choose.mode_changed = Instant::now();
                 }
                 Task::none()
             }
             Message::Target(code) => {
-                if let Some(s) = &mut self.selection {
+                if let Some(s) = self.selection_mut() {
                     s.target = code;
                 }
                 Task::none()
             }
             Message::Track(index) => {
-                if let Some(s) = &mut self.selection {
+                if let Some(s) = self.selection_mut() {
                     s.track = index;
                 }
                 Task::none()
             }
             Message::PlayVideo => {
-                if let Some(s) = &self.selection {
+                if let Some(s) = self.selection() {
                     crate::system::open(&s.video);
                 }
                 Task::none()
             }
             Message::Start => {
-                let Some(job) = self.job() else {
-                    return Task::none();
-                };
-                if pipeline::final_output(&job).is_some_and(|p| p.exists()) {
+                // "Try again" after a failure also uses Start.
+                for item in &mut self.queue {
+                    if matches!(item.status, Status::Failed(_)) {
+                        item.status = Status::Waiting;
+                    }
+                }
+                let exists = self.queue.iter().enumerate().any(|(i, item)| {
+                    item.status == Status::Waiting
+                        && self
+                            .job_for(i)
+                            .and_then(|job| pipeline::final_output(&job))
+                            .is_some_and(|p| p.exists())
+                });
+                if exists {
                     self.choose.confirm_replace = true;
+                    self.show(Screen::Choose);
                     return Task::none();
                 }
-                self.start(job)
+                self.begin(false)
             }
             Message::ConfirmReplace(replace) => {
                 self.choose.confirm_replace = false;
-                match self.job() {
-                    Some(mut job) if replace => {
-                        job.force = true;
-                        self.start(job)
-                    }
-                    _ => Task::none(),
+                if replace {
+                    self.begin(true)
+                } else {
+                    Task::none()
                 }
             }
             Message::Pipeline(Update::Finished(result)) => self.finished(result),
@@ -389,21 +494,32 @@ impl App {
                 }
                 Task::none()
             }
-            Message::OpenFile => {
-                if let Some(file) = self.outcome.as_ref().and_then(screens::done::main_file) {
+            Message::OpenFile(index) => {
+                if let Some(file) = self
+                    .queue
+                    .get(index)
+                    .and_then(Item::outcome)
+                    .and_then(screens::done::main_file)
+                {
                     crate::system::open(file);
                 }
                 Task::none()
             }
-            Message::ShowInFolder => {
-                if let Some(file) = self.outcome.as_ref().and_then(screens::done::main_file) {
+            Message::ShowInFolder(index) => {
+                if let Some(file) = self
+                    .queue
+                    .get(index)
+                    .and_then(Item::outcome)
+                    .and_then(screens::done::main_file)
+                {
                     crate::system::show_in_folder(file);
                 }
                 Task::none()
             }
             Message::Again => {
-                self.selection = None;
-                self.outcome = None;
+                self.queue.clear();
+                self.current = 0;
+                self.run.clear();
                 self.pick = Pick::default();
                 self.show(Screen::Pick);
                 Task::none()
@@ -486,45 +602,152 @@ impl App {
         self.screen == Screen::Convert && self.convert.error.is_none()
     }
 
-    fn finished(&mut self, result: Result<Outcome, crate::worker::Failure>) -> Task<Message> {
+    fn finished(&mut self, result: Result<Outcome, Failure>) -> Task<Message> {
         if self.convert.close_after {
             return window::latest().and_then(window::close);
         }
+        let Some((id, job)) = self.running.take() else {
+            return Task::none();
+        };
+        let Some(index) = self.index_of(id) else {
+            return self.run_next();
+        };
         match result {
             Ok(outcome) => {
-                if let Some(s) = &self.selection {
-                    self.settings.remember(Recent {
-                        path: s.video.clone(),
-                        target: s.target.clone(),
-                        burn: s.burn,
-                    });
-                    if s.target != KEEP {
-                        self.settings.target = s.target.clone();
-                    }
-                    self.save_settings();
-                }
-                let target = self
-                    .running
-                    .as_ref()
-                    .map(|job| pipeline::output_path(job, &job.target));
-                let subtitles = target.filter(|p| outcome.files.contains(p)).or_else(|| {
-                    outcome
-                        .files
-                        .iter()
-                        .find(|p| p.extension().is_some_and(|e| e == "srt" || e == "vtt"))
-                        .cloned()
+                let s = self.queue[index].selection.clone();
+                self.settings.remember(Recent {
+                    path: s.video.clone(),
+                    target: s.target.clone(),
+                    burn: s.burn,
                 });
-                self.done_lines = subtitles.map_or(0, |p| screens::done::count_cues(&p));
-                self.outcome = Some(outcome);
-                self.show(Screen::Done);
+                if s.target != KEEP {
+                    self.settings.target = s.target.clone();
+                }
+                self.save_settings();
+                let target = pipeline::output_path(&job, &job.target);
+                let subtitles = Some(target)
+                    .filter(|p| outcome.files.contains(p))
+                    .or_else(|| {
+                        outcome
+                            .files
+                            .iter()
+                            .find(|p| p.extension().is_some_and(|e| e == "srt" || e == "vtt"))
+                            .cloned()
+                    });
+                let lines = subtitles.map_or(0, |p| screens::done::count_cues(&p));
+                self.queue[index].status = Status::Done(outcome, lines);
+                self.run_next()
             }
-            Err(failure) if failure.kind == ErrorKind::Cancelled => self.show(Screen::Choose),
+            Err(failure) if failure.kind == ErrorKind::Cancelled => {
+                self.queue[index].status = Status::Waiting;
+                self.current = index;
+                self.run.clear();
+                self.show(Screen::Choose);
+                Task::none()
+            }
             Err(failure) => {
                 tracing::warn!("{}", failure.message);
-                self.convert.error = Some(failure);
+                self.queue[index].status = Status::Failed(failure.clone());
+                // The only video of a run keeps the error card with "Try again".
+                if self.run.len() == 1 && self.next_waiting().is_none() {
+                    self.convert.error = Some(failure);
+                    return Task::none();
+                }
+                self.run_next()
             }
         }
-        Task::none()
+    }
+
+    fn next_waiting(&self) -> Option<usize> {
+        self.queue
+            .iter()
+            .position(|item| item.status == Status::Waiting)
+    }
+
+    /// Starts the queue: every waiting video, one after another.
+    fn begin(&mut self, force: bool) -> Task<Message> {
+        self.force = force;
+        self.run.clear();
+        self.run_next()
+    }
+
+    /// Starts the next waiting video, or shows the Done screen.
+    fn run_next(&mut self) -> Task<Message> {
+        let Some(index) = self.next_waiting() else {
+            self.running = None;
+            self.show(Screen::Done);
+            return Task::none();
+        };
+        let Some(mut job) = self.job_for(index) else {
+            return Task::none();
+        };
+        job.force = self.force;
+        let item = &mut self.queue[index];
+        item.status = Status::Running;
+        self.run.push(item.id);
+        self.running = Some((item.id, job.clone()));
+        self.start(job, index)
+    }
+
+    /// Adds a checked video to the end of the queue.
+    fn add(&mut self, video: PathBuf, info: MediaInfo) -> Task<Message> {
+        let (target, burn) = self
+            .recent_options
+            .remove(&video)
+            .unwrap_or_else(|| (self.settings.target.clone(), true));
+        let id = self.chosen.remove(&video).unwrap_or_else(|| {
+            self.next_id += 1;
+            self.next_id - 1
+        });
+        // Checks can end in any order; the queue keeps the order of choosing.
+        let at = self
+            .queue
+            .iter()
+            .position(|item| item.status == Status::Waiting && item.id > id)
+            .unwrap_or(self.queue.len());
+        if at <= self.current && !self.queue.is_empty() {
+            self.current += 1;
+        }
+        self.queue.insert(
+            at,
+            Item {
+                id,
+                selection: Selection {
+                    video: video.clone(),
+                    info,
+                    burn,
+                    target,
+                    track: 0,
+                },
+                frames: Vec::new(),
+                status: Status::Waiting,
+            },
+        );
+        self.pick.error = None;
+        if matches!(self.screen, Screen::Pick | Screen::Done) {
+            self.current = at;
+            self.choose = Choose::default();
+            self.show(Screen::Choose);
+        }
+        load_preview(video)
+    }
+
+    /// Removes a queue item that does not run.
+    fn remove(&mut self, index: usize) {
+        if self
+            .queue
+            .get(index)
+            .is_none_or(|item| item.status == Status::Running)
+        {
+            return;
+        }
+        self.queue.remove(index);
+        if self.current > index || self.current >= self.queue.len() {
+            self.current = self.current.saturating_sub(1);
+        }
+        if self.queue.is_empty() && self.screen == Screen::Choose {
+            self.show(Screen::Pick);
+        }
     }
 
     /// Writes `gui.toml`; a failure shows as a notice.
@@ -536,9 +759,15 @@ impl App {
         }
     }
 
-    /// The job for the current selection and settings.
+    /// The job for the shown video and the settings.
+    #[cfg(test)]
     pub fn job(&self) -> Option<Job> {
-        let s = self.selection.as_ref()?;
+        self.job_for(self.current)
+    }
+
+    /// The job for a queue item and the settings.
+    pub fn job_for(&self, index: usize) -> Option<Job> {
+        let s = &self.queue.get(index)?.selection;
         let settings = &self.settings;
         let keep = s.target == KEEP;
         let mut job = Job::new(
@@ -565,10 +794,8 @@ impl App {
     }
 
     /// Opens the Converting screen and runs `job` on the pipeline thread.
-    fn start(&mut self, job: Job) -> Task<Message> {
-        self.convert = Convert::for_job(&job, self.summary());
-        self.running = Some(job.clone());
-        self.outcome = None;
+    fn start(&mut self, job: Job, index: usize) -> Task<Message> {
+        self.convert = Convert::for_job(&job, self.summary(index));
         self.show(Screen::Convert);
         let worker = Arc::clone(&self.worker);
         let cancel = Arc::clone(&self.convert.cancel);
@@ -584,8 +811,8 @@ impl App {
     }
 
     /// "movie.mkv · Hungarian · burned in"
-    fn summary(&self) -> String {
-        let Some(s) = &self.selection else {
+    fn summary(&self, index: usize) -> String {
+        let Some(s) = self.queue.get(index).map(|item| &item.selection) else {
             return String::new();
         };
         let name = s
@@ -601,27 +828,16 @@ impl App {
         format!("{name} · {language} · {mode}")
     }
 
-    /// Decodes the preview frames on the blocking thread pool.
-    fn load_preview(&self) -> Task<Message> {
-        let Some(video) = self.selection.as_ref().map(|s| s.video.clone()) else {
-            return Task::none();
-        };
-        Task::future(async move {
-            let frames = tokio::task::spawn_blocking(move || {
-                verbacue::video::preview_frames(&video, 6, 960).unwrap_or_default()
-            })
-            .await
-            .unwrap_or_default();
-            Message::PreviewLoaded(frames)
-        })
-    }
-
     /// Reads the facts of `path` on the blocking thread pool.
     fn check(&mut self, path: PathBuf, options: Option<(String, bool)>) -> Task<Message> {
         self.pick.hovering = false;
         self.pick.error = None;
         self.pick.checking = Some(path.clone());
-        self.pick.recent_options = options;
+        self.chosen.insert(path.clone(), self.next_id);
+        self.next_id += 1;
+        if let Some(options) = options {
+            self.recent_options.insert(path.clone(), options);
+        }
         Task::future(async move {
             let result = tokio::task::spawn_blocking(move || {
                 verbacue::video::media_info(&path)
@@ -728,6 +944,19 @@ pub fn ui_scale(size: iced::Size) -> f32 {
     ((fit * 20.0).round() / 20.0).clamp(1.0, 2.5)
 }
 
+/// Decodes the preview frames of `video` on the blocking thread pool.
+fn load_preview(video: PathBuf) -> Task<Message> {
+    Task::future(async move {
+        let source = video.clone();
+        let frames = tokio::task::spawn_blocking(move || {
+            verbacue::video::preview_frames(&source, 6, 960).unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default();
+        Message::PreviewLoaded(video, frames)
+    })
+}
+
 /// Downloads a known model on the blocking thread pool and reports its progress.
 fn download(name: &'static str) -> Task<Message> {
     let (sender, mut updates) = tokio::sync::mpsc::unbounded_channel();
@@ -804,7 +1033,7 @@ mod tests {
         let _ = a.update(Message::FileChosen(path.clone()));
         let _ = a.update(Message::MediaChecked(Ok((path.clone(), info()))));
         assert_eq!(a.screen, Screen::Choose);
-        let selection = a.selection.as_ref().unwrap();
+        let selection = a.selection().unwrap();
         assert_eq!(selection.video, path);
         assert_eq!(selection.target, "en");
         assert!(a.pick.checking.is_none());
@@ -817,7 +1046,7 @@ mod tests {
         let _ = a.update(Message::MediaChecked(Err("silent.mp4 has no audio".into())));
         assert_eq!(a.screen, Screen::Pick);
         assert_eq!(a.pick.error.as_deref(), Some("silent.mp4 has no audio"));
-        assert!(a.selection.is_none());
+        assert!(a.selection().is_none());
     }
 
     #[test]
@@ -826,7 +1055,7 @@ mod tests {
         let path = PathBuf::from("/v/Szép film.mkv");
         let _ = a.update(Message::FileChosen(path.clone()));
         let _ = a.update(Message::MediaChecked(Ok((path.clone(), info()))));
-        assert_eq!(a.selection.unwrap().video, path);
+        assert_eq!(a.selection().unwrap().video, path);
     }
 
     #[test]
@@ -841,7 +1070,7 @@ mod tests {
         let _ = a.update(Message::OpenRecent(0));
         assert_eq!(a.pick.checking, Some(path.clone()));
         let _ = a.update(Message::MediaChecked(Ok((path, info()))));
-        let selection = a.selection.unwrap();
+        let selection = a.selection().unwrap();
         assert_eq!(selection.target, "hu");
         assert!(selection.burn);
     }
@@ -905,7 +1134,7 @@ mod tests {
         let _ = a.update(Message::Start);
         let _ = a.update(Message::ConfirmReplace(true));
         assert_eq!(a.screen, Screen::Convert);
-        assert!(a.running.as_ref().unwrap().force);
+        assert!(a.running_job().unwrap().force);
     }
 
     fn converting(dir: &str) -> App {
@@ -1013,7 +1242,7 @@ mod tests {
     #[test]
     fn success_opens_the_done_screen_and_remembers_the_file() {
         let mut a = converting("done");
-        let video = a.selection.as_ref().unwrap().video.clone();
+        let video = a.selection().unwrap().video.clone();
         let outcome = Outcome {
             source_language: "tr".into(),
             files: vec![video.with_extension("hu.mp4")],
@@ -1021,14 +1250,14 @@ mod tests {
         };
         update(&mut a, Update::Finished(Ok(outcome.clone())));
         assert_eq!(a.screen, Screen::Done);
-        assert_eq!(a.outcome.as_ref(), Some(&outcome));
+        assert_eq!(a.queue[0].outcome(), Some(&outcome));
         assert_eq!(a.settings.recent[0].path, video);
         assert_eq!(a.settings.target, "hu");
     }
 
     fn done(dir: &str) -> (App, Outcome) {
         let mut a = converting(dir);
-        let video = a.selection.as_ref().unwrap().video.clone();
+        let video = a.selection().unwrap().video.clone();
         let srt = video.with_extension("hu.srt");
         std::fs::write(
             &srt,
@@ -1053,7 +1282,7 @@ mod tests {
         let (mut a, _) = done("again");
         let _ = a.update(Message::Again);
         assert_eq!(a.screen, Screen::Pick);
-        assert!(a.selection.is_none());
+        assert!(a.selection().is_none());
     }
 
     #[test]
@@ -1061,7 +1290,7 @@ mod tests {
         let (a, outcome) = done("files");
         let names = screens::done::file_names(&outcome);
         assert_eq!(names, ["movie.tr.srt", "movie.hu.srt", "movie.hu.mp4"]);
-        assert_eq!(a.done_lines, 2);
+        assert_eq!(a.queue[0].lines(), 2);
     }
 
     #[test]
@@ -1158,5 +1387,143 @@ mod tests {
         // Transcribe is step 2 of 4 and 42 % done: (1 + 0.42) / 4 is about 36 %.
         assert_eq!(a.title(), "VERBACUE — movie.mkv — 36 %");
         assert_eq!(app().title(), "VERBACUE");
+    }
+
+    /// A queue of videos in a fresh folder, on the Choose screen.
+    fn queued(dir: &str, names: &[&str]) -> (App, Vec<PathBuf>) {
+        let mut a = app();
+        let base = std::env::temp_dir().join(format!("verbacue-queue-{dir}"));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let paths: Vec<PathBuf> = names.iter().map(|n| base.join(n)).collect();
+        for path in &paths {
+            let _ = a.update(Message::FileChosen(path.clone()));
+        }
+        for path in &paths {
+            let _ = a.update(Message::MediaChecked(Ok((path.clone(), info()))));
+        }
+        (a, paths)
+    }
+
+    fn statuses(a: &App) -> Vec<&'static str> {
+        a.queue.iter().map(|item| item.status.label()).collect()
+    }
+
+    #[test]
+    fn several_files_join_the_queue() {
+        let (a, paths) = queued("join", &["a.mkv", "b.mkv", "c.mkv"]);
+        assert_eq!(a.screen, Screen::Choose);
+        assert_eq!(a.queue.len(), 3);
+        assert_eq!(a.current, 0);
+        assert_eq!(a.selection().unwrap().video, paths[0]);
+        assert_eq!(statuses(&a), ["waiting", "waiting", "waiting"]);
+    }
+
+    #[test]
+    fn each_video_keeps_its_own_options() {
+        let (mut a, _) = queued("own", &["a.mkv", "b.mkv"]);
+        let _ = a.update(Message::Target("hu".into()));
+        let _ = a.update(Message::Select(1));
+        let _ = a.update(Message::Mode(OutputMode::Srt));
+        let _ = a.update(Message::Target("de".into()));
+        let _ = a.update(Message::Select(0));
+        assert_eq!(a.selection().unwrap().target, "hu");
+        assert!(a.selection().unwrap().burn);
+        assert_eq!(a.queue[1].selection.target, "de");
+        assert!(!a.queue[1].selection.burn);
+    }
+
+    #[test]
+    fn apply_to_all_copies_the_options_to_waiting_videos() {
+        let (mut a, _) = queued("apply", &["a.mkv", "b.mkv", "c.mkv"]);
+        let _ = a.update(Message::Mode(OutputMode::Srt));
+        let _ = a.update(Message::Target("hu".into()));
+        let _ = a.update(Message::ApplyToAll);
+        assert!(
+            a.queue
+                .iter()
+                .all(|i| i.selection.target == "hu" && !i.selection.burn)
+        );
+    }
+
+    #[test]
+    fn the_queue_runs_videos_one_after_another() {
+        let (mut a, paths) = queued("run", &["a.mkv", "b.mkv"]);
+        let _ = a.update(Message::Start);
+        assert_eq!(a.screen, Screen::Convert);
+        assert_eq!(statuses(&a), ["running", "waiting"]);
+        assert_eq!(a.running_job().unwrap().video, paths[0]);
+        update(&mut a, Update::Finished(Ok(Outcome::default())));
+        assert_eq!(statuses(&a), ["done", "running"]);
+        assert_eq!(a.running_job().unwrap().video, paths[1]);
+        assert_eq!(a.screen, Screen::Convert);
+        update(&mut a, Update::Finished(Ok(Outcome::default())));
+        assert_eq!(statuses(&a), ["done", "done"]);
+        assert_eq!(a.screen, Screen::Done);
+    }
+
+    #[test]
+    fn a_failed_video_does_not_stop_the_queue() {
+        let (mut a, _) = queued("fail", &["a.mkv", "b.mkv"]);
+        let _ = a.update(Message::Start);
+        update(
+            &mut a,
+            Update::Finished(Err(Failure::new(ErrorKind::InvalidInput, "bad"))),
+        );
+        assert_eq!(statuses(&a), ["failed", "running"]);
+        update(&mut a, Update::Finished(Ok(Outcome::default())));
+        assert_eq!(a.screen, Screen::Done);
+        assert_eq!(statuses(&a), ["failed", "done"]);
+    }
+
+    #[test]
+    fn videos_added_during_a_run_join_the_end() {
+        let (mut a, _) = queued("add", &["a.mkv"]);
+        let _ = a.update(Message::Start);
+        let late = std::env::temp_dir().join("verbacue-queue-add/late.mkv");
+        let _ = a.update(Message::FileChosen(late.clone()));
+        let _ = a.update(Message::MediaChecked(Ok((late.clone(), info()))));
+        assert_eq!(a.screen, Screen::Convert);
+        assert_eq!(statuses(&a), ["running", "waiting"]);
+        update(&mut a, Update::Finished(Ok(Outcome::default())));
+        assert_eq!(a.running_job().unwrap().video, late);
+    }
+
+    #[test]
+    fn waiting_videos_can_be_removed() {
+        let (mut a, paths) = queued("remove", &["a.mkv", "b.mkv", "c.mkv"]);
+        let _ = a.update(Message::Start);
+        let _ = a.update(Message::Remove(0));
+        assert_eq!(a.queue.len(), 3, "a running video stays");
+        let _ = a.update(Message::Remove(1));
+        assert_eq!(a.queue.len(), 2);
+        assert_eq!(a.queue[1].selection.video, paths[2]);
+    }
+
+    #[test]
+    fn cancel_stops_the_queue_and_keeps_the_waiting_videos() {
+        let (mut a, _) = queued("cancel", &["a.mkv", "b.mkv"]);
+        let _ = a.update(Message::Start);
+        let _ = a.update(Message::Cancel);
+        update(
+            &mut a,
+            Update::Finished(Err(Failure::new(ErrorKind::Cancelled, "cancelled"))),
+        );
+        assert_eq!(a.screen, Screen::Choose);
+        assert_eq!(statuses(&a), ["waiting", "waiting"]);
+        assert!(a.running_job().is_none());
+    }
+
+    #[test]
+    fn the_queue_keeps_the_order_in_which_files_were_chosen() {
+        let mut a = app();
+        let (first, second) = (PathBuf::from("/v/a.mkv"), PathBuf::from("/v/b.mkv"));
+        let _ = a.update(Message::FileChosen(first.clone()));
+        let _ = a.update(Message::FileChosen(second.clone()));
+        // The check of the second file ends first.
+        let _ = a.update(Message::MediaChecked(Ok((second.clone(), info()))));
+        let _ = a.update(Message::MediaChecked(Ok((first.clone(), info()))));
+        let order: Vec<_> = a.queue.iter().map(|i| i.selection.video.clone()).collect();
+        assert_eq!(order, [first, second]);
     }
 }

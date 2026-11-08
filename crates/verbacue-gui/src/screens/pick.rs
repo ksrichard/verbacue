@@ -27,8 +27,6 @@ pub struct Pick {
     pub error: Option<String>,
     /// A file is dragged over the window.
     pub hovering: bool,
-    /// The options of a recent entry, for the file being checked.
-    pub recent_options: Option<(String, bool)>,
 }
 
 pub fn view(app: &App) -> Element<'_, Message> {

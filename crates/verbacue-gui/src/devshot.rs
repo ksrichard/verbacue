@@ -6,7 +6,8 @@
 //! Whisper model. In this mode the app never saves `gui.toml`.
 //!
 //! `VERBACUE_GUI_REC=<folder>` records the whole flow instead: it saves about 10 JPEG
-//! frames per second into the folder, opens `VERBACUE_GUI_SHOT_FILE` after 2.5 s,
+//! frames per second into the folder, opens `VERBACUE_GUI_SHOT_FILE` (a path list)
+//! after 2.5 s,
 //! sets the target language to `VERBACUE_GUI_REC_TARGET` after 5 s, presses Start
 //! after 7 s, and closes 4.5 s after the Done screen opens.
 
@@ -93,12 +94,14 @@ fn rec_start() -> Instant {
 pub fn rec_begin() -> Task<Message> {
     rec_start();
     let mut tasks = vec![rec_take()];
-    if let Some(file) = std::env::var_os("VERBACUE_GUI_SHOT_FILE") {
-        let file = PathBuf::from(file);
-        tasks.push(
-            Task::future(tokio::time::sleep(Duration::from_millis(2500)))
-                .map(move |()| Message::FileChosen(file.clone())),
-        );
+    if let Some(files) = std::env::var_os("VERBACUE_GUI_SHOT_FILE") {
+        // Several files form a queue; they use the path list format of the system.
+        for file in std::env::split_paths(&files) {
+            tasks.push(
+                Task::future(tokio::time::sleep(Duration::from_millis(2500)))
+                    .map(move |()| Message::FileChosen(file.clone())),
+            );
+        }
         if let Ok(target) = std::env::var("VERBACUE_GUI_REC_TARGET") {
             tasks.push(
                 Task::future(tokio::time::sleep(Duration::from_millis(5000)))

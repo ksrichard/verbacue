@@ -8,6 +8,7 @@ mod app;
 #[cfg(debug_assertions)]
 mod devshot;
 mod error;
+mod queue;
 mod screens;
 mod settings;
 mod system;

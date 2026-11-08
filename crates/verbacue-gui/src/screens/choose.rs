@@ -17,6 +17,7 @@ use verbacue::audio::AudioTrack;
 use crate::{
     anim::{cycle, wave},
     app::{App, KEEP, Message},
+    queue::Status,
     theme,
 };
 
@@ -36,8 +37,6 @@ pub enum OutputMode {
 /// The state of this screen.
 #[derive(Debug)]
 pub struct Choose {
-    /// The preview frames, ready to draw.
-    pub frames: Vec<image::Handle>,
     /// The output exists; the dialog asks before it is replaced.
     pub confirm_replace: bool,
     /// When the output mode last changed, for the border fade.
@@ -47,7 +46,6 @@ pub struct Choose {
 impl Default for Choose {
     fn default() -> Self {
         Self {
-            frames: Vec::new(),
             confirm_replace: false,
             mode_changed: Instant::now(),
         }
@@ -157,7 +155,7 @@ fn fade_up(t: f32, delay: f32) -> (f32, f32) {
 }
 
 pub fn view(app: &App) -> Element<'_, Message> {
-    let Some(selection) = &app.selection else {
+    let Some(selection) = app.selection() else {
         return text("").into();
     };
     let t = app.seconds();
@@ -169,7 +167,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .on_press(Message::Show(crate::app::Screen::Pick));
 
     // Preview: the frames cross-fade over 1.2 s, one every 3 s.
-    let frames = &app.choose.frames;
+    let frames = &app.queue[app.current].frames;
     let preview: Element<'_, Message> = if frames.is_empty() {
         container(text("Loading the preview…").color(theme::FAINT))
             .center(Length::Fill)
@@ -366,7 +364,17 @@ pub fn view(app: &App) -> Element<'_, Message> {
     .spacing(14);
 
     let pulse = wave(t, 2.4, 0.0);
-    let start = button(text("Start grilling →").font(theme::BODY_BOLD).size(17))
+    let waiting = app
+        .queue
+        .iter()
+        .filter(|item| item.status == Status::Waiting)
+        .count();
+    let start_label = if waiting > 1 {
+        format!("Start grilling {waiting} videos →")
+    } else {
+        "Start grilling →".to_string()
+    };
+    let start = button(text(start_label).font(theme::BODY_BOLD).size(17))
         .padding([16, 30])
         .style(move |theme, status| {
             let mut style = theme::primary(theme, status);
@@ -400,7 +408,13 @@ pub fn view(app: &App) -> Element<'_, Message> {
     .spacing(28);
     let _ = a0;
 
-    let mut page = column![back, body].spacing(26);
+    let mut page = column![
+        row![back, queue_bar(app)]
+            .spacing(24)
+            .align_y(Alignment::Center),
+        body
+    ]
+    .spacing(26);
     if app.choose.confirm_replace {
         page = page.push(replace_dialog(selection));
     }
@@ -463,6 +477,82 @@ fn card<'a>(
     })
     .on_press(Message::Mode(mode))
     .into()
+}
+
+/// The queue: one chip per video, "Add videos" and "Apply to all".
+fn queue_bar(app: &App) -> Element<'_, Message> {
+    let chips = app
+        .queue
+        .iter()
+        .enumerate()
+        .map(|(i, item)| -> Element<'_, Message> {
+            let shown = i == app.current;
+            let (mark, color) = match item.status {
+                Status::Waiting => ("", theme::TEXT_SOFT),
+                Status::Running => ("● ", theme::ACCENT_TEXT),
+                Status::Done(..) => ("✓ ", theme::SUCCESS_TEXT),
+                Status::Failed(_) => ("! ", theme::ACCENT_TEXT),
+            };
+            let mut name = item.name();
+            if name.chars().count() > 22 {
+                name = format!("{}…", name.chars().take(21).collect::<String>());
+            }
+            let mut chip = row![
+                button(text(format!("{mark}{name}")).size(13).color(color))
+                    .padding([7, 12])
+                    .style(move |_, _| button::Style::default())
+                    .on_press(Message::Select(i))
+            ]
+            .align_y(Alignment::Center);
+            if item.status != Status::Running {
+                chip = chip.push(
+                    button(text("×").size(14).color(theme::MUTED))
+                        .padding([4, 8])
+                        .style(|_, _| button::Style::default())
+                        .on_press(Message::Remove(i)),
+                );
+            }
+            container(chip)
+                .style(move |_| container::Style {
+                    background: Some(
+                        if shown {
+                            theme::CARD_HOVER
+                        } else {
+                            theme::CARD
+                        }
+                        .into(),
+                    ),
+                    border: Border {
+                        color: if shown {
+                            theme::ACCENT
+                        } else {
+                            Color::TRANSPARENT
+                        },
+                        width: 1.0,
+                        radius: 999.0.into(),
+                    },
+                    ..container::Style::default()
+                })
+                .into()
+        });
+    let mut items: Vec<Element<'_, Message>> = chips.collect();
+    items.push(
+        button(text("+ Add videos").size(13))
+            .padding([8, 14])
+            .style(theme::ghost)
+            .on_press(Message::PickFile)
+            .into(),
+    );
+    if app.queue.len() > 1 {
+        items.push(
+            button(text("Apply to all").size(13))
+                .padding([8, 14])
+                .style(theme::ghost)
+                .on_press(Message::ApplyToAll)
+                .into(),
+        );
+    }
+    row(items).spacing(8).wrap().into()
 }
 
 fn replace_dialog(selection: &crate::app::Selection) -> Element<'_, Message> {
