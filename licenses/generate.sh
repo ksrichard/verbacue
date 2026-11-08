@@ -31,6 +31,8 @@ EOF
     section "whisper.cpp (MIT), https://github.com/ggml-org/whisper.cpp" licenses/whisper.cpp-LICENSE.txt
     section "llama.cpp and ggml (MIT), https://github.com/ggml-org/llama.cpp" licenses/llama.cpp-LICENSE.txt
     section "DejaVu Sans Bold font (Bitstream Vera license), https://dejavu-fonts.github.io" crates/verbacue-media/assets/DejaVu-LICENSE.txt
+    section "Space Grotesk font (SIL Open Font License 1.1), https://github.com/floriankarsten/space-grotesk" crates/verbacue-gui/assets/fonts/SpaceGrotesk-OFL.txt
+    section "Inter font (SIL Open Font License 1.1), https://github.com/rsms/inter" crates/verbacue-gui/assets/fonts/Inter-OFL.txt
     printf '\n\nRust crates\n'
     cargo about generate -c licenses/about.toml --workspace --all-features licenses/about.hbs
 } > "$out"
