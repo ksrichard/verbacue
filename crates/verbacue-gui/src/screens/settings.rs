@@ -138,7 +138,7 @@ fn list<'a, T: Clone + PartialEq + 'a>(
     pick_list(choices, selected, move |c: Choice<T>| {
         Message::Setting(on(c.value))
     })
-    .width(240)
+    .width(280)
     .padding([10, 14])
     .style(theme::pick)
     .into()
