@@ -344,6 +344,29 @@ Use a general instruct model on the server. llama-server has a special mode for
 TranslateGemma that translates the whole prompt and ignores the schema, so
 TranslateGemma works only with the local translator.
 
+### Models
+
+verbacue downloads models only from Hugging Face, and only when a model is used for the
+first time. Each download must match the SHA256 that is fixed in
+`crates/verbacue-core/src/models.rs`, so a changed file on the server is rejected. Use
+`verbacue models download <name>` to download a model before you need it.
+
+| Name | Used for | Size | Downloaded from |
+|---|---|---|---|
+| `tiny`, `base`, `small`, `medium` | Speech to text (`--model`) | 78 MB to 1.5 GB | `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-<name>.bin` |
+| `large-v3` (default) | Speech to text (`--model`) | 3.1 GB | https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin |
+| `large-v3-turbo` | Speech to text (`--model`) | 1.6 GB | https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin |
+| `silero-vad` | Skips parts without speech (off with `--no-vad`) | 0.9 MB | https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin |
+| `translategemma-12b` (default) | Translation (`--llm-model`) | 7.3 GB | https://huggingface.co/mradermacher/translategemma-12b-it-GGUF/resolve/main/translategemma-12b-it.Q4_K_M.gguf |
+| `translategemma-27b` | Translation (`--llm-model`) | 14.9 GB | https://huggingface.co/mradermacher/translategemma-27b-it-GGUF/resolve/main/translategemma-27b-it.IQ4_XS.gguf |
+| `gemma-3-12b` | Translation (`--llm-model`) | 7.3 GB | https://huggingface.co/ggml-org/gemma-3-12b-it-GGUF/resolve/main/gemma-3-12b-it-Q4_K_M.gguf |
+| `gemma-4-26b-a4b` | Translation (`--llm-model`) | 13.6 GB | https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-UD-IQ4_XS.gguf |
+
+The models have their own licenses. The Gemma models are under the Gemma Terms of Use.
+To use a model file that you downloaded yourself, give its path to `--model` or
+`--llm-model` instead of a name. A path is used as it is, without a download or a
+checksum check.
+
 ### Memory
 
 Whisper large-v3 needs about 4 GB and TranslateGemma 12B (Q4_K_M) about 8 GB.
