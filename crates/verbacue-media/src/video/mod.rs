@@ -198,6 +198,53 @@ pub(super) fn report(progress: &dyn Progress, ms: i64, total_secs: f64) {
 mod tests {
     use super::*;
 
+    struct Stopped;
+
+    impl Progress for Stopped {
+        fn update(&self, _done: u64, _total: u64) {}
+
+        fn cancelled(&self) -> bool {
+            true
+        }
+    }
+
+    /// Makes a test video with the ffmpeg command, or returns `None` when it is missing.
+    pub(crate) fn test_video(
+        name: &str,
+        seconds: u32,
+        size: &str,
+        audio: bool,
+    ) -> Option<std::path::PathBuf> {
+        let path = std::env::temp_dir().join(name);
+        let mut cmd = std::process::Command::new("ffmpeg");
+        cmd.args(["-y", "-loglevel", "error", "-f", "lavfi", "-i"])
+            .arg(format!("testsrc=size={size}:rate=25:duration={seconds}"));
+        if audio {
+            cmd.args(["-f", "lavfi", "-i"])
+                .arg(format!("sine=frequency=440:duration={seconds}"));
+        }
+        cmd.args(["-pix_fmt", "yuv420p"]).arg(&path);
+        match cmd.status() {
+            Ok(s) if s.success() => Some(path),
+            _ => {
+                eprintln!("skipped: the ffmpeg command is needed to make the test video");
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn burn_removes_the_output_when_cancelled() {
+        let Some(input) = test_video("verbacue-burn-cancel-in.mp4", 2, "320x240", true) else {
+            return;
+        };
+        let output = std::env::temp_dir().join("verbacue-burn-cancel-out.mp4");
+        let cues = [Cue::new(0, 1500, "hello")];
+        let err = burn(&input, &output, &cues, &Stopped).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::Cancelled);
+        assert!(!output.exists());
+    }
+
     #[test]
     fn rescales_timestamps_to_ms() {
         assert_eq!(rescale_ms(90_000, Rational::new(1, 90_000)), 1000);

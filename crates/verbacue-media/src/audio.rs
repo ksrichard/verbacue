@@ -14,7 +14,7 @@ use ffmpeg_next::{
 };
 
 use verbacue_core::{
-    Progress,
+    Progress, check_cancel,
     error::{Context as _, Error, ErrorKind, Result, WithKind as _, bail},
 };
 
@@ -111,6 +111,7 @@ pub fn decode_pcm(path: &Path, track: usize, progress: &dyn Progress) -> Result<
     let mut decoded = frame::Audio::empty();
 
     for (stream, packet) in input.packets() {
+        check_cancel(progress)?;
         if stream.index() != stream_index {
             continue;
         }
@@ -262,5 +263,57 @@ fn input_layout(frame: &frame::Audio) -> ChannelLayout {
 fn append_samples(frame: &frame::Audio, out: &mut Vec<f32>) {
     if frame.samples() > 0 {
         out.extend_from_slice(&frame.plane::<f32>(0)[..frame.samples()]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Stopped;
+
+    impl Progress for Stopped {
+        fn update(&self, _done: u64, _total: u64) {}
+
+        fn cancelled(&self) -> bool {
+            true
+        }
+    }
+
+    /// A 16-bit mono PCM WAV with a 440 Hz tone.
+    fn write_sine_wav(path: &Path, seconds: u32) {
+        let rate = 16_000u32;
+        let samples: Vec<i16> = (0..rate * seconds)
+            .map(|i| {
+                ((i as f32 * 440.0 * std::f32::consts::TAU / rate as f32).sin() * 8000.0) as i16
+            })
+            .collect();
+        let data_len = (samples.len() * 2) as u32;
+        let mut out = Vec::new();
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&(36 + data_len).to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        out.extend_from_slice(&16u32.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&rate.to_le_bytes());
+        out.extend_from_slice(&(rate * 2).to_le_bytes());
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&16u16.to_le_bytes());
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&data_len.to_le_bytes());
+        for s in samples {
+            out.extend_from_slice(&s.to_le_bytes());
+        }
+        std::fs::write(path, out).unwrap();
+    }
+
+    #[test]
+    fn decode_stops_when_cancelled() {
+        let path = std::env::temp_dir().join("verbacue-decode-cancel.wav");
+        write_sine_wav(&path, 3);
+        assert!(decode_pcm(&path, 0, &()).is_ok());
+        let err = decode_pcm(&path, 0, &Stopped).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::Cancelled);
     }
 }

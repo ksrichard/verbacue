@@ -16,7 +16,10 @@ use llama_cpp_2::{
 };
 
 use super::{ChatModel, Prompt};
-use verbacue_core::error::{Context as _, Error, ErrorKind, Result, WithKind as _, bail};
+use verbacue_core::{
+    Progress, check_cancel,
+    error::{Context as _, Error, ErrorKind, Result, WithKind as _, bail},
+};
 
 /// Enough for the system prompt, 30 lines, 5 context lines and the answer.
 const CONTEXT_TOKENS: u32 = 8192;
@@ -59,6 +62,10 @@ impl LocalModel {
 
 impl ChatModel for LocalModel {
     fn complete(&mut self, prompt: &Prompt) -> Result<String> {
+        self.complete_with(prompt, &())
+    }
+
+    fn complete_with(&mut self, prompt: &Prompt, progress: &dyn Progress) -> Result<String> {
         let Prompt {
             system,
             user,
@@ -96,11 +103,12 @@ impl ChatModel for LocalModel {
 
         // A GPU job can fail at random, for example when the system is short of memory.
         // A new context usually works, so one failure does not stop the whole run.
-        let answer = match self.generate(&tokens, grammar) {
+        let answer = match self.generate(&tokens, grammar, progress) {
             Ok(answer) => answer,
+            Err(e) if e.kind() == ErrorKind::Cancelled => return Err(e),
             Err(e) => {
                 tracing::warn!("translation model failed ({e:#}); trying again");
-                self.generate(&tokens, grammar)?
+                self.generate(&tokens, grammar, progress)?
             }
         };
         let answer = String::from_utf8_lossy(&answer).into_owned();
@@ -111,7 +119,12 @@ impl ChatModel for LocalModel {
 
 impl LocalModel {
     /// Runs the prompt in a new context and samples the answer.
-    fn generate(&self, tokens: &[LlamaToken], grammar: &str) -> Result<Vec<u8>> {
+    fn generate(
+        &self,
+        tokens: &[LlamaToken],
+        grammar: &str,
+        progress: &dyn Progress,
+    ) -> Result<Vec<u8>> {
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
         let params = LlamaContextParams::default()
             .with_n_ctx(NonZeroU32::new(CONTEXT_TOKENS))
@@ -149,6 +162,7 @@ impl LocalModel {
         let vocab = self.model.vocab();
         let mut answer = Vec::new();
         for _ in 0..MAX_ANSWER_TOKENS {
+            check_cancel(progress)?;
             let token = sample(&ctx, batch.n_tokens() - 1, &mut grammar);
             if vocab.is_eog(token) {
                 break;

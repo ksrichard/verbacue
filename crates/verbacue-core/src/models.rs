@@ -247,11 +247,12 @@ mod download {
 
     use super::{ModelSpec, human_size};
     use crate::{
-        Progress,
+        Progress, check_cancel,
         error::{Context as _, Result, bail},
     };
 
     pub(super) fn download(spec: &ModelSpec, path: &Path, progress: &dyn Progress) -> Result<()> {
+        check_cancel(progress)?;
         let part = PathBuf::from(format!("{}.part", path.display()));
         let mut have = std::fs::metadata(&part).map_or(0, |m| m.len());
         if have > spec.size {
@@ -289,6 +290,8 @@ mod download {
         if status != StatusCode::RANGE_NOT_SATISFIABLE {
             let mut buf = vec![0u8; 1 << 16];
             loop {
+                // A cancelled download keeps its .part file, so the next run continues it.
+                check_cancel(progress)?;
                 let n = response
                     .read(&mut buf)
                     .context("download interrupted; run again to resume")?;
@@ -375,6 +378,30 @@ pub fn human_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "download")]
+    #[test]
+    fn download_checks_cancel_before_the_request() {
+        struct Stopped;
+        impl Progress for Stopped {
+            fn update(&self, _done: u64, _total: u64) {}
+            fn cancelled(&self) -> bool {
+                true
+            }
+        }
+        // Port 9 (discard) is closed on test machines, so a request fails fast.
+        let spec = ModelSpec {
+            name: "test",
+            kind: Kind::Whisper,
+            file: "test.bin",
+            url: "http://127.0.0.1:9/test.bin",
+            sha256: "",
+            size: 10,
+        };
+        let path = std::env::temp_dir().join("verbacue-cancel-test.bin");
+        let err = download::download(&spec, &path, &Stopped).unwrap_err();
+        assert_eq!(err.kind(), crate::ErrorKind::Cancelled);
+    }
 
     #[test]
     fn model_names_are_unique_and_hashes_look_valid() {

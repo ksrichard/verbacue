@@ -12,7 +12,7 @@ use ffmpeg_next::{
 #[cfg(any(target_os = "macos", windows))]
 use crate::hwdecode;
 use verbacue_core::{
-    Progress,
+    Progress, check_cancel,
     error::{Context as _, ErrorKind, Result, WithKind as _, bail},
     subtitle::Cue,
 };
@@ -118,6 +118,7 @@ pub(super) fn write_burned(
     let total = duration_secs(&ictx);
 
     for (ist, mut packet) in ictx.packets() {
+        check_cancel(progress)?;
         let tb = ist.time_base();
         match routes.get_mut(ist.index()).and_then(Option::as_mut) {
             None => {}

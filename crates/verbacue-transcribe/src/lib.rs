@@ -7,8 +7,8 @@
 use std::{
     path::Path,
     sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -16,8 +16,8 @@ use std::{
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 use verbacue_core::{
-    Progress,
-    error::{Context as _, ErrorKind, Result, WithKind as _},
+    Progress, check_cancel,
+    error::{Context as _, Error, ErrorKind, Result, WithKind as _},
     subtitle::Cue,
 };
 
@@ -42,6 +42,7 @@ pub struct Options<'a> {
 /// # Errors
 /// Returns an error if the model cannot be loaded or inference fails.
 pub fn transcribe(pcm: &[f32], opts: &Options, progress: &dyn Progress) -> Result<Transcript> {
+    check_cancel(progress)?;
     whisper_rs::install_logging_hooks();
     let ctx = WhisperContext::new_with_params(opts.model, WhisperContextParameters::default())
         .with_kind(ErrorKind::Model)
@@ -79,18 +80,50 @@ pub fn transcribe(pcm: &[f32], opts: &Options, progress: &dyn Progress) -> Resul
         reported.store(u64::try_from(p).unwrap_or(0), Ordering::Relaxed);
     });
 
-    // Whisper's progress callback must be 'static, so inference runs on its own thread
-    // and this thread passes the percentage on to `progress`.
-    std::thread::scope(|scope| {
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_flag = Arc::clone(&stop);
+    // whisper-rs 0.16 reads the closure through a pointer of type `F` but stores it as a
+    // `Box<dyn FnMut>`. With `F` already that box type, both sides agree.
+    let abort: Box<dyn FnMut() -> bool> = Box::new(move || stop_flag.load(Ordering::Relaxed));
+    params.set_abort_callback_safe(abort);
+    let new_cues = Arc::new(Mutex::new(Vec::new()));
+    let segments = Arc::clone(&new_cues);
+    params.set_segment_callback_safe_lossy(move |seg: whisper_rs::SegmentCallbackData| {
+        // Whisper timestamps are in centiseconds.
+        let start = u64::try_from(seg.start_timestamp).unwrap_or(0) * 10;
+        let end = u64::try_from(seg.end_timestamp).unwrap_or(0) * 10;
+        if let Ok(mut cues) = segments.lock() {
+            cues.push(Cue::new(start, end, seg.text.trim()));
+        }
+    });
+
+    // Whisper's callbacks must be 'static, so inference runs on its own thread, and this
+    // thread passes progress, new cues and the cancel flag between the two.
+    let pass_on = || {
+        let cues = new_cues.lock().map(|mut c| std::mem::take(&mut *c));
+        for cue in cues.unwrap_or_default() {
+            progress.cue(&cue);
+        }
+    };
+    let result = std::thread::scope(|scope| {
         let job = scope.spawn(|| state.full(params, pcm));
         while !job.is_finished() {
             progress.update(percent.load(Ordering::Relaxed), 100);
+            pass_on();
+            if progress.cancelled() {
+                stop.store(true, Ordering::Relaxed);
+            }
             std::thread::sleep(Duration::from_millis(200));
         }
         job.join().expect("the Whisper thread panicked")
-    })
-    .with_kind(ErrorKind::Model)
-    .context("Whisper inference failed")?;
+    });
+    pass_on();
+    if stop.load(Ordering::Relaxed) {
+        return Err(Error::new(ErrorKind::Cancelled, "cancelled"));
+    }
+    result
+        .with_kind(ErrorKind::Model)
+        .context("Whisper inference failed")?;
     progress.update(100, 100);
 
     let language = whisper_rs::get_lang_str(state.full_lang_id_from_state())
@@ -220,6 +253,29 @@ fn normalize(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Stopped;
+
+    impl Progress for Stopped {
+        fn update(&self, _done: u64, _total: u64) {}
+
+        fn cancelled(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn transcribe_checks_cancel_before_loading_the_model() {
+        let opts = Options {
+            model: Path::new("missing-model.bin"),
+            vad_model: None,
+            language: None,
+        };
+        let Err(err) = transcribe(&[0.0; 16_000], &opts, &Stopped) else {
+            panic!("transcribe did not stop");
+        };
+        assert_eq!(err.kind(), ErrorKind::Cancelled);
+    }
 
     fn cues(texts: &[&str]) -> Vec<Cue> {
         texts

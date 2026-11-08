@@ -9,7 +9,7 @@ use ffmpeg_next::{
 };
 
 use verbacue_core::{
-    Progress,
+    Progress, check_cancel,
     error::{Context as _, ErrorKind, Result, WithKind as _},
 };
 
@@ -63,6 +63,7 @@ pub(super) fn write_embedded(
     let total = duration_secs(&ictx);
 
     for (ist, mut packet) in ictx.packets() {
+        check_cancel(progress)?;
         let Some(oi) = map.output_index(ist.index()) else {
             continue;
         };

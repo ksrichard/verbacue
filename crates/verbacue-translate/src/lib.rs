@@ -22,7 +22,7 @@ use std::{collections::HashMap, fmt::Write as _, path::Path};
 use serde::{Deserialize, Serialize};
 
 use verbacue_core::{
-    Progress,
+    Progress, check_cancel,
     error::{Context as _, Result, bail},
     subtitle::Cue,
 };
@@ -96,6 +96,16 @@ pub trait Translator {
     /// # Errors
     /// Returns an error if the backend fails in a way that a retry cannot fix.
     fn translate(&mut self, batch: &Batch) -> Result<Vec<String>>;
+
+    /// Like [`translate`](Self::translate), but stops early when
+    /// `progress.cancelled()` is true. The default ignores `progress`.
+    ///
+    /// # Errors
+    /// Returns an error if the backend fails, or a cancelled error.
+    fn translate_with(&mut self, batch: &Batch, progress: &dyn Progress) -> Result<Vec<String>> {
+        let _ = progress;
+        self.translate(batch)
+    }
 }
 
 /// One request to a chat model: translate the lines with these ids.
@@ -115,6 +125,16 @@ pub trait ChatModel {
     /// # Errors
     /// Returns an error if inference fails.
     fn complete(&mut self, prompt: &Prompt) -> Result<String>;
+
+    /// Like [`complete`](Self::complete), but stops early when `progress.cancelled()`
+    /// is true. The default ignores `progress`.
+    ///
+    /// # Errors
+    /// Returns an error if inference fails, or a cancelled error.
+    fn complete_with(&mut self, prompt: &Prompt, progress: &dyn Progress) -> Result<String> {
+        let _ = progress;
+        self.complete(prompt)
+    }
 }
 
 /// Reasons why a model answer is not a usable translation of the batch.
@@ -207,6 +227,7 @@ pub fn translate_cues(
         .collect();
     let mut translated: Vec<String> = Vec::with_capacity(lines.len());
     for chunk in lines.chunks(BATCH_SIZE) {
+        check_cancel(progress)?;
         let start = translated.len().saturating_sub(CONTEXT_LINES);
         let context: Vec<ContextLine> = lines[start..translated.len()]
             .iter()
@@ -221,7 +242,7 @@ pub fn translate_cues(
             lines: chunk,
             context: &context,
         };
-        translated.extend(translator.translate(&batch)?);
+        translated.extend(translator.translate_with(&batch, progress)?);
         progress.update(translated.len() as u64, lines.len() as u64);
     }
     Ok(cues
@@ -281,33 +302,47 @@ impl<M: ChatModel> LlmTranslator<M> {
 
     /// Asks the model, checks the answer, and asks once more with a stricter prompt if
     /// the answer is not valid.
-    fn ask(&mut self, batch: &Batch) -> Result<std::result::Result<Vec<String>, Invalid>> {
+    fn ask(
+        &mut self,
+        batch: &Batch,
+        progress: &dyn Progress,
+    ) -> Result<std::result::Result<Vec<String>, Invalid>> {
         let ids: Vec<usize> = batch.lines.iter().map(|l| l.id).collect();
         let grammar = response_grammar(&ids, self.chars.as_deref());
         let user = user_prompt(batch, None);
-        let raw = self.model.complete(&Prompt {
-            system: &self.system,
-            user: &user,
-            grammar: &grammar,
-        })?;
+        let raw = self.model.complete_with(
+            &Prompt {
+                system: &self.system,
+                user: &user,
+                grammar: &grammar,
+            },
+            progress,
+        )?;
         let first = self.check(&raw, batch);
         let Err(invalid) = first else {
             return Ok(first);
         };
         tracing::debug!("invalid answer ({}), retrying: {raw}", invalid.reason);
         let strict = user_prompt(batch, Some(&invalid.reason));
-        let raw = self.model.complete(&Prompt {
-            system: &self.system,
-            user: &strict,
-            grammar: &grammar,
-        })?;
+        let raw = self.model.complete_with(
+            &Prompt {
+                system: &self.system,
+                user: &strict,
+                grammar: &grammar,
+            },
+            progress,
+        )?;
         Ok(self.check(&raw, batch))
     }
 }
 
 impl<M: ChatModel> Translator for LlmTranslator<M> {
     fn translate(&mut self, batch: &Batch) -> Result<Vec<String>> {
-        let answer = self.ask(batch)?;
+        self.translate_with(batch, &())
+    }
+
+    fn translate_with(&mut self, batch: &Batch, progress: &dyn Progress) -> Result<Vec<String>> {
+        let answer = self.ask(batch, progress)?;
         if let [line] = batch.lines {
             return Ok(vec![line_or_fallback(answer, line)]);
         }
@@ -321,11 +356,12 @@ impl<M: ChatModel> Translator for LlmTranslator<M> {
         }
         let mut out = Vec::with_capacity(batch.lines.len());
         for line in batch.lines {
+            check_cancel(progress)?;
             let single = Batch {
                 lines: std::slice::from_ref(line),
                 ..*batch
             };
-            let answer = self.ask(&single)?;
+            let answer = self.ask(&single, progress)?;
             out.push(line_or_fallback(answer, line));
         }
         Ok(out)
@@ -681,6 +717,34 @@ mod tests {
         // Line 8 failed twice on its own too, so it keeps the source text.
         assert_eq!(out, ["Szia", "Hey"]);
         assert_eq!(t.model.prompts.len(), 5);
+    }
+
+    #[test]
+    fn translate_cues_stops_between_batches() {
+        struct Count(usize);
+        impl Translator for Count {
+            fn translate(&mut self, batch: &Batch) -> Result<Vec<String>> {
+                self.0 += 1;
+                Ok(batch.lines.iter().map(|l| l.text.clone()).collect())
+            }
+        }
+        struct StopAfterFirst(std::sync::atomic::AtomicBool);
+        impl Progress for StopAfterFirst {
+            fn update(&self, _done: u64, _total: u64) {
+                self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            fn cancelled(&self) -> bool {
+                self.0.load(std::sync::atomic::Ordering::Relaxed)
+            }
+        }
+        let cues: Vec<Cue> = (0..61)
+            .map(|i| Cue::new(i * 1000, i * 1000 + 900, "x"))
+            .collect();
+        let mut count = Count(0);
+        let progress = StopAfterFirst(std::sync::atomic::AtomicBool::new(false));
+        let err = translate_cues(&mut count, &cues, "en", &progress).unwrap_err();
+        assert_eq!(err.kind(), verbacue_core::ErrorKind::Cancelled);
+        assert_eq!(count.0, 1);
     }
 
     #[test]
