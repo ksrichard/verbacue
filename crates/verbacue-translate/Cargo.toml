@@ -22,7 +22,6 @@ clap = ["dep:clap", "verbacue-core/clap"]
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"], optional = true }
-dirs = { version = "7.0.0" }
 # Without OpenMP, so the Linux binary does not need libgomp at run time. ggml then
 # uses its own thread pool.
 llama-cpp-2 = { version = "0.1.161", default-features = false, features = ["common"], optional = true }

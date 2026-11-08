@@ -53,4 +53,6 @@ pub use verbacue_media::video;
 pub use verbacue_transcribe as transcribe;
 pub use verbacue_translate as translate;
 
-pub use verbacue_core::{Error, ErrorKind, Progress, Result, models, subtitle};
+pub use verbacue_core::{
+    Error, ErrorKind, Progress, Result, check_cancel, config_dir, models, subtitle,
+};

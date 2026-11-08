@@ -11,6 +11,7 @@
 //!
 //! [`Progress`] receives progress reports from all long tasks.
 
+pub mod config;
 pub mod error;
 #[cfg(feature = "http")]
 pub mod http;
@@ -19,5 +20,6 @@ pub mod models;
 mod progress;
 pub mod subtitle;
 
+pub use config::config_dir;
 pub use error::{Context, Error, ErrorKind, Result, WithKind};
-pub use progress::Progress;
+pub use progress::{Progress, check_cancel};

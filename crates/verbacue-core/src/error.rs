@@ -25,6 +25,8 @@ pub enum ErrorKind {
     Network,
     /// Whisper or the translation model failed.
     Model,
+    /// The caller stopped the task.
+    Cancelled,
     /// Any other problem, for example a file that cannot be written.
     Other,
 }

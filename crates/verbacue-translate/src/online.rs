@@ -241,11 +241,7 @@ pub(super) fn setting(var: &str, file: &str) -> Result<Option<String>> {
 }
 
 fn config_file(file: &str) -> Option<PathBuf> {
-    #[cfg(windows)]
-    let dir = dirs::config_dir().map(|d| d.join("verbacue"));
-    #[cfg(not(windows))]
-    let dir = dirs::home_dir().map(|home| home.join(".config/verbacue"));
-    dir.map(|d| d.join(file))
+    verbacue_core::config_dir().map(|d| d.join(file))
 }
 
 /// The path of a config file, for error messages.
