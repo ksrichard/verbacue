@@ -140,6 +140,40 @@ pub fn recent_card(_: &iced::Theme, status: button::Status) -> button::Style {
     }
 }
 
+/// A drop-down list on the dark background.
+pub fn pick(
+    _: &iced::Theme,
+    status: iced::widget::pick_list::Status,
+) -> iced::widget::pick_list::Style {
+    let open = !matches!(status, iced::widget::pick_list::Status::Active);
+    iced::widget::pick_list::Style {
+        text_color: TEXT,
+        placeholder_color: MUTED,
+        handle_color: if open { ACCENT_TEXT } else { MUTED },
+        background: rgb(0x1f1714).into(),
+        border: Border {
+            color: rgba(0xf3e9dc, if open { 0.3 } else { 0.14 }),
+            width: 1.0,
+            radius: 12.0.into(),
+        },
+    }
+}
+
+/// The app theme: the mockup colors, so menus and lists match.
+pub fn app_theme() -> iced::Theme {
+    iced::Theme::custom(
+        "verbacue",
+        iced::theme::Palette {
+            background: rgb(0x1f1714),
+            text: TEXT,
+            primary: ACCENT,
+            success: SUCCESS,
+            warning: ONION,
+            danger: RED_PEPPER,
+        },
+    )
+}
+
 /// A rounded card on the dark background.
 pub fn card(radius_px: f32) -> impl Fn(&iced::Theme) -> container::Style {
     move |_| container::Style {

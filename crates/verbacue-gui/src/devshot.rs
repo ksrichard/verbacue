@@ -1,6 +1,7 @@
 //! Debug builds only: `VERBACUE_GUI_SHOT=<file.png>` saves a screenshot of the window
 //! a few seconds after start, then closes the app. It lets developers compare the
-//! screens with the mockups without screen-capture rights.
+//! screens with the mockups without screen-capture rights. `VERBACUE_GUI_SHOT_FILE`
+//! opens a video first, and `VERBACUE_GUI_SHOT_SCREEN=settings` opens Settings.
 
 use std::{path::PathBuf, time::Duration};
 
@@ -23,6 +24,18 @@ pub fn take() -> Task<Message> {
         .then(|()| window::latest())
         .and_then(window::screenshot)
         .map(Message::Screenshot)
+}
+
+/// The messages that bring the app to the screen to capture.
+pub fn setup() -> Vec<Message> {
+    let mut messages = Vec::new();
+    if let Some(file) = std::env::var_os("VERBACUE_GUI_SHOT_FILE") {
+        messages.push(Message::FileChosen(PathBuf::from(file)));
+    }
+    if std::env::var("VERBACUE_GUI_SHOT_SCREEN").is_ok_and(|s| s == "settings") {
+        messages.push(Message::Show(crate::app::Screen::Settings));
+    }
+    messages
 }
 
 /// Saves the screenshot and closes the window.

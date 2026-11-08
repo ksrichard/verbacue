@@ -10,6 +10,7 @@ mod devshot;
 mod error;
 mod screens;
 mod settings;
+mod system;
 mod theme;
 mod widgets;
 
@@ -26,6 +27,7 @@ pub fn run() -> Result<(), Error> {
     let mut app = iced::application(app::App::new, app::App::update, app::App::view)
         .title("verbacue")
         .subscription(app::App::subscription)
+        .theme(|_: &app::App| theme::app_theme())
         .default_font(theme::BODY);
     for font in theme::FONTS {
         app = app.font(font);
