@@ -1,0 +1,40 @@
+[package]
+name = "verbacue"
+description = "Transcribe, translate and lay out subtitles for any video, on your own computer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+# This crate re-exports the verbacue-* crates as modules. Each feature turns on one
+# crate, so a program builds only the C libraries it uses.
+[features]
+default = ["transcribe", "video", "local", "online", "download"]
+# Reads the audio of any file that FFmpeg can open (verbacue-media).
+audio = ["dep:verbacue-media"]
+# Speech to text with Whisper (verbacue-transcribe). Also reads the audio of any video.
+transcribe = ["audio", "dep:verbacue-transcribe"]
+# Writes videos with soft (MKV) or burned-in (MP4) subtitles (verbacue-media).
+video = ["audio", "verbacue-media/video"]
+# Translation with a local GGUF model (llama.cpp).
+local = ["verbacue-translate/local"]
+# Translation with DeepL, Google, Azure or an OpenAI-compatible server.
+online = ["verbacue-translate/online"]
+# Downloads the known models into the cache and checks their SHA256.
+download = ["verbacue-core/download"]
+# GPU support on Linux and Windows. NVIDIA only; needs the CUDA toolkit.
+cuda = ["verbacue-transcribe?/cuda", "verbacue-translate/cuda"]
+# GPU support on Linux and Windows for any GPU with a Vulkan driver.
+vulkan = ["verbacue-transcribe?/vulkan", "verbacue-translate/vulkan"]
+# Derives clap::ValueEnum for the option enums, for command-line tools.
+clap = ["verbacue-core/clap", "verbacue-translate/clap"]
+
+[dependencies]
+verbacue-core = { path = "../verbacue-core", version = "0.1.0" }
+verbacue-media = { path = "../verbacue-media", version = "0.1.0", default-features = false, optional = true }
+verbacue-transcribe = { path = "../verbacue-transcribe", version = "0.1.0", optional = true }
+verbacue-translate = { path = "../verbacue-translate", version = "0.1.0", default-features = false }
+
+[lints]
+workspace = true

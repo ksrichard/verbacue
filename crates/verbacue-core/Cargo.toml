@@ -1,0 +1,30 @@
+[package]
+name = "verbacue-core"
+description = "Shared parts of verbacue: errors, progress, SRT/WebVTT subtitles, languages and the model cache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+# Derives clap::ValueEnum for the option enums, for command-line tools.
+clap = ["dep:clap"]
+# Downloads the known models into the cache and checks their SHA256.
+download = ["http", "dep:sha2"]
+# A blocking HTTP client that also trusts the Mozilla root certificates.
+http = ["dep:reqwest", "dep:webpki-root-certs"]
+
+[dependencies]
+anyhow = { version = "1.0.104" }
+clap = { version = "4.6.7", features = ["derive"], optional = true }
+dirs = { version = "7.0.0" }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "http2", "json", "rustls"], optional = true }
+serde_json = { version = "1.0.154" }
+sha2 = { version = "0.11.1", optional = true }
+tracing = { version = "0.1.44" }
+# Root certificates inside the binary, for systems without a certificate store.
+webpki-root-certs = { version = "1.0.11", optional = true }
+
+[lints]
+workspace = true

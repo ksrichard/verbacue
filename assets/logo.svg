@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="verbacue logo: a kebab of verbs on a grill">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b2220"/>
+      <stop offset="1" stop-color="#171211"/>
+    </linearGradient>
+    <linearGradient id="bowl" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#d8432e"/>
+      <stop offset="1" stop-color="#8e2417"/>
+    </linearGradient>
+    <linearGradient id="flame" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#ff7a1a"/>
+      <stop offset="0.6" stop-color="#ffb627"/>
+      <stop offset="1" stop-color="#ffe680"/>
+    </linearGradient>
+    <clipPath id="badge"><rect width="512" height="512" rx="96"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#badge)">
+    <rect width="512" height="512" fill="url(#bg)"/>
+
+    <!-- Smoke drawn as three subtitle lines -->
+    <g fill="#f3e9dc" opacity="0.85">
+      <rect x="156" y="62" width="200" height="16" rx="8"/>
+      <rect x="186" y="90" width="140" height="16" rx="8" opacity="0.7"/>
+      <rect x="216" y="118" width="80" height="16" rx="8" opacity="0.45"/>
+    </g>
+
+    <!-- Flames behind the skewer -->
+    <g fill="url(#flame)">
+      <path d="M150 300 C130 262 160 240 152 206 C182 230 186 262 176 300 Z"/>
+      <path d="M218 300 C196 250 236 226 226 176 C266 214 268 262 252 300 Z"/>
+      <path d="M290 300 C274 256 304 236 300 190 C336 226 334 266 320 300 Z"/>
+      <path d="M352 300 C340 270 362 250 360 222 C384 246 384 276 376 300 Z"/>
+    </g>
+
+    <!-- Skewer -->
+    <rect x="70" y="219" width="372" height="8" rx="4" fill="#c9c2b8"/>
+    <path d="M442 215 L470 223 L442 231 Z" fill="#c9c2b8"/>
+    <circle cx="62" cy="223" r="16" fill="none" stroke="#c9c2b8" stroke-width="8"/>
+
+    <!-- Verb chunks: meat, pepper, onion, meat -->
+    <g font-family="'Arial Rounded MT Bold','Helvetica Neue',Arial,sans-serif" font-weight="800" text-anchor="middle">
+      <rect x="92" y="186" width="80" height="74" rx="14" fill="#7a3b26"/>
+      <path d="M104 196 l22 54 M124 196 l22 54 M144 196 l22 54" stroke="#4a2215" stroke-width="4" opacity="0.35"/>
+      <text x="132" y="232" font-size="24" fill="#fff4e0">say</text>
+
+      <rect x="180" y="182" width="76" height="82" rx="14" fill="#3f8f3a"/>
+      <text x="218" y="232" font-size="22" fill="#f2ffe8">tell</text>
+
+      <rect x="264" y="186" width="80" height="74" rx="14" fill="#f2c14e"/>
+      <text x="304" y="232" font-size="22" fill="#5a3200">talk</text>
+
+      <rect x="352" y="182" width="80" height="82" rx="14" fill="#c8402f"/>
+      <path d="M362 192 l22 62 M382 192 l22 62 M402 192 l22 62" stroke="#7d1f13" stroke-width="4" opacity="0.35"/>
+      <text x="392" y="232" font-size="22" fill="#fff0ea">sing</text>
+    </g>
+
+    <!-- Grate -->
+    <rect x="96" y="294" width="320" height="10" rx="5" fill="#5b524d"/>
+    <g stroke="#5b524d" stroke-width="5">
+      <line x1="136" y1="294" x2="136" y2="304"/>
+      <line x1="196" y1="294" x2="196" y2="304"/>
+      <line x1="256" y1="294" x2="256" y2="304"/>
+      <line x1="316" y1="294" x2="316" y2="304"/>
+      <line x1="376" y1="294" x2="376" y2="304"/>
+    </g>
+
+    <!-- Kettle bowl -->
+    <path d="M104 308 H408 C408 380 340 418 256 418 C172 418 104 380 104 308 Z" fill="url(#bowl)"/>
+    <path d="M140 330 C150 372 196 396 256 398" stroke="#ff8a6e" stroke-width="8" fill="none" stroke-linecap="round" opacity="0.5"/>
+
+    <!-- Legs -->
+    <g stroke="#8a807a" stroke-width="10" stroke-linecap="round">
+      <line x1="186" y1="408" x2="150" y2="470"/>
+      <line x1="326" y1="408" x2="362" y2="470"/>
+      <line x1="256" y1="418" x2="256" y2="474"/>
+    </g>
+  </g>
+</svg>

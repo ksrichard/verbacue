@@ -1,0 +1,25 @@
+[workspace]
+members = ["crates/*"]
+# `cargo build` and `cargo run` act on the CLI. Use --workspace to test everything.
+default-members = ["crates/verbacue-cli"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/ksrichard/verbacue"
+homepage = "https://github.com/ksrichard/verbacue"
+
+[workspace.lints.rust]
+# Only crates/verbacue-media/src/hwdecode.rs (hardware decoding on macOS and Windows) allows
+# unsafe code.
+unsafe_code = "deny"
+# ffmpeg-sys-next always asks to link QTKit on macOS. The linker skips it because QTKit
+# has no arm64 version, and prints a warning that we cannot fix from here.
+linker_messages = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

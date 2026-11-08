@@ -1,0 +1,7 @@
+target
+dist
+.git
+*.mp4
+*.mkv
+*.srt
+*.vtt

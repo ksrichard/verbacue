@@ -1,0 +1,7 @@
+/target
+*.srt
+*.vtt
+# Videos and verbacue outputs
+*.mp4
+*.mkv
+/dist

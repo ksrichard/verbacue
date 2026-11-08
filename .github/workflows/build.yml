@@ -1,0 +1,191 @@
+# Builds self-contained verbacue binaries for macOS, Linux and Windows, with and without
+# CUDA. Each job checks that the binary links only system libraries. A tag that starts
+# with "v" also attaches the binaries to a GitHub release.
+name: build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  RUST_VERSION: "1.94.0"
+  CUDA_VERSION: "12.9.1"
+
+jobs:
+  linux:
+    name: linux-${{ matrix.arch }}-${{ matrix.gpu }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+        gpu: [cpu, cuda]
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The CUDA image and the build need more disk space than a runner has free.
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - name: Build in Docker
+        run: |
+          args=""
+          if [ "${{ matrix.gpu }}" = cuda ]; then
+            args="--build-arg BASE=nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 --build-arg FEATURES=cuda"
+          fi
+          docker buildx build $args --build-arg RUST_VERSION="$RUST_VERSION" \
+            -f docker/linux.Dockerfile --output type=local,dest=dist .
+      - name: Package
+        run: |
+          cp LICENSE THIRD-PARTY-LICENSES.txt dist/
+          tar -czf verbacue-linux-${{ matrix.arch }}-${{ matrix.gpu }}.tar.gz -C dist verbacue LICENSE THIRD-PARTY-LICENSES.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verbacue-linux-${{ matrix.arch }}-${{ matrix.gpu }}
+          path: verbacue-linux-${{ matrix.arch }}-${{ matrix.gpu }}.tar.gz
+
+  # The CPU build is cross-compiled with MinGW-w64 in Docker, the same as
+  # docker/build.sh windows-x64.
+  windows-cpu:
+    name: windows-x64-cpu
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build in Docker
+        run: |
+          docker buildx build -f docker/windows.Dockerfile \
+            --output type=local,dest=dist .
+      - name: Package
+        run: |
+          cp LICENSE THIRD-PARTY-LICENSES.txt dist/
+          cd dist && zip ../verbacue-windows-x64-cpu.zip verbacue.exe LICENSE THIRD-PARTY-LICENSES.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verbacue-windows-x64-cpu
+          path: verbacue-windows-x64-cpu.zip
+
+  # CUDA does not work with MinGW, so the CUDA build uses MSVC on Windows.
+  windows-cuda:
+    name: windows-x64-cuda
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Link the C runtime statically, so no Visual C++ redistributable is needed.
+      RUSTFLAGS: -C target-feature=+crt-static -C target-cpu=x86-64-v3
+      LLAMA_STATIC_CRT: "1"
+      VCPKGRS_TRIPLET: x64-windows-static
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-cache
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+      # Do not tune the code for the CPU of the runner; x86-64-v3 needs AVX2.
+      GGML_NATIVE: "OFF"
+      GGML_AVX: "ON"
+      GGML_AVX2: "ON"
+      GGML_FMA: "ON"
+      GGML_F16C: "ON"
+      GGML_BMI2: "ON"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust
+        run: rustup toolchain install "$RUST_VERSION" --profile minimal && rustup default "$RUST_VERSION"
+      - uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d # v0.2.36
+        with:
+          cuda: ${{ env.CUDA_VERSION }}
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
+      # FFmpeg from vcpkg, because the FFmpeg source build of ffmpeg-sys-next does not
+      # support Windows targets. The static triplet also uses the static C runtime.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: vcpkg-cache
+          key: vcpkg-ffmpeg-x64-windows-static-${{ hashFiles('.github/workflows/build.yml') }}
+      - name: Install FFmpeg
+        run: |
+          mkdir -p vcpkg-cache
+          "$VCPKG_INSTALLATION_ROOT/vcpkg" install \
+            "ffmpeg[core,avcodec,avdevice,avfilter,avformat,swresample,swscale]:x64-windows-static"
+          echo "VCPKG_ROOT=$VCPKG_INSTALLATION_ROOT" >> "$GITHUB_ENV"
+      - name: Build
+        run: |
+          cargo build --release --locked --features cuda
+          mkdir dist && cp target/release/verbacue.exe dist/
+      # cuBLAS has no static library on Windows, so the CUDA build ships its DLLs.
+      - name: Add the CUDA DLLs
+        run: |
+          for dll in cudart64_12 cublas64_12 cublasLt64_12; do
+            cp "$CUDA_PATH/bin/$dll.dll" dist/
+          done
+      - name: Check the linked DLLs
+        run: docker/check-dlls.sh dist/verbacue.exe "/c/Program Files/LLVM/bin/llvm-objdump"
+      - name: Package
+        run: |
+          cp LICENSE THIRD-PARTY-LICENSES.txt dist/
+          cd dist && 7z a ../verbacue-windows-x64-cuda.zip .
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verbacue-windows-x64-cuda
+          path: verbacue-windows-x64-cuda.zip
+
+  # Apple Silicon only. The GPU (Metal) is always on; there is no CUDA on macOS.
+  macos:
+    name: macos-arm64-metal
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install tools
+        run: |
+          brew install nasm
+          rustup toolchain install "$RUST_VERSION" --profile minimal && rustup default "$RUST_VERSION"
+      - name: Test
+        run: cargo test --workspace --release --locked
+      - name: Build
+        run: cargo build --release --locked
+      - name: Check the linked libraries
+        run: |
+          otool -L target/release/verbacue
+          if otool -L target/release/verbacue | tail -n +2 | grep -Ev '^\s+(/usr/lib/|/System/Library/)'; then
+            echo "error: verbacue links a library that is not part of macOS" >&2
+            exit 1
+          fi
+      - name: Package
+        run: |
+          mkdir dist && cp target/release/verbacue LICENSE THIRD-PARTY-LICENSES.txt dist/
+          tar -czf verbacue-macos-arm64-metal.tar.gz -C dist .
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verbacue-macos-arm64-metal
+          path: verbacue-macos-arm64-metal.tar.gz
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows-cpu, windows-cuda, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # A tag such as v0.2.0 must match the version in Cargo.toml, which the binaries print.
+      - name: Check the version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "${GITHUB_REF_NAME}" != "v$version" ]; then
+            echo "error: tag ${GITHUB_REF_NAME} does not match version $version in Cargo.toml" >&2
+            exit 1
+          fi
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Write the checksums
+        run: cd artifacts && sha256sum * > SHA256SUMS
+      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
+        with:
+          files: artifacts/*

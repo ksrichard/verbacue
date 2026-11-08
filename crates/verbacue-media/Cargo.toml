@@ -1,0 +1,36 @@
+[package]
+name = "verbacue-media"
+description = "Reads the audio of any video and writes videos with soft or burned-in subtitles, with a static FFmpeg"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+default = ["video"]
+# Writes videos with soft (MKV) or burned-in (MP4) subtitles. Without it, the crate
+# only reads audio.
+video = ["dep:ab_glyph", "dep:rustybuzz", "dep:unicode-bidi"]
+
+[dependencies]
+ab_glyph = { version = "0.2.32", optional = true }
+ffmpeg-next = { version = "9", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
+ffmpeg-sys-next = { version = "9", features = ["static"] }
+rustybuzz = { version = "0.20.1", optional = true }
+tracing = { version = "0.1.44" }
+unicode-bidi = { version = "0.3.18", optional = true }
+verbacue-core = { path = "../verbacue-core", version = "0.1.0" }
+
+# On macOS: the VideoToolbox H.264 encoder for burned-in subtitles.
+[target.'cfg(target_os = "macos")'.dependencies]
+ffmpeg-sys-next = { version = "9", features = ["build", "build-videotoolbox", "static"] }
+
+# On macOS and Linux the build compiles FFmpeg from source. On Windows it links a
+# static FFmpeg from FFMPEG_DIR or vcpkg, because the FFmpeg source build does not
+# support Windows targets (see README).
+[target.'cfg(not(windows))'.dependencies]
+ffmpeg-sys-next = { version = "9", features = ["build", "static"] }
+
+[lints]
+workspace = true

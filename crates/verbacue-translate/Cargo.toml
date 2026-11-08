@@ -1,0 +1,42 @@
+[package]
+name = "verbacue-translate"
+description = "Translates subtitle cues with a local GGUF model, DeepL, Google, Azure or an OpenAI-compatible server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+default = ["local", "online"]
+# Translation with a local GGUF model (llama.cpp).
+local = ["dep:llama-cpp-2"]
+# Translation with DeepL, Google, Azure or an OpenAI-compatible server.
+online = ["dep:reqwest", "verbacue-core/http"]
+# GPU support on Linux and Windows. NVIDIA only; needs the CUDA toolkit.
+cuda = ["llama-cpp-2?/cuda"]
+# GPU support on Linux and Windows for any GPU with a Vulkan driver.
+vulkan = ["llama-cpp-2?/vulkan"]
+# Derives clap::ValueEnum for the option enums, for command-line tools.
+clap = ["dep:clap", "verbacue-core/clap"]
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"], optional = true }
+dirs = { version = "7.0.0" }
+# Without OpenMP, so the Linux binary does not need libgomp at run time. ggml then
+# uses its own thread pool.
+llama-cpp-2 = { version = "0.1.161", default-features = false, features = ["common"], optional = true }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "http2", "json", "rustls"], optional = true }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154" }
+thiserror = { version = "2.0.21" }
+tracing = { version = "0.1.44" }
+unicode-script = { version = "0.5.9" }
+verbacue-core = { path = "../verbacue-core", version = "0.1.0" }
+
+# On macOS: Metal, which uses only system frameworks.
+[target.'cfg(target_os = "macos")'.dependencies]
+llama-cpp-2 = { version = "0.1.161", default-features = false, features = ["common", "metal"], optional = true }
+
+[lints]
+workspace = true

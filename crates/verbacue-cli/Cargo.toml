@@ -1,0 +1,29 @@
+[package]
+name = "verbacue-cli"
+description = "Generate translated subtitles for any video, on your own computer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[[bin]]
+name = "verbacue"
+path = "src/main.rs"
+
+[features]
+# GPU support on Linux and Windows. NVIDIA only; needs the CUDA toolkit.
+cuda = ["verbacue/cuda"]
+# GPU support on Linux and Windows for any GPU with a Vulkan driver.
+vulkan = ["verbacue/vulkan"]
+
+[dependencies]
+anyhow = { version = "1.0.104" }
+clap = { version = "4.6.7", features = ["derive", "env"] }
+indicatif = { version = "0.18.6" }
+verbacue = { path = "../verbacue", version = "0.1.0", features = ["clap"] }
+tracing = { version = "0.1.44" }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[lints]
+workspace = true

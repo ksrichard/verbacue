@@ -1,0 +1,26 @@
+[package]
+name = "verbacue-transcribe"
+description = "Speech to text subtitles with Whisper (whisper.cpp), from 16 kHz mono PCM"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+# GPU support on Linux and Windows. NVIDIA only; needs the CUDA toolkit.
+cuda = ["whisper-rs/cuda"]
+# GPU support on Linux and Windows for any GPU with a Vulkan driver.
+vulkan = ["whisper-rs/vulkan"]
+
+[dependencies]
+tracing = { version = "0.1.44" }
+verbacue-core = { path = "../verbacue-core", version = "0.1.0" }
+whisper-rs = { version = "0.16", features = ["tracing_backend"] }
+
+# On macOS: Metal, which uses only system frameworks.
+[target.'cfg(target_os = "macos")'.dependencies]
+whisper-rs = { version = "0.16", features = ["metal", "tracing_backend"] }
+
+[lints]
+workspace = true
