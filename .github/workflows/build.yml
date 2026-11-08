@@ -71,8 +71,12 @@ jobs:
         shell: bash
     env:
       # Link the C runtime statically, so no Visual C++ redistributable is needed.
-      RUSTFLAGS: -C target-feature=+crt-static -C target-cpu=x86-64-v3
+      # FFmpeg's Media Foundation code needs the GUIDs in mfuuid.lib and strmiids.lib.
+      RUSTFLAGS: >-
+        -C target-feature=+crt-static -C target-cpu=x86-64-v3
+        -C link-arg=mfuuid.lib -C link-arg=strmiids.lib
       LLAMA_STATIC_CRT: "1"
+      CMAKE_TOOLCHAIN_FILE: ${{ github.workspace }}\.github\msvc-static-crt.cmake
       VCPKGRS_TRIPLET: x64-windows-static
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-cache
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
