@@ -110,6 +110,10 @@ jobs:
           echo "VULKAN_SDK=C:\VulkanSDK" >> "$GITHUB_ENV"
           echo "CMAKE_PREFIX_PATH=C:\VulkanSDK" >> "$GITHUB_ENV"
           echo "C:\VulkanSDK\Bin" >> "$GITHUB_PATH"
+          # ggml builds its shader generator as a CMake sub-build. With the Visual
+          # Studio generator, MSBuild runs the install step of that sub-build before
+          # its configure step is done. Ninja runs the steps in order.
+          echo "CMAKE_GENERATOR=Ninja" >> "$GITHUB_ENV"
       # FFmpeg from vcpkg, because the FFmpeg source build of ffmpeg-sys-next does not
       # support Windows targets. The static triplet also uses the static C runtime.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
