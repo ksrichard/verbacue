@@ -3,10 +3,12 @@
 //!
 //! [`run`] opens the window and returns when it closes.
 
+mod anim;
 mod app;
 #[cfg(debug_assertions)]
 mod devshot;
 mod error;
+mod screens;
 mod settings;
 mod theme;
 mod widgets;
@@ -23,6 +25,7 @@ pub fn run() -> Result<(), Error> {
     let icon = iced::window::icon::from_file_data(ICON, None).ok();
     let mut app = iced::application(app::App::new, app::App::update, app::App::view)
         .title("verbacue")
+        .subscription(app::App::subscription)
         .default_font(theme::BODY);
     for font in theme::FONTS {
         app = app.font(font);

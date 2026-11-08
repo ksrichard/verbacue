@@ -9,10 +9,19 @@ use crate::{app::Message, app::Screen, theme};
 
 const LOGO: &[u8] = include_bytes!("../../assets/icon.png");
 
+/// The logo image. Keep one handle, so iced loads the image only once.
+pub fn logo() -> image::Handle {
+    image::Handle::from_bytes(LOGO)
+}
+
 /// The navigation for `screen`. `models` is (downloaded, needed) for the info card.
-pub fn view<'a>(screen: Screen, models: (usize, usize)) -> Element<'a, Message> {
+pub fn view<'a>(
+    screen: Screen,
+    models: (usize, usize),
+    logo: &image::Handle,
+) -> Element<'a, Message> {
     let logo = row![
-        image(image::Handle::from_bytes(LOGO)).width(34).height(34),
+        image(logo.clone()).width(34).height(34),
         rich_text![
             span::<(), _>("verba").color(theme::TEXT),
             span("cue").color(theme::ACCENT),

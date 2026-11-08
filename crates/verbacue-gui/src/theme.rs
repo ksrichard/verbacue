@@ -129,6 +129,17 @@ pub fn ghost(_: &iced::Theme, status: button::Status) -> button::Style {
     }
 }
 
+/// A recent file on the start screen.
+pub fn recent_card(_: &iced::Theme, status: button::Status) -> button::Style {
+    let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+    button::Style {
+        background: Some(if hovered { CARD_HOVER } else { CARD }.into()),
+        text_color: TEXT,
+        border: radius(16.0),
+        ..button::Style::default()
+    }
+}
+
 /// A rounded card on the dark background.
 pub fn card(radius_px: f32) -> impl Fn(&iced::Theme) -> container::Style {
     move |_| container::Style {
