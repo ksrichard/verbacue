@@ -77,6 +77,10 @@ pub struct Translation {
     pub llm_model: String,
     pub endpoint: String,
     pub endpoint_model: Option<String>,
+    /// What the user knows about the video, for example the characters.
+    pub notes: String,
+    /// Read the whole transcript first and write notes for the translation.
+    pub film_notes: bool,
 }
 
 impl Default for Translation {
@@ -88,6 +92,8 @@ impl Default for Translation {
             llm_model: models::DEFAULT_LLM.to_string(),
             endpoint: "http://localhost:8080/v1".to_string(),
             endpoint_model: None,
+            notes: String::new(),
+            film_notes: false,
         }
     }
 }
@@ -99,6 +105,8 @@ pub enum Step {
     Download(&'static str),
     Decode,
     Transcribe,
+    /// Reading the whole transcript to write notes for the translation.
+    Notes,
     Translate,
     Embed,
     Burn,
@@ -324,7 +332,7 @@ impl Pipeline {
         source_lang: &str,
         sink: &dyn Sink,
     ) -> Result<Vec<Cue>> {
-        let same = matches!(&self.translator, Some((target, s, _)) if *target == job.target && s == settings);
+        let same = matches!(&self.translator, Some((target, s, _)) if *target == job.target && same_translator(s, settings));
         if !same {
             self.translator = None;
             // Download a missing local model here, so the download is its own step.
@@ -352,11 +360,40 @@ impl Pipeline {
         let Some((_, _, translator)) = self.translator.as_mut() else {
             bail!("the translator is not loaded");
         };
+        let texts: Vec<String> = cues.iter().map(|c| c.text.clone()).collect();
+        let mut hints = translate::Hints {
+            notes: settings.notes.trim().to_string(),
+            film_notes: String::new(),
+            names: translate::proper_names(&texts),
+        };
+        if settings.film_notes {
+            sink.event(Event::Step(Step::Notes));
+            if let Some(notes) = translator.film_notes(&texts, source_lang, &Report(sink))? {
+                tracing::info!("film notes: {notes}");
+                hints.film_notes = notes;
+            }
+        }
         sink.event(Event::Step(Step::Translate));
-        let translated =
-            translate::translate_cues(translator.as_mut(), cues, source_lang, &Report(sink))?;
+        let translated = translate::translate_cues_with(
+            translator.as_mut(),
+            cues,
+            source_lang,
+            &hints,
+            &Report(sink),
+        )?;
         Ok(subtitle::layout_translation(&translated))
     }
+}
+
+/// True when two settings use the same translator. The notes change per video and
+/// need no new translator.
+fn same_translator(a: &Translation, b: &Translation) -> bool {
+    a.backend == b.backend
+        && a.register == b.register
+        && a.glossary == b.glossary
+        && a.llm_model == b.llm_model
+        && a.endpoint == b.endpoint
+        && a.endpoint_model == b.endpoint_model
 }
 
 fn write(
@@ -565,5 +602,21 @@ mod tests {
                 .iter()
                 .any(|e| e == "step Decode")
         );
+    }
+
+    #[test]
+    fn notes_do_not_reload_the_translator() {
+        let base = Translation::default();
+        let notes = Translation {
+            notes: "Two sisters.".into(),
+            film_notes: true,
+            ..Translation::default()
+        };
+        assert!(same_translator(&base, &notes));
+        let other = Translation {
+            llm_model: "gemma-3-12b".into(),
+            ..Translation::default()
+        };
+        assert!(!same_translator(&base, &other));
     }
 }

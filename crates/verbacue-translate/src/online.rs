@@ -130,10 +130,9 @@ impl OnlineTranslator {
                     "formality": self.formality,
                 });
                 // DeepL reads the context but does not translate or bill it.
-                if !batch.context.is_empty() {
-                    let context: Vec<&str> =
-                        batch.context.iter().map(|c| c.source.as_str()).collect();
-                    body["context"] = json!(context.join("\n"));
+                let context = deepl_context(batch);
+                if !context.is_empty() {
+                    body["context"] = json!(context);
                 }
                 self.client
                     .post(format!("{host}/v2/translate"))
@@ -297,6 +296,21 @@ fn parse(service: Service, body: &str) -> Result<Vec<String>> {
 }
 
 /// DeepL needs a regional variant for some target languages.
+/// The context text for DeepL: the viewer's notes, the film notes, the earlier lines
+/// and the next lines.
+fn deepl_context(batch: &Batch) -> String {
+    let hints = batch.hints;
+    let mut parts: Vec<&str> = Vec::new();
+    for notes in [&hints.notes, &hints.film_notes] {
+        if !notes.is_empty() {
+            parts.push(notes);
+        }
+    }
+    parts.extend(batch.context.iter().map(|c| c.source.as_str()));
+    parts.extend(batch.upcoming.iter().map(|l| l.text.as_str()));
+    parts.join("\n")
+}
+
 fn deepl_target(lang: &str) -> String {
     match lang {
         "en" => "EN-US".into(),
@@ -316,6 +330,39 @@ fn azure_code(lang: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ContextLine, Hints, Line};
+
+    #[test]
+    fn deepl_context_has_notes_earlier_and_next_lines() {
+        let hints = Hints {
+            notes: "Two sisters talk.".into(),
+            film_notes: "Ayşe is the older sister.".into(),
+            names: vec![],
+        };
+        let earlier = [ContextLine {
+            source: "Before".into(),
+            translation: "Előtte".into(),
+        }];
+        let now = [Line {
+            id: 2,
+            text: "Now".into(),
+        }];
+        let next = [Line {
+            id: 3,
+            text: "After".into(),
+        }];
+        let batch = Batch {
+            source_lang: "en",
+            lines: &now,
+            context: &earlier,
+            upcoming: &next,
+            hints: &hints,
+        };
+        assert_eq!(
+            deepl_context(&batch),
+            "Two sisters talk.\nAyşe is the older sister.\nBefore\nAfter"
+        );
+    }
 
     #[test]
     fn parses_each_service_answer() {

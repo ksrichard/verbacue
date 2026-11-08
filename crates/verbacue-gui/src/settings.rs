@@ -33,6 +33,8 @@ pub struct Settings {
     #[serde(with = "RegisterDef")]
     pub register: Register,
     pub glossary: Option<PathBuf>,
+    /// Read the whole transcript first and write notes for the translation.
+    pub film_notes: bool,
     #[serde(with = "FormatDef")]
     pub format: Format,
     /// `None` saves next to the video.
@@ -63,6 +65,7 @@ impl Default for Settings {
             endpoint_model: None,
             register: Register::Informal,
             glossary: None,
+            film_notes: false,
             format: Format::Srt,
             out_dir: None,
             target: "en".to_string(),
@@ -183,6 +186,7 @@ mod tests {
             endpoint_model: Some("m".into()),
             register: Register::Formal,
             glossary: Some(PathBuf::from("/g.txt")),
+            film_notes: true,
             format: Format::Vtt,
             out_dir: Some(PathBuf::from("/out")),
             target: "hu".into(),

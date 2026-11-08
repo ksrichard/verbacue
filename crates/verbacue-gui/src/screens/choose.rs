@@ -9,7 +9,7 @@ use iced::{
     widget::{
         button, canvas,
         canvas::{Frame, Geometry, Path, gradient::Linear},
-        column, container, image, pick_list, row, stack, svg, text,
+        column, container, image, pick_list, row, stack, svg, text, text_input,
     },
 };
 use verbacue::audio::AudioTrack;
@@ -394,6 +394,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         container(title).padding(iced::Padding::ZERO.top(y1)),
         container(cards).padding(iced::Padding::ZERO.top(y2)),
         container(pickers).padding(iced::Padding::ZERO.top(y3)),
+        notes(selection),
         container(start_row).padding(iced::Padding::ZERO.top(6.0 + y3)),
     ]
     .spacing(18);
@@ -476,6 +477,27 @@ fn card<'a>(
         }
     })
     .on_press(Message::Mode(mode))
+    .into()
+}
+
+/// The notes about this video for the translator, when it is translated.
+fn notes(selection: &crate::app::Selection) -> Element<'_, Message> {
+    if selection.target == KEEP {
+        return column![].into();
+    }
+    column![
+        text("Notes for the translator (optional)")
+            .size(13)
+            .color(theme::MUTED),
+        text_input(
+            "Who are the characters? Who is related to whom? Where does it happen?",
+            &selection.notes,
+        )
+        .on_input(Message::Notes)
+        .padding([12, 14])
+        .size(14),
+    ]
+    .spacing(6)
     .into()
 }
 

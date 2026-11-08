@@ -78,7 +78,10 @@ impl Convert {
             view(Step::Decode, "Read audio"),
             view(Step::Transcribe, "Transcribe"),
         ];
-        if job.translation.is_some() {
+        if let Some(translation) = &job.translation {
+            if translation.film_notes {
+                steps.push(view(Step::Notes, "Read the story"));
+            }
             steps.push(view(Step::Translate, "Translate"));
         }
         steps.push(if job.burn {

@@ -30,7 +30,11 @@ use verbacue_core::{
 pub use verbacue_core::languages::{language_name, languages};
 
 pub const BATCH_SIZE: usize = 30;
-pub const CONTEXT_LINES: usize = 5;
+pub const CONTEXT_LINES: usize = 12;
+/// How many of the following source lines each batch gets as read-only context.
+pub const LOOKAHEAD_LINES: usize = 8;
+/// How many transcript lines the model reads at once for the film notes.
+const NOTES_CHUNK: usize = 150;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
@@ -89,7 +93,28 @@ pub struct Batch<'a> {
     pub source_lang: &'a str,
     pub lines: &'a [Line],
     pub context: &'a [ContextLine],
+    /// The source lines after this batch, as read-only context.
+    pub upcoming: &'a [Line],
+    pub hints: &'a Hints,
 }
+
+/// Knowledge about the whole video that helps every batch.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Hints {
+    /// What the user wrote about the video, for example who the characters are.
+    pub notes: String,
+    /// Notes the model wrote after it read the whole transcript.
+    pub film_notes: String,
+    /// Names that appear more than once; they stay as they are.
+    pub names: Vec<String>,
+}
+
+/// No hints.
+pub const NO_HINTS: Hints = Hints {
+    notes: String::new(),
+    film_notes: String::new(),
+    names: Vec::new(),
+};
 
 /// A translation backend. It returns one translated text per input line, in order.
 pub trait Translator {
@@ -106,6 +131,22 @@ pub trait Translator {
         let _ = progress;
         self.translate(batch)
     }
+
+    /// Reads the whole transcript and writes short notes for the translation: the
+    /// characters, who speaks to whom formally, and the situation. `None` when the
+    /// backend cannot do this (online translation services).
+    ///
+    /// # Errors
+    /// Returns an error if the model fails, or a cancelled error.
+    fn film_notes(
+        &mut self,
+        lines: &[String],
+        source_lang: &str,
+        progress: &dyn Progress,
+    ) -> Result<Option<String>> {
+        let _ = (lines, source_lang, progress);
+        Ok(None)
+    }
 }
 
 /// One request to a chat model: translate the lines with these ids.
@@ -115,7 +156,7 @@ pub struct Prompt<'a> {
     /// The lines to translate, with context, as the model sees them.
     pub user: &'a str,
     /// A GBNF grammar for models with constrained decoding. It allows only a JSON
-    /// array with exactly the ids of the batch.
+    /// array with exactly the ids of the batch. Empty means a free text answer.
     pub grammar: &'a str,
 }
 
@@ -217,6 +258,20 @@ pub fn translate_cues(
     source_lang: &str,
     progress: &dyn Progress,
 ) -> Result<Vec<Cue>> {
+    translate_cues_with(translator, cues, source_lang, &Hints::default(), progress)
+}
+
+/// Like [`translate_cues`], with knowledge about the whole video.
+///
+/// # Errors
+/// Returns an error if the backend fails.
+pub fn translate_cues_with(
+    translator: &mut dyn Translator,
+    cues: &[Cue],
+    source_lang: &str,
+    hints: &Hints,
+    progress: &dyn Progress,
+) -> Result<Vec<Cue>> {
     let lines: Vec<Line> = cues
         .iter()
         .enumerate()
@@ -237,10 +292,14 @@ pub fn translate_cues(
                 translation: t.clone(),
             })
             .collect();
+        let after = translated.len() + chunk.len();
+        let upcoming = &lines[after..(after + LOOKAHEAD_LINES).min(lines.len())];
         let batch = Batch {
             source_lang,
             lines: chunk,
             context: &context,
+            upcoming,
+            hints,
         };
         translated.extend(translator.translate_with(&batch, progress)?);
         progress.update(translated.len() as u64, lines.len() as u64);
@@ -250,6 +309,34 @@ pub fn translate_cues(
         .zip(translated)
         .map(|(c, text)| Cue { text, ..c.clone() })
         .collect())
+}
+
+/// Names that the transcript uses more than once: words with a capital letter that do
+/// not start a sentence. Scripts without capital letters give no names. At most 40,
+/// the most frequent first, then by name.
+pub fn proper_names(lines: &[String]) -> Vec<String> {
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for line in lines {
+        let mut sentence_start = true;
+        for word in line.split_whitespace() {
+            let clean = word.trim_matches(|c: char| !c.is_alphanumeric());
+            let capital = clean.chars().next().is_some_and(char::is_uppercase);
+            let letters = clean.chars().all(char::is_alphabetic) && clean.chars().count() > 1;
+            if capital && letters && !sentence_start && !clean.chars().all(char::is_uppercase) {
+                *counts.entry(clean).or_default() += 1;
+            }
+            sentence_start = word.ends_with(['.', '!', '?', '…', ':', '-']);
+        }
+    }
+    let mut names: Vec<(&str, usize)> = counts.into_iter().filter(|(_, n)| *n > 1).collect();
+    names.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    names.truncate(40);
+    let mut out: Vec<String> = names
+        .into_iter()
+        .map(|(name, _)| name.to_string())
+        .collect();
+    out.sort();
+    out
 }
 
 /// The batch, JSON, retry and fallback logic on top of any [`ChatModel`].
@@ -300,6 +387,19 @@ impl<M: ChatModel> LlmTranslator<M> {
         Ok(texts)
     }
 
+    /// Asks the model for a plain text answer, without a grammar.
+    fn free_text(&mut self, user: &str, progress: &dyn Progress) -> Result<String> {
+        self.model.complete_with(
+            &Prompt {
+                system: "You read the subtitles of a video and write short notes that help \
+                         its translator. Write only facts that the lines show.",
+                user,
+                grammar: "",
+            },
+            progress,
+        )
+    }
+
     /// Asks the model, checks the answer, and asks once more with a stricter prompt if
     /// the answer is not valid.
     fn ask(
@@ -339,6 +439,50 @@ impl<M: ChatModel> LlmTranslator<M> {
 impl<M: ChatModel> Translator for LlmTranslator<M> {
     fn translate(&mut self, batch: &Batch) -> Result<Vec<String>> {
         self.translate_with(batch, &())
+    }
+
+    fn film_notes(
+        &mut self,
+        lines: &[String],
+        source_lang: &str,
+        progress: &dyn Progress,
+    ) -> Result<Option<String>> {
+        let target = language_name(&self.target);
+        let source = if source_lang == "auto" {
+            "the original language".to_string()
+        } else {
+            language_name(source_lang)
+        };
+        let mut parts = Vec::new();
+        for chunk in lines.chunks(NOTES_CHUNK) {
+            check_cancel(progress)?;
+            let user = format!(
+                "Subtitle lines of a video, in {source}:\n{}\n\n\
+                 Write notes for a translator into {target}, in English, at most 120 \
+                 words: the characters (name, and gender if it is clear), who speaks to \
+                 whom formally or informally, and the situation in two sentences. \
+                 Plain text only.",
+                chunk.join("\n")
+            );
+            parts.push(self.free_text(&user, progress)?);
+        }
+        let notes = match parts.len() {
+            0 => return Ok(None),
+            1 => parts.remove(0),
+            _ => {
+                check_cancel(progress)?;
+                let user = format!(
+                    "These are notes about consecutive parts of one video:\n\n{}\n\n\
+                     Combine them into one set of notes, in English, at most 200 words: \
+                     the characters, who speaks to whom formally or informally, and the \
+                     story so far. Plain text only.",
+                    parts.join("\n---\n")
+                );
+                self.free_text(&user, progress)?
+            }
+        };
+        let notes = notes.trim().to_string();
+        Ok((!notes.is_empty()).then_some(notes))
     }
 
     fn translate_with(&mut self, batch: &Batch, progress: &dyn Progress) -> Result<Vec<String>> {
@@ -492,6 +636,28 @@ fn user_prompt(batch: &Batch, previous_error: Option<&ResponseError>) -> String 
         language_name(batch.source_lang)
     };
     let _ = writeln!(prompt, "Translate these subtitle lines from {source}.");
+    let hints = batch.hints;
+    if !hints.notes.is_empty() {
+        let _ = writeln!(
+            prompt,
+            "\nAbout this video, from the viewer:\n{}",
+            hints.notes
+        );
+    }
+    if !hints.film_notes.is_empty() {
+        let _ = writeln!(
+            prompt,
+            "\nNotes about the whole video (characters, how they address each other):\n{}",
+            hints.film_notes
+        );
+    }
+    if !hints.names.is_empty() {
+        let _ = writeln!(
+            prompt,
+            "\nNames in this video; keep them as they are: {}",
+            hints.names.join(", ")
+        );
+    }
     if !batch.context.is_empty() {
         let context = serde_json::to_string(batch.context).unwrap_or_default();
         let _ = writeln!(
@@ -502,6 +668,13 @@ fn user_prompt(batch: &Batch, previous_error: Option<&ResponseError>) -> String 
     }
     let lines = serde_json::to_string(batch.lines).unwrap_or_default();
     let _ = writeln!(prompt, "\nLines to translate:\n{lines}");
+    if !batch.upcoming.is_empty() {
+        let upcoming = serde_json::to_string(batch.upcoming).unwrap_or_default();
+        let _ = writeln!(
+            prompt,
+            "\nNext lines, for context only. Do not translate or output them:\n{upcoming}"
+        );
+    }
     let _ = writeln!(
         prompt,
         "\nAnswer with a JSON array of {} objects with the same ids: \
@@ -639,6 +812,8 @@ mod tests {
                 source_lang: "en",
                 lines: &l,
                 context: &[],
+                upcoming: &[],
+                hints: &NO_HINTS,
             })
             .unwrap();
         assert_eq!(out, ["Szia, John.", "Hol voltál?"]);
@@ -658,6 +833,8 @@ mod tests {
                 source_lang: "en",
                 lines: &l,
                 context: &[],
+                upcoming: &[],
+                hints: &NO_HINTS,
             })
             .unwrap();
         assert_eq!(out, ["Szia", "Hé"]);
@@ -677,6 +854,8 @@ mod tests {
             source_lang: "en",
             lines: &l,
             context: &[],
+            upcoming: &[],
+            hints: &NO_HINTS,
         };
         assert_eq!(t.translate(&batch).unwrap(), ["Vártalak az állomáson."]);
         assert!(t.model.prompts[1].contains("wrong language: где, ты"));
@@ -692,6 +871,8 @@ mod tests {
             source_lang: "en",
             lines: &l,
             context: &[],
+            upcoming: &[],
+            hints: &NO_HINTS,
         };
         assert_eq!(t.translate(&batch).unwrap(), ["Vártalak, где"]);
     }
@@ -712,6 +893,8 @@ mod tests {
                 source_lang: "en",
                 lines: &l,
                 context: &[],
+                upcoming: &[],
+                hints: &NO_HINTS,
             })
             .unwrap();
         // Line 8 failed twice on its own too, so it keeps the source text.
@@ -774,7 +957,8 @@ mod tests {
         assert_eq!(echo.batches[0].0.len(), 30);
         assert!(echo.batches[0].1.is_empty());
         assert_eq!(echo.batches[1].0[0], 31);
-        assert_eq!(echo.batches[1].1, ["T26", "T27", "T28", "T29", "T30"]);
+        let earlier: Vec<String> = (19..=30).map(|i| format!("T{i}")).collect();
+        assert_eq!(echo.batches[1].1, earlier);
         assert_eq!(echo.batches[2].0.len(), 5);
         // Timing comes from the original cues.
         assert_eq!(out[64], Cue::new(64_000, 64_900, "T65"));
@@ -796,6 +980,8 @@ mod tests {
                 source_lang: "en",
                 lines: &l,
                 context: &ctx,
+                upcoming: &[],
+                hints: &NO_HINTS,
             },
             None,
         );
@@ -827,5 +1013,88 @@ mod tests {
             ]
         );
         assert!(parse_glossary("no separator").is_err());
+    }
+
+    #[test]
+    fn batches_also_get_the_next_lines() {
+        struct Upcoming(Vec<Vec<usize>>);
+        impl Translator for Upcoming {
+            fn translate(&mut self, batch: &Batch) -> Result<Vec<String>> {
+                self.0.push(batch.upcoming.iter().map(|l| l.id).collect());
+                Ok(batch.lines.iter().map(|l| l.text.clone()).collect())
+            }
+        }
+        let cues: Vec<Cue> = (0..65)
+            .map(|i| Cue::new(i * 1000, i * 1000 + 900, "x"))
+            .collect();
+        let mut t = Upcoming(vec![]);
+        translate_cues(&mut t, &cues, "en", &()).unwrap();
+        assert_eq!(t.0[0], (31..=38).collect::<Vec<_>>());
+        assert_eq!(t.0[1], (61..=65).collect::<Vec<_>>());
+        assert!(t.0[2].is_empty());
+    }
+
+    #[test]
+    fn prompts_contain_notes_names_and_next_lines() {
+        let hints = Hints {
+            notes: "Ayşe and Kerem are siblings.".into(),
+            film_notes: "Kerem speaks formally to his mother.".into(),
+            names: vec!["Ayşe".into(), "Kerem".into()],
+        };
+        let l = lines(&["Hi"], 1);
+        let next = lines(&["Bye"], 2);
+        let batch = Batch {
+            source_lang: "tr",
+            lines: &l,
+            context: &[],
+            upcoming: &next,
+            hints: &hints,
+        };
+        let user = user_prompt(&batch, None);
+        assert!(user.contains("Ayşe and Kerem are siblings."));
+        assert!(user.contains("Kerem speaks formally to his mother."));
+        assert!(user.contains("Ayşe, Kerem"));
+        assert!(user.contains("Next lines"));
+        assert!(user.contains(r#"{"id":2,"text":"Bye"}"#));
+    }
+
+    #[test]
+    fn proper_names_are_repeated_capitals_inside_sentences() {
+        let text: Vec<String> = [
+            "Where is Kerem now?",
+            "I saw Kerem at the market.",
+            "Ask Ayşe, she knows.",
+            "Then Ayşe left.",
+            "Good morning.",
+            "Good night, Paris.",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(proper_names(&text), ["Ayşe", "Kerem"]);
+    }
+
+    #[test]
+    fn film_notes_read_the_transcript_in_parts_and_merge_them() {
+        let model = ScriptedModel::new(&["part one", "part two", "merged notes"]);
+        let mut t = LlmTranslator::new(model, &config());
+        let text: Vec<String> = (0..250).map(|i| format!("line {i}")).collect();
+        let notes = t.film_notes(&text, "en", &()).unwrap();
+        assert_eq!(notes.as_deref(), Some("merged notes"));
+        assert_eq!(t.model.prompts.len(), 3);
+        assert!(t.model.prompts[0].contains("line 0") && !t.model.prompts[0].contains("line 249"));
+        assert!(t.model.prompts[2].contains("part one") && t.model.prompts[2].contains("part two"));
+    }
+
+    #[test]
+    fn film_notes_of_a_short_transcript_need_one_request() {
+        let model = ScriptedModel::new(&["short notes"]);
+        let mut t = LlmTranslator::new(model, &config());
+        let text: Vec<String> = (0..40).map(|i| format!("line {i}")).collect();
+        assert_eq!(
+            t.film_notes(&text, "en", &()).unwrap().as_deref(),
+            Some("short notes")
+        );
+        assert_eq!(t.model.prompts.len(), 1);
     }
 }

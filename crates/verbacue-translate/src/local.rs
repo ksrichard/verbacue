@@ -156,14 +156,21 @@ impl LocalModel {
         }
 
         let prompt_time = started.elapsed();
-        let mut grammar = LlamaSampler::grammar(&self.model, grammar, "root")
-            .with_kind(ErrorKind::Model)
-            .context("invalid response grammar")?;
+        // An empty grammar asks for free text, for example the film notes.
+        let mut grammar = if grammar.is_empty() {
+            None
+        } else {
+            Some(
+                LlamaSampler::grammar(&self.model, grammar, "root")
+                    .with_kind(ErrorKind::Model)
+                    .context("invalid response grammar")?,
+            )
+        };
         let vocab = self.model.vocab();
         let mut answer = Vec::new();
         for _ in 0..MAX_ANSWER_TOKENS {
             check_cancel(progress)?;
-            let token = sample(&ctx, batch.n_tokens() - 1, &mut grammar);
+            let token = sample(&ctx, batch.n_tokens() - 1, grammar.as_mut());
             if vocab.is_eog(token) {
                 break;
             }
@@ -189,12 +196,13 @@ impl LocalModel {
     }
 }
 
-/// Picks the most likely token that the grammar allows.
+/// Picks the most likely token that the grammar allows, or the most likely token when
+/// there is no grammar.
 ///
 /// Gemma has a vocabulary of 262k tokens, and the grammar check over all of them takes
 /// longer than the model step. The best token is almost always allowed, so it is checked
 /// alone first. Only when the grammar rejects it are all tokens checked.
-fn sample(ctx: &LlamaContext<'_>, idx: i32, grammar: &mut LlamaSampler) -> LlamaToken {
+fn sample(ctx: &LlamaContext<'_>, idx: i32, grammar: Option<&mut LlamaSampler>) -> LlamaToken {
     let logits = ctx.get_logits_ith(idx);
     let (best, logit) = logits
         .iter()
@@ -202,6 +210,9 @@ fn sample(ctx: &LlamaContext<'_>, idx: i32, grammar: &mut LlamaSampler) -> Llama
         .max_by(|a, b| a.1.total_cmp(b.1))
         .map(|(i, l)| (LlamaToken(i32::try_from(i).unwrap_or(0)), *l))
         .unwrap_or((LlamaToken(0), 0.0));
+    let Some(grammar) = grammar else {
+        return best;
+    };
     let mut one = LlamaTokenDataArray::new(vec![LlamaTokenData::new(best, logit, 0.0)], false);
     grammar.apply(&mut one);
     let token = if one.data[0].logit().is_finite() {

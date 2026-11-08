@@ -115,6 +115,16 @@ struct TranslateArgs {
     #[arg(long)]
     glossary: Option<PathBuf>,
 
+    /// What you know about the video, for better translations: the characters, who is
+    /// related to whom, the setting.
+    #[arg(long, value_name = "TEXT")]
+    context: Option<String>,
+
+    /// Read the whole transcript first and write notes about the characters for the
+    /// translation. Slower; local model or own server only.
+    #[arg(long)]
+    film_notes: bool,
+
     /// Form of address (for Hungarian: informal "te" or formal "ön").
     #[arg(long, value_enum, default_value_t = Register::Informal)]
     register: Register,
@@ -355,6 +365,8 @@ fn job_for(video: &Path, cli: &Cli) -> Job {
             llm_model: args.llm_model.clone(),
             endpoint: args.endpoint.clone(),
             endpoint_model: args.endpoint_model.clone(),
+            notes: args.context.clone().unwrap_or_default(),
+            film_notes: args.film_notes,
         }),
         format: args.format,
         output: args.output.clone(),
@@ -401,6 +413,7 @@ impl Sink for BarSink<'_> {
                     ),
                     Step::Embed => percent_bar("embedding"),
                     Step::Burn => percent_bar("burning"),
+                    Step::Notes => Bar::new("reading", "{msg:>12} {spinner} {elapsed}"),
                     Step::Save => return,
                 };
                 if let Ok(mut current) = self.bar.lock() {
@@ -514,7 +527,14 @@ fn run_translation(
         "translating",
         "{msg:>12} [{bar:30}] {pos}/{len} cues eta {eta}",
     );
-    let translated = translate::translate_cues(translator.as_mut(), cues, source_lang, &bar)?;
+    let texts: Vec<String> = cues.iter().map(|c| c.text.clone()).collect();
+    let hints = translate::Hints {
+        notes: args.context.clone().unwrap_or_default(),
+        film_notes: String::new(),
+        names: translate::proper_names(&texts),
+    };
+    let translated =
+        translate::translate_cues_with(translator.as_mut(), cues, source_lang, &hints, &bar)?;
     bar.finish();
 
     Ok(subtitle::layout_translation(&translated))
@@ -708,5 +728,22 @@ mod tests {
             burn_output_path(Path::new("movie.mp4"), Path::new("fixed.srt")),
             PathBuf::from("movie.subtitled.mp4")
         );
+    }
+
+    #[test]
+    fn context_and_film_notes_reach_the_job() {
+        let cli = Cli::parse_from([
+            "verbacue",
+            "movie.mkv",
+            "--to",
+            "hu",
+            "--context",
+            "Ayşe and Kerem are siblings.",
+            "--film-notes",
+        ]);
+        let job = job_for(Path::new("movie.mkv"), &cli);
+        let translation = job.translation.unwrap();
+        assert_eq!(translation.notes, "Ayşe and Kerem are siblings.");
+        assert!(translation.film_notes);
     }
 }

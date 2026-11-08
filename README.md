@@ -243,6 +243,8 @@ Night's Watch = Éjjeli Őrség
 | `--llm-model` | `translategemma-12b` | Translation model: `translategemma-12b`, `translategemma-27b`, `gemma-3-12b`, `gemma-4-26b-a4b`, or a path to any GGUF instruct model |
 | `--register` | `informal` | Form of address: `informal` (Hungarian "te") or `formal` ("ön") |
 | `--glossary` | | File with `term = translation` lines |
+| `--context` | | What you know about the video (characters, relations, setting); the translator reads it |
+| `--film-notes` | | Read the whole transcript first and write notes about the characters for the translator (slower; local model or own server) |
 | `--audio-track` | `0` | Audio track index from `verbacue tracks` |
 | `--list-tracks` | | List the audio tracks and stop (the same as `verbacue tracks`) |
 | `--format` | `srt` | `srt` or `vtt` |

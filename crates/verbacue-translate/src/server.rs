@@ -115,7 +115,8 @@ impl ServerModel {
             "temperature": 0,
             "stream": false,
         });
-        if self.schema {
+        // An empty grammar asks for free text, so no JSON schema.
+        if self.schema && !prompt.grammar.is_empty() {
             body["response_format"] = response_format();
         }
         let mut wait = Duration::from_secs(2);

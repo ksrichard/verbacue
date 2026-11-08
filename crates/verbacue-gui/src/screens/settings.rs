@@ -31,6 +31,7 @@ pub enum SettingChange {
     EndpointModel(String),
     Register(Register),
     Glossary(Option<PathBuf>),
+    FilmNotes(bool),
     Format(Format),
     OutDir(Option<PathBuf>),
 }
@@ -47,6 +48,7 @@ impl SettingChange {
             Self::EndpointModel(v) => s.endpoint_model = (!v.is_empty()).then_some(v),
             Self::Register(v) => s.register = v,
             Self::Glossary(v) => s.glossary = v,
+            Self::FilmNotes(v) => s.film_notes = v,
             Self::Format(v) => s.format = v,
             Self::OutDir(v) => s.out_dir = v,
         }
@@ -347,6 +349,17 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 .style(theme::ghost)
                 .on_press(Message::Setting(SettingChange::Glossary(None))),
         );
+    }
+    if matches!(s.translator, Backend::Local | Backend::OpenaiCompat) {
+        translation.push(setting_row(
+            "Read the whole story first",
+            "Notes about the characters before translating. Slower; better names and forms of address.",
+            switch::view(
+                s.film_notes,
+                app.film_notes_changed.elapsed().as_secs_f32(),
+                Message::Setting(SettingChange::FilmNotes(!s.film_notes)),
+            ),
+        ));
     }
     translation.push(setting_row(
         "Glossary",

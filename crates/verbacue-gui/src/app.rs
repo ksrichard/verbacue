@@ -54,6 +54,8 @@ pub struct Selection {
     /// A language code, or [`KEEP`] for no translation.
     pub target: String,
     pub track: usize,
+    /// What the user wrote about this video, for the translator.
+    pub notes: String,
 }
 
 /// How long iced may still report sizes with the old scale after a change.
@@ -92,6 +94,8 @@ pub enum Message {
     Mode(OutputMode),
     Target(String),
     Track(usize),
+    /// The notes about the shown video.
+    Notes(String),
     PlayVideo,
     Start,
     ConfirmReplace(bool),
@@ -147,6 +151,8 @@ pub struct App {
     pub downloads: HashMap<&'static str, (u64, u64)>,
     /// When the silence switch last changed, for its animation.
     pub vad_changed: Instant,
+    /// When the film notes switch last changed, for its animation.
+    pub film_notes_changed: Instant,
     /// How much larger than the mockups the whole interface draws.
     pub scale: f32,
     /// When the scale last changed.
@@ -211,6 +217,7 @@ impl App {
             convert: Convert::for_job(&Job::new(PathBuf::new(), "en"), String::new()),
             downloads: HashMap::new(),
             vad_changed: now,
+            film_notes_changed: now,
             scale: 1.0,
             scale_changed: None,
             worker: Arc::new(OnceLock::new()),
@@ -433,6 +440,12 @@ impl App {
                 }
                 Task::none()
             }
+            Message::Notes(notes) => {
+                if let Some(s) = self.selection_mut() {
+                    s.notes = notes;
+                }
+                Task::none()
+            }
             Message::PlayVideo => {
                 if let Some(s) = self.selection() {
                     crate::system::open(&s.video);
@@ -527,6 +540,9 @@ impl App {
             Message::Setting(change) => {
                 if matches!(change, SettingChange::Vad(_)) {
                     self.vad_changed = Instant::now();
+                }
+                if matches!(change, SettingChange::FilmNotes(_)) {
+                    self.film_notes_changed = Instant::now();
                 }
                 change.apply(&mut self.settings);
                 self.save_settings();
@@ -718,6 +734,7 @@ impl App {
                     burn,
                     target,
                     track: 0,
+                    notes: String::new(),
                 },
                 frames: Vec::new(),
                 status: Status::Waiting,
@@ -789,6 +806,8 @@ impl App {
                 llm_model: settings.llm_model.clone(),
                 endpoint: settings.endpoint.clone(),
                 endpoint_model: settings.endpoint_model.clone(),
+                notes: s.notes.clone(),
+                film_notes: settings.film_notes,
             });
         Some(job)
     }
@@ -863,7 +882,9 @@ impl App {
             self.screen,
             Screen::Pick | Screen::Choose | Screen::Convert | Screen::Done
         ) || (self.screen == Screen::Settings
-            && (self.vad_changed.elapsed().as_secs_f32() < 0.5 || !self.downloads.is_empty()));
+            && (self.vad_changed.elapsed().as_secs_f32() < 0.5
+                || self.film_notes_changed.elapsed().as_secs_f32() < 0.5
+                || !self.downloads.is_empty()));
         if animated {
             Subscription::batch([drops, closes, resizes, window::frames().map(Message::Tick)])
         } else {
@@ -1525,5 +1546,15 @@ mod tests {
         let _ = a.update(Message::MediaChecked(Ok((first.clone(), info()))));
         let order: Vec<_> = a.queue.iter().map(|i| i.selection.video.clone()).collect();
         assert_eq!(order, [first, second]);
+    }
+
+    #[test]
+    fn video_notes_and_film_notes_reach_the_job() {
+        let mut a = chosen("notes");
+        let _ = a.update(Message::Notes("Two sisters argue.".into()));
+        let _ = a.update(Message::Setting(SettingChange::FilmNotes(true)));
+        let translation = a.job().unwrap().translation.unwrap();
+        assert_eq!(translation.notes, "Two sisters argue.");
+        assert!(translation.film_notes);
     }
 }
