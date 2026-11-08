@@ -51,6 +51,8 @@ pub use verbacue_media::audio;
 pub use verbacue_media::video;
 #[cfg(feature = "transcribe")]
 pub use verbacue_transcribe as transcribe;
+#[cfg(feature = "transcribe")]
+pub mod pipeline;
 pub use verbacue_translate as translate;
 
 pub use verbacue_core::{
