@@ -24,7 +24,7 @@ jobs:
       fail-fast: false
       matrix:
         arch: [amd64, arm64]
-        gpu: [cpu, cuda, vulkan]
+        gpu: [cpu, cpu-gui, cuda, vulkan]
         include:
           - arch: amd64
             runner: ubuntu-24.04
@@ -38,6 +38,10 @@ jobs:
       - name: Build in Docker
         run: |
           args=""
+          # cpu is fully static and has only the command line; cpu-gui adds the app.
+          if [ "${{ matrix.gpu }}" = cpu-gui ]; then
+            args="--build-arg FEATURES=gui"
+          fi
           if [ "${{ matrix.gpu }}" = cuda ]; then
             args="--build-arg BASE=nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 --build-arg FEATURES=cuda"
           fi

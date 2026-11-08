@@ -2,8 +2,9 @@
 # Runs inside docker/linux.Dockerfile. Builds verbacue, checks what it links, and copies
 # it to the folder in $1. A CPU build is fully static (glibc included), so it has no
 # dynamic dependencies. GPU builds must load the driver at run time (libcuda.so for
-# CUDA, libvulkan.so.1 for Vulkan). A static program cannot do that, so GPU builds link
-# glibc and the driver dynamically.
+# CUDA, libvulkan.so.1 for Vulkan), and the desktop app must load the window and
+# graphics libraries. A static program cannot do that, so GPU builds and the CPU build
+# with the desktop app (FEATURES=gui) link glibc dynamically.
 set -eu
 out=$1
 
@@ -41,7 +42,7 @@ case $(uname -m) in
 esac
 
 case ${FEATURES:-} in
-    *cuda* | *vulkan*) ;;
+    *cuda* | *vulkan* | *gui*) ;;
     # Static glibc. With an explicit --target, RUSTFLAGS apply only to verbacue and its
     # libraries, not to build scripts and proc macros, which cannot be static.
     # The static libstdc++ comes after libc and libgcc on the link line and calls into
@@ -59,15 +60,15 @@ case ${FEATURES:-} in
         ;;
 esac
 
-# A static program cannot open a window, so the static CPU build has no desktop app.
-# The GPU builds link glibc dynamically and include it.
+# The static CPU build has no desktop app; all other builds include it.
 case ${FEATURES:-} in
-    *cuda* | *vulkan*) features="--features $FEATURES" ;;
+    *cuda* | *vulkan* | *gui*) features="--features $FEATURES" ;;
     *) features="--no-default-features" ;;
 esac
-# The CPU build runs the tests. GPU builds skip them, because the build has no GPU.
+# The static CPU build runs the tests. GPU builds skip them, because the build has no
+# GPU, and the CPU build with the desktop app has the same code as the static one.
 case ${FEATURES:-} in
-    *cuda* | *vulkan*) ;;
+    *cuda* | *vulkan* | *gui*) ;;
     *)
         cargo test --workspace --exclude verbacue-gui --exclude verbacue-app \
             --release --locked --target $target
@@ -85,6 +86,7 @@ glibc='ld-linux.*|libc\.so.*|libm\.so.*|libgcc_s\.so.*|libpthread\.so.*|libdl\.s
 case ${FEATURES:-} in
     *cuda*) allowed="^($glibc|libcuda\.so.*)\$" ;;
     *vulkan*) allowed="^($glibc|libvulkan\.so\.1)\$" ;;
+    *gui*) allowed="^($glibc)\$" ;;
     *) allowed='^$' ;;
 esac
 bad=$(echo "$needed" | grep -Ev "$allowed" || true)

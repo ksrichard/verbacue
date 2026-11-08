@@ -42,9 +42,10 @@ Windows). Keys for online services stay where the command line reads them.
 
 [SCREENSHOT]
 
-The macOS and Windows binaries, and the Linux Vulkan and CUDA binaries, include the
-app. The static Linux CPU binaries and the MinGW build from `docker/build.sh` have
-only the command line; `verbacue gui` then says so. Without a display (for example
+All binaries include the app, except the fully static Linux CPU binaries
+(`linux-*-cpu`, for servers and containers) and the MinGW build from `docker/build.sh`.
+On Linux without a GPU, use `linux-*-cpu-gui`; it links glibc 2.35 or newer
+dynamically, because a static program cannot open a window. Without a display (for example
 over SSH), `verbacue` with no arguments prints the help.
 
 ## Build
@@ -58,6 +59,7 @@ a tag also attaches the binaries to a GitHub release.
 |--------------------------------------------|-----------------------------|--------------------------------------------|
 | `macos-arm64-metal`                        | Metal                       | macOS on Apple Silicon                     |
 | `linux-amd64-cpu`, `linux-arm64-cpu`       | none                        | nothing: fully static, runs on any Linux   |
+| `linux-amd64-cpu-gui`, `linux-arm64-cpu-gui` | none                      | glibc 2.35 or newer                        |
 | `linux-amd64-cuda`, `linux-arm64-cuda`     | NVIDIA (CUDA)               | glibc 2.35 or newer, NVIDIA driver         |
 | `linux-amd64-vulkan`, `linux-arm64-vulkan` | AMD, Intel, NVIDIA (Vulkan) | glibc 2.39 or newer, Vulkan driver         |
 | `windows-x64-cpu`                          | none                        | Windows 10 or 11                           |
@@ -96,7 +98,8 @@ Graviton 2 or a Raspberry Pi 5).
 docker/build.sh linux-arm64 windows-x64     # writes dist/<target>/
 ```
 
-The targets are `linux-arm64`, `linux-amd64`, `linux-arm64-cuda`, `linux-amd64-cuda`,
+The targets are `linux-arm64`, `linux-amd64`, `linux-arm64-gui`, `linux-amd64-gui`,
+`linux-arm64-cuda`, `linux-amd64-cuda`,
 `linux-arm64-vulkan`, `linux-amd64-vulkan` and `windows-x64`. A target for another CPU
 type than the host's runs in emulation and is much slower. The Windows target is
 cross-compiled with MinGW-w64 and has no GPU support. It is for local builds only: the
