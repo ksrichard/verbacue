@@ -59,11 +59,20 @@ case ${FEATURES:-} in
         ;;
 esac
 
-features=${FEATURES:+--features $FEATURES}
+# A static program cannot open a window, so the static CPU build has no desktop app.
+# The GPU builds link glibc dynamically and include it.
+case ${FEATURES:-} in
+    *cuda* | *vulkan*) features="--features $FEATURES" ;;
+    *) features="--no-default-features" ;;
+esac
 # The CPU build runs the tests. GPU builds skip them, because the build has no GPU.
 case ${FEATURES:-} in
     *cuda* | *vulkan*) ;;
-    *) cargo test --workspace --release --locked --target $target ;;
+    *)
+        cargo test --workspace --exclude verbacue-gui --exclude verbacue-app \
+            --release --locked --target $target
+        cargo test -p verbacue-app --no-default-features --release --locked --target $target
+        ;;
 esac
 cargo build --release --locked --target $target $features
 mkdir -p "$out"

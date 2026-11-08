@@ -13,6 +13,7 @@
 //! | [`translate`] | Translates cues with a language model or a service | `local`, `online` | `verbacue-translate` |
 //! | [`video`] | Writes MKV with subtitle tracks, or MP4 with burned-in text | `video` | `verbacue-media` |
 //! | [`models`] | Known models, the model cache and verified downloads | `download` | `verbacue-core` |
+//! | [`pipeline`] | All steps for one video, with progress events and cancel | `transcribe` | this crate |
 //!
 //! All functions block. Whisper, llama.cpp and FFmpeg do their work on the calling
 //! thread. From async code, call them with `spawn_blocking`.

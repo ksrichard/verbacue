@@ -3,9 +3,10 @@
 # verbacue
 
 `verbacue` makes translated subtitles for a video. It works fully offline, in one
-self-contained binary.
+self-contained binary, with a desktop app and a command line.
 
 ```sh
+verbacue                    # opens the desktop app
 verbacue movie.mkv --to hu
 # writes movie.en.srt (the transcript) and movie.hu.srt (the translation)
 ```
@@ -22,6 +23,29 @@ The binary needs no ffmpeg, Python, Ollama or other installed tools at run time.
 the model weights are separate files. verbacue downloads them on first use, checks
 their SHA256, and keeps them in the cache folder (`~/Library/Caches/verbacue/models` on
 macOS, `~/.cache/verbacue/models` on Linux, `%LOCALAPPDATA%\verbacue\models` on Windows).
+
+## Desktop app
+
+`verbacue` with no arguments, or `verbacue gui`, opens the desktop app. A double-click
+on the binary also opens it.
+
+1. Pick a video: drop it on the grill, or click "Choose a video".
+2. Look at the preview, and choose "Burned in" (a new MP4) or "Separate SRT file".
+   Choose the target language and the audio track.
+3. Click "Start grilling", and watch the barbecue while verbacue works.
+
+All the options of the command line that make sense in the app are on the Settings
+page: the models, the spoken language, the translator, the form of address, the
+glossary, the subtitle format and the output folder. The app saves them in `gui.toml`
+in the config folder (`~/.config/verbacue` on macOS and Linux, `%APPDATA%\verbacue` on
+Windows). Keys for online services stay where the command line reads them.
+
+[SCREENSHOT]
+
+The macOS and Windows binaries, and the Linux Vulkan and CUDA binaries, include the
+app. The static Linux CPU binaries and the MinGW build from `docker/build.sh` have
+only the command line; `verbacue gui` then says so. Without a display (for example
+over SSH), `verbacue` with no arguments prints the help.
 
 ## Build
 
@@ -225,10 +249,13 @@ program can use one step alone:
 | `verbacue-media` | Reads the audio of any video; writes MKV with subtitle tracks or MP4 with burned-in text | FFmpeg |
 | `verbacue-translate` | Translates cues with a local model, DeepL, Google, Azure or an OpenAI-compatible server | llama.cpp (`local`), rustls (`online`) |
 | `verbacue` | All of the above as modules, behind features | what the features turn on |
-| `verbacue-app` | The `verbacue` command: command line, progress bars and file names | all |
+| `verbacue-gui` | The desktop app (iced) | all, plus the window and GPU libraries |
+| `verbacue-app` | The `verbacue` command: command line and the desktop app (feature `gui`, on by default) | all |
 
 The `verbacue` crate is the easy start. It has one module for each step: `audio`,
-`transcribe`, `subtitle`, `translate`, `video` and `models`. Its features select the
+`transcribe`, `subtitle`, `translate`, `video` and `models`. The `pipeline` module
+runs all steps for one video, the same way as the command and the app, and reports
+each step, its progress and each new line; it can also stop a job early. Its features select the
 crates:
 
 | Feature | Adds | Compiles |

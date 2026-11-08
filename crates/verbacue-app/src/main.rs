@@ -197,6 +197,9 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     init_logging(cli.verbose);
     match cli.command {
+        Some(Command::Gui) if cfg!(feature = "gui") => {
+            bail!("cannot open a window: no display (DISPLAY or WAYLAND_DISPLAY is not set)")
+        }
         Some(Command::Gui) => bail!("this build has no GUI; see verbacue --help"),
         Some(Command::Tracks { video }) => print_tracks(&video),
         Some(Command::Languages) => {

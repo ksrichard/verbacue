@@ -12,7 +12,7 @@ pub enum Mode {
 /// `verbacue gui`. `gui_built` is true when this build has the desktop app.
 pub fn mode(args: usize, gui_command: bool, has_display: bool, gui_built: bool) -> Mode {
     match (args, gui_command, gui_built) {
-        (_, true, true) => Mode::Gui,
+        (_, true, true) if has_display => Mode::Gui,
         (0, _, true) if has_display => Mode::Gui,
         (0, _, _) => Mode::Help,
         _ => Mode::Cli,
@@ -52,6 +52,12 @@ mod tests {
     #[test]
     fn gui_subcommand_opens_the_gui() {
         assert_eq!(mode(1, true, true, true), Mode::Gui);
+    }
+
+    #[test]
+    fn gui_subcommand_without_a_display_runs_the_cli() {
+        // The CLI then stops with "no display", instead of a panic in the window code.
+        assert_eq!(mode(1, true, false, true), Mode::Cli);
     }
 
     #[test]

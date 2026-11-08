@@ -15,7 +15,7 @@ rm -rf $build/ffmpeg-sys-next-*
 # the archives with the prefix. Then delete the cargo fingerprints of those build
 # script runs, so the scripts run again, find the copies, and link them.
 pass=1
-until cargo build --release --locked --target $target; do
+until cargo build --release --locked --target $target --no-default-features; do
     [ $pass -lt 4 ] || exit 1
     for dir in $build/whisper-rs-sys-*/out $build/llama-cpp-sys-2-*/out; do
         [ -d "$dir" ] || continue
