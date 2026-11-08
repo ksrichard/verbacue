@@ -247,6 +247,7 @@ impl Pipeline {
 
         sink.event(Event::Step(Step::Decode));
         let pcm = audio::decode_pcm(&job.video, job.audio_track, &report)?;
+        tracing::info!("decoded {}", audio_length(pcm.len()));
         sink.event(Event::Step(Step::Transcribe));
         let opts = transcribe::Options {
             model: &whisper,
@@ -255,6 +256,11 @@ impl Pipeline {
         };
         let transcript = transcribe::transcribe(&pcm, &opts, &report)?;
         drop(pcm);
+        tracing::info!(
+            "transcribed {} cues, language {}",
+            transcript.cues.len(),
+            transcript.language
+        );
 
         let mut files = Vec::new();
         let source_lang = transcript.language.clone();
@@ -367,10 +373,17 @@ fn write(
     Ok(())
 }
 
-/// Resolves a model name or path. A missing known model downloads as its own step.
+/// "1:42:08 of audio" for a number of 16 kHz samples.
+fn audio_length(samples: usize) -> String {
+    let s = samples as u64 / u64::from(audio::SAMPLE_RATE);
+    format!("{}:{:02}:{:02} of audio", s / 3600, s / 60 % 60, s % 60)
+}
+
+/// Resolves a model name or path. A file with that name wins over a known model. A
+/// missing known model downloads as its own step.
 fn resolve(value: &str, kind: models::Kind, sink: &dyn Sink) -> Result<PathBuf> {
     match models::find(value) {
-        Some(spec) if spec.kind == kind => ensure(spec, sink),
+        Some(spec) if spec.kind == kind && !Path::new(value).is_file() => ensure(spec, sink),
         _ => models::resolve(value, kind, &Report(sink)),
     }
 }

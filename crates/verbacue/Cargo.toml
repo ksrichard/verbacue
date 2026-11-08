@@ -35,6 +35,7 @@ verbacue-core = { path = "../verbacue-core", version = "0.1.0" }
 verbacue-media = { path = "../verbacue-media", version = "0.1.0", default-features = false, optional = true }
 verbacue-transcribe = { path = "../verbacue-transcribe", version = "0.1.0", optional = true }
 verbacue-translate = { path = "../verbacue-translate", version = "0.1.0", default-features = false }
+tracing = { version = "0.1.44" }
 
 [lints]
 workspace = true

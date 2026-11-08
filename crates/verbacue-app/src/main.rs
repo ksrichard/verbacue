@@ -15,6 +15,7 @@ macro_rules! out {
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::Mutex,
     time::Duration,
 };
 
@@ -24,8 +25,8 @@ use indicatif::{ProgressBar, ProgressStyle};
 use tracing_subscriber::EnvFilter;
 use verbacue::{
     audio, models,
+    pipeline::{Event, Job, Pipeline, Sink, Step, Translation},
     subtitle::{self, Cue, Format},
-    transcribe,
     translate::{self, Backend, Register, Translator},
     video,
 };
@@ -265,32 +266,20 @@ fn process_videos(cli: &Cli) -> Result<()> {
     let videos = collect_videos(&cli.inputs, &cli.translate.to)?;
     check_output_flag(&cli.translate, videos.len())?;
 
-    let whisper = resolve_model(&cli.model, models::Kind::Whisper)?;
-    let vad = if cli.no_vad {
-        None
-    } else {
-        Some(ensure_model(
-            models::find(models::VAD).context("VAD model missing")?,
-        )?)
-    };
-    let language = (cli.from != "auto").then_some(cli.from.as_str());
-
-    // The translator loads on first use, after the first transcription has finished
-    // and Whisper has been unloaded.
-    let mut translator: Option<Box<dyn Translator>> = None;
+    // One pipeline for all videos keeps the translator loaded. It loads after the first
+    // transcription, when Whisper has been unloaded.
+    let mut pipeline = Pipeline::new();
     let mut failed = 0;
     for (i, video) in videos.iter().enumerate() {
         if videos.len() > 1 {
             tracing::info!("[{}/{}] {}", i + 1, videos.len(), video.display());
         }
-        let opts = transcribe::Options {
-            model: &whisper,
-            vad_model: vad.as_deref(),
-            language,
-        };
-        if let Err(e) = process_video(video, cli, &opts, &mut translator) {
+        let sink = BarSink::new(video);
+        let result = pipeline.run(&job_for(video, cli), &sink);
+        sink.finish();
+        if let Err(e) = result {
             if videos.len() == 1 {
-                return Err(e);
+                return Err(e.into());
             }
             tracing::error!("{}: {e:#}", video.display());
             failed += 1;
@@ -302,104 +291,94 @@ fn process_videos(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-fn process_video(
-    video: &Path,
-    cli: &Cli,
-    opts: &transcribe::Options<'_>,
-    translator: &mut Option<Box<dyn Translator>>,
-) -> Result<()> {
+fn job_for(video: &Path, cli: &Cli) -> Job {
     let args = &cli.translate;
-    let target_out = output_path(video, &args.to, args);
-    let embed_out = video.with_extension(format!("{}.mkv", args.to));
-    let burn_out = video.with_extension(format!("{}.mp4", args.to));
-    // The last file this run writes decides whether the video is already done.
-    let done_marker = if cli.burn {
-        Some(&burn_out)
-    } else if cli.embed {
-        Some(&embed_out)
-    } else if args.translator != Backend::None {
-        Some(&target_out)
-    } else {
-        None
-    };
-    if let Some(done) = done_marker
-        && done.exists()
-        && !args.force
-    {
-        tracing::info!("skipped {}: {} exists", video.display(), done.display());
-        return Ok(());
+    Job {
+        video: video.to_path_buf(),
+        audio_track: cli.audio_track,
+        whisper_model: cli.model.clone(),
+        vad: !cli.no_vad,
+        language: (cli.from != "auto").then(|| cli.from.clone()),
+        target: args.to.clone(),
+        translation: (args.translator != Backend::None).then(|| Translation {
+            backend: args.translator,
+            register: args.register,
+            glossary: args.glossary.clone(),
+            llm_model: args.llm_model.clone(),
+            endpoint: args.endpoint.clone(),
+            endpoint_model: args.endpoint_model.clone(),
+        }),
+        format: args.format,
+        output: args.output.clone(),
+        out_dir: None,
+        embed: cli.embed,
+        burn: cli.burn,
+        force: args.force,
+    }
+}
+
+/// Shows the pipeline steps as progress bars on stderr.
+struct BarSink<'a> {
+    video: &'a Path,
+    bar: Mutex<Option<Bar>>,
+}
+
+impl<'a> BarSink<'a> {
+    fn new(video: &'a Path) -> Self {
+        Self {
+            video,
+            bar: Mutex::new(None),
+        }
     }
 
-    if cli.burn {
-        video::check_burn(video)?;
+    fn finish(&self) {
+        if let Some(bar) = self.bar.lock().ok().and_then(|mut b| b.take()) {
+            bar.finish();
+        }
     }
+}
 
-    let bar = percent_bar("decoding");
-    let pcm = audio::decode_pcm(video, cli.audio_track, &bar)?;
-    bar.finish();
-    let secs = pcm.len() as f64 / f64::from(audio::SAMPLE_RATE);
-    tracing::info!("decoded {}", format_duration(secs));
-
-    let bar = percent_bar("transcribing");
-    let transcript = transcribe::transcribe(&pcm, opts, &bar)?;
-    bar.finish();
-    drop(pcm);
-    tracing::info!(
-        "transcribed {} cues, language {}",
-        transcript.cues.len(),
-        transcript.language
-    );
-
-    let source_lang = transcript.language.as_str();
-    let source_cues = subtitle::layout_transcript(&transcript.cues);
-    // With --translator none, -o names the original transcript, since nothing else is written.
-    let source_out = match (&args.output, args.translator) {
-        (Some(out), Backend::None) => out.clone(),
-        _ => video.with_extension(format!("{source_lang}.{}", args.format.extension())),
-    };
-    write_output(&source_out, &source_cues, args.format)?;
-
-    let target_cues = if args.translator == Backend::None {
-        None
-    } else if source_lang == args.to {
-        tracing::warn!(
-            "source language is already {}; no translation needed",
-            args.to
-        );
-        None
-    } else {
-        let cues = run_translation(&source_cues, source_lang, args, translator)?;
-        write_output(&target_out, &cues, args.format)?;
-        Some(cues)
-    };
-
-    // The translated track comes first, so it becomes the default one.
-    let mut tracks = Vec::new();
-    if let Some(cues) = &target_cues {
-        tracks.push(video::SubtitleTrack {
-            language: &args.to,
-            cues,
-        });
+impl Sink for BarSink<'_> {
+    fn event(&self, event: Event<'_>) {
+        match event {
+            Event::Step(step) => {
+                self.finish();
+                let bar = match step {
+                    Step::Download(name) => download_bar(name),
+                    Step::Decode => percent_bar("decoding"),
+                    Step::Transcribe => percent_bar("transcribing"),
+                    Step::Translate => Bar::new(
+                        "translating",
+                        "{msg:>12} [{bar:30}] {pos}/{len} cues eta {eta}",
+                    ),
+                    Step::Embed => percent_bar("embedding"),
+                    Step::Burn => percent_bar("burning"),
+                    Step::Save => return,
+                };
+                if let Ok(mut current) = self.bar.lock() {
+                    *current = Some(bar);
+                }
+            }
+            Event::Progress { done, total } => {
+                if let Some(bar) = self.bar.lock().ok().as_ref().and_then(|b| b.as_ref()) {
+                    verbacue::Progress::update(bar, done, total);
+                }
+            }
+            Event::Wrote(path) => {
+                self.finish();
+                tracing::info!("wrote {}", path.display());
+            }
+            Event::Skipped(path) => {
+                tracing::info!(
+                    "skipped {}: {} exists",
+                    self.video.display(),
+                    path.display()
+                );
+            }
+            Event::Note(text) => tracing::warn!("{text}"),
+            Event::Cue(_) => {}
+        }
     }
-    tracks.push(video::SubtitleTrack {
-        language: source_lang,
-        cues: &source_cues,
-    });
-
-    if cli.embed {
-        let bar = percent_bar("embedding");
-        video::embed(video, &embed_out, &tracks, &bar)?;
-        bar.finish();
-        tracing::info!("wrote {}", embed_out.display());
-    }
-    if cli.burn {
-        let bar = percent_bar("burning");
-        let cues = tracks[0].cues;
-        video::burn(video, &burn_out, cues, &bar)?;
-        bar.finish();
-        tracing::info!("wrote {}", burn_out.display());
-    }
-    Ok(())
 }
 
 fn translate_files(inputs: &[PathBuf], from: Option<String>, args: &TranslateArgs) -> Result<()> {
@@ -649,11 +628,6 @@ fn print_models() -> Result<()> {
         );
     }
     Ok(())
-}
-
-fn format_duration(secs: f64) -> String {
-    let s = secs as u64;
-    format!("{}:{:02}:{:02} of audio", s / 3600, s / 60 % 60, s % 60)
 }
 
 #[cfg(test)]
