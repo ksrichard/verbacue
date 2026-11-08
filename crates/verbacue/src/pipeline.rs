@@ -141,6 +141,13 @@ pub trait Sink: Sync {
     fn cancelled(&self) -> bool {
         false
     }
+
+    /// Shows the film notes before the translation starts. A sink that returns text
+    /// replaces the notes with it; `None` keeps them. The pipeline waits for the answer.
+    fn review_notes(&self, notes: &str) -> Option<String> {
+        let _ = notes;
+        None
+    }
 }
 
 /// The result of a job.
@@ -370,7 +377,8 @@ impl Pipeline {
             sink.event(Event::Step(Step::Notes));
             if let Some(notes) = translator.film_notes(&texts, source_lang, &Report(sink))? {
                 tracing::info!("film notes: {notes}");
-                hints.film_notes = notes;
+                hints.film_notes = sink.review_notes(&notes).unwrap_or(notes);
+                check_cancel(&Report(sink))?;
             }
         }
         sink.event(Event::Step(Step::Translate));

@@ -5,7 +5,7 @@
 //! pipeline events go back to the app as [`Update`]s.
 
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
     mpsc,
 };
@@ -22,9 +22,14 @@ use verbacue::{
 #[derive(Debug, Clone)]
 pub enum Update {
     Step(Step),
-    Progress { done: u64, total: u64 },
+    Progress {
+        done: u64,
+        total: u64,
+    },
     Cue(Cue),
     Note(String),
+    /// The film notes; the pipeline waits for the corrected text on the reply channel.
+    Review(String),
     Finished(Result<Outcome, Failure>),
 }
 
@@ -58,7 +63,12 @@ pub fn friendly(kind: ErrorKind) -> &'static str {
     }
 }
 
-type Request = (Job, Arc<AtomicBool>, UnboundedSender<Update>);
+type Request = (
+    Job,
+    Arc<AtomicBool>,
+    UnboundedSender<Update>,
+    mpsc::Receiver<String>,
+);
 
 /// The pipeline thread.
 pub struct Worker {
@@ -72,10 +82,12 @@ impl Worker {
             .name("verbacue-pipeline".into())
             .spawn(move || {
                 let mut pipeline = Pipeline::new();
-                for (job, cancel, updates) in requests {
+                for (job, cancel, updates, replies) in requests {
+                    let replies = Mutex::new(replies);
                     let sink = Forward {
                         updates: &updates,
                         cancel: &cancel,
+                        replies: &replies,
                     };
                     let result = pipeline
                         .run(&job, &sink)
@@ -88,9 +100,17 @@ impl Worker {
     }
 
     /// Starts `job` and returns its updates. The last one is always `Finished`.
-    pub fn run(&self, job: Job, cancel: Arc<AtomicBool>) -> impl Stream<Item = Update> + use<> {
+    /// `replies` brings the corrected film notes back (see [`Update::Review`]).
+    pub fn run(
+        &self,
+        job: Job,
+        cancel: Arc<AtomicBool>,
+        replies: mpsc::Receiver<String>,
+    ) -> impl Stream<Item = Update> + use<> {
         let (updates, mut received) = unbounded_channel();
-        if let Err(mpsc::SendError((_, _, updates))) = self.jobs.send((job, cancel, updates)) {
+        if let Err(mpsc::SendError((_, _, updates, _))) =
+            self.jobs.send((job, cancel, updates, replies))
+        {
             let _ = updates.send(Update::Finished(Err(Failure::new(
                 ErrorKind::Other,
                 "the pipeline thread stopped",
@@ -104,6 +124,8 @@ impl Worker {
 struct Forward<'a> {
     updates: &'a UnboundedSender<Update>,
     cancel: &'a AtomicBool,
+    /// In a mutex, because a sink must be `Sync`.
+    replies: &'a Mutex<mpsc::Receiver<String>>,
 }
 
 impl Sink for Forward<'_> {
@@ -120,5 +142,64 @@ impl Sink for Forward<'_> {
 
     fn cancelled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
+    }
+
+    fn review_notes(&self, notes: &str) -> Option<String> {
+        if self
+            .updates
+            .send(Update::Review(notes.to_string()))
+            .is_err()
+        {
+            return None;
+        }
+        // Wait for the user, but stop when the job is cancelled or the app is gone.
+        loop {
+            if self.cancelled() {
+                return None;
+            }
+            let Ok(replies) = self.replies.lock() else {
+                return None;
+            };
+            match replies.recv_timeout(std::time::Duration::from_millis(200)) {
+                Ok(text) => return Some(text),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return None,
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notes_review_waits_for_the_answer() {
+        let (updates, mut sent) = unbounded_channel();
+        let cancel = AtomicBool::new(false);
+        let (reply, replies) = mpsc::channel();
+        let replies = Mutex::new(replies);
+        let sink = Forward {
+            updates: &updates,
+            cancel: &cancel,
+            replies: &replies,
+        };
+        reply.send("edited".to_string()).unwrap();
+        assert_eq!(sink.review_notes("automatic"), Some("edited".to_string()));
+        assert!(matches!(sent.try_recv(), Ok(Update::Review(t)) if t == "automatic"));
+    }
+
+    #[test]
+    fn notes_review_stops_waiting_when_cancelled() {
+        let (updates, _sent) = unbounded_channel();
+        let cancel = AtomicBool::new(true);
+        let (_reply, replies) = mpsc::channel::<String>();
+        let replies = Mutex::new(replies);
+        let sink = Forward {
+            updates: &updates,
+            cancel: &cancel,
+            replies: &replies,
+        };
+        assert_eq!(sink.review_notes("automatic"), None);
     }
 }

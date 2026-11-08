@@ -11,7 +11,7 @@ use iced::{
     widget::{
         button, canvas,
         canvas::{Frame, Geometry, Path, gradient::Linear},
-        column, container, row, scrollable, text,
+        column, container, row, scrollable, text, text_editor,
     },
 };
 use verbacue::{
@@ -69,6 +69,10 @@ pub struct Convert {
     pub summary: String,
     /// A message from the pipeline, for example "no translation needed".
     pub note: Option<String>,
+    /// The film notes, while the user checks them.
+    pub review: Option<text_editor::Content>,
+    /// Sends the checked notes back to the pipeline.
+    pub reply: Option<std::sync::mpsc::Sender<String>>,
 }
 
 impl Convert {
@@ -104,6 +108,8 @@ impl Convert {
             cue_count: 0,
             summary,
             note: None,
+            review: None,
+            reply: None,
         }
     }
 
@@ -150,7 +156,7 @@ impl Convert {
                 }
             }
             Update::Note(note) => self.note = Some(note),
-            Update::Finished(_) => {}
+            Update::Review(_) | Update::Finished(_) => {}
         }
     }
 
@@ -192,6 +198,9 @@ pub fn view_screen(app: &App) -> Element<'_, Message> {
     let t = app.seconds();
     if let Some(error) = &c.error {
         return error_card(c, error);
+    }
+    if let Some(content) = &c.review {
+        return review_card(c, content);
     }
 
     // The quip changes every 3.2 s and fades over 0.4 s at both ends.
@@ -420,6 +429,48 @@ fn queue_panel(app: &App) -> Element<'_, Message> {
     .width(Length::Fill)
     .max_width(640)
     .style(theme::card(18.0))
+    .into()
+}
+
+/// The film notes in an editor; the translation waits until the user continues.
+fn review_card<'a>(c: &'a Convert, content: &'a text_editor::Content) -> Element<'a, Message> {
+    let card = column![
+        text("Check the notes")
+            .font(theme::HEADING)
+            .size(30)
+            .color(theme::TEXT),
+        text(&c.summary).color(theme::MUTED),
+        text(
+            "verbacue read the whole story and wrote these notes for the translator. \
+             Correct names, relations and who speaks formally to whom, then continue."
+        )
+        .size(14)
+        .color(theme::TEXT_SOFT),
+        text_editor(content)
+            .on_action(Message::ReviewEdit)
+            .height(220)
+            .padding(14),
+        row![
+            button(text("Translate with these notes →").font(theme::BODY_BOLD))
+                .padding([12, 22])
+                .style(theme::primary)
+                .on_press(Message::ReviewDone),
+            button(text("Cancel"))
+                .padding([12, 22])
+                .style(theme::ghost)
+                .on_press(Message::Cancel),
+        ]
+        .spacing(12),
+    ]
+    .spacing(14);
+    container(
+        container(card)
+            .padding(28)
+            .max_width(720)
+            .style(theme::card(22.0)),
+    )
+    .padding([60, 56])
+    .center_x(Length::Fill)
     .into()
 }
 

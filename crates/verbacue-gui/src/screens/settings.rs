@@ -32,6 +32,7 @@ pub enum SettingChange {
     Register(Register),
     Glossary(Option<PathBuf>),
     FilmNotes(bool),
+    ReviewNotes(bool),
     Format(Format),
     OutDir(Option<PathBuf>),
 }
@@ -49,6 +50,7 @@ impl SettingChange {
             Self::Register(v) => s.register = v,
             Self::Glossary(v) => s.glossary = v,
             Self::FilmNotes(v) => s.film_notes = v,
+            Self::ReviewNotes(v) => s.review_notes = v,
             Self::Format(v) => s.format = v,
             Self::OutDir(v) => s.out_dir = v,
         }
@@ -360,6 +362,17 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 Message::Setting(SettingChange::FilmNotes(!s.film_notes)),
             ),
         ));
+        if s.film_notes {
+            translation.push(setting_row(
+                "Let me check the notes",
+                "Pause before translating, so you can correct the notes. Turn off for long queues.",
+                switch::view(
+                    s.review_notes,
+                    app.film_notes_changed.elapsed().as_secs_f32(),
+                    Message::Setting(SettingChange::ReviewNotes(!s.review_notes)),
+                ),
+            ));
+        }
     }
     translation.push(setting_row(
         "Glossary",

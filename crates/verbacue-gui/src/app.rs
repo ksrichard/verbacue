@@ -100,6 +100,10 @@ pub enum Message {
     Start,
     ConfirmReplace(bool),
     Pipeline(Update),
+    /// An edit in the film notes editor.
+    ReviewEdit(iced::widget::text_editor::Action),
+    /// The user checked the film notes; the translation starts.
+    ReviewDone,
     Cancel,
     CloseRequested,
     ConfirmClose(bool),
@@ -186,6 +190,9 @@ impl App {
         #[cfg(debug_assertions)]
         if crate::devshot::target().is_some() {
             app.config = None;
+            if std::env::var_os("VERBACUE_GUI_SHOT_DEFAULTS").is_some() {
+                app.settings = Settings::default();
+            }
             if let Some(model) = crate::devshot::model() {
                 app.settings.whisper_model = model;
             }
@@ -482,6 +489,29 @@ impl App {
                 }
             }
             Message::Pipeline(Update::Finished(result)) => self.finished(result),
+            Message::Pipeline(Update::Review(notes)) => {
+                if self.settings.review_notes {
+                    self.convert.review =
+                        Some(iced::widget::text_editor::Content::with_text(&notes));
+                } else if let Some(reply) = &self.convert.reply {
+                    let _ = reply.send(notes);
+                }
+                Task::none()
+            }
+            Message::ReviewEdit(action) => {
+                if let Some(content) = &mut self.convert.review {
+                    content.perform(action);
+                }
+                Task::none()
+            }
+            Message::ReviewDone => {
+                if let (Some(content), Some(reply)) =
+                    (self.convert.review.take(), &self.convert.reply)
+                {
+                    let _ = reply.send(content.text());
+                }
+                Task::none()
+            }
             Message::Pipeline(update) => {
                 self.convert.apply(update);
                 Task::none()
@@ -541,7 +571,10 @@ impl App {
                 if matches!(change, SettingChange::Vad(_)) {
                     self.vad_changed = Instant::now();
                 }
-                if matches!(change, SettingChange::FilmNotes(_)) {
+                if matches!(
+                    change,
+                    SettingChange::FilmNotes(_) | SettingChange::ReviewNotes(_)
+                ) {
                     self.film_notes_changed = Instant::now();
                 }
                 change.apply(&mut self.settings);
@@ -818,11 +851,12 @@ impl App {
         self.show(Screen::Convert);
         let worker = Arc::clone(&self.worker);
         let cancel = Arc::clone(&self.convert.cancel);
+        let (reply, replies) = std::sync::mpsc::channel();
+        self.convert.reply = Some(reply);
         // The thread starts only when the task runs, so tests never start the pipeline.
-        let updates =
-            iced::futures::stream::once(
-                async move { worker.get_or_init(Worker::new).run(job, cancel) },
-            );
+        let updates = iced::futures::stream::once(async move {
+            worker.get_or_init(Worker::new).run(job, cancel, replies)
+        });
         Task::run(
             iced::futures::StreamExt::flatten(updates),
             Message::Pipeline,
@@ -1172,11 +1206,12 @@ mod tests {
     #[test]
     fn step_events_move_the_steps_row() {
         let mut a = converting("steps");
-        assert_eq!(a.convert.steps.len(), 4);
+        // Read audio, Transcribe, Read the story, Translate, Burn in.
+        assert_eq!(a.convert.steps.len(), 5);
         update(&mut a, Update::Step(Step::Decode));
         assert_eq!(a.convert.current, Some(0));
         update(&mut a, Update::Step(Step::Download("large-v3")));
-        assert_eq!(a.convert.steps.len(), 5);
+        assert_eq!(a.convert.steps.len(), 6);
         assert_eq!(a.convert.steps[1].label, "Download large-v3");
         update(&mut a, Update::Step(Step::Transcribe));
         assert_eq!(a.convert.current, Some(2));
@@ -1405,8 +1440,9 @@ mod tests {
                 total: 100,
             },
         );
-        // Transcribe is step 2 of 4 and 42 % done: (1 + 0.42) / 4 is about 36 %.
-        assert_eq!(a.title(), "VERBACUE — movie.mkv — 36 %");
+        // Transcribe is step 2 of 5 (with "Read the story") and 42 % done:
+        // (1 + 0.42) / 5 is about 28 %.
+        assert_eq!(a.title(), "VERBACUE — movie.mkv — 28 %");
         assert_eq!(app().title(), "VERBACUE");
     }
 
@@ -1556,5 +1592,30 @@ mod tests {
         let translation = a.job().unwrap().translation.unwrap();
         assert_eq!(translation.notes, "Two sisters argue.");
         assert!(translation.film_notes);
+    }
+
+    #[test]
+    fn automatic_notes_open_an_editor_and_continue_sends_the_correction() {
+        let mut a = converting("review");
+        update(&mut a, Update::Review("Ayse is the sister.".into()));
+        assert_eq!(
+            a.convert.review.as_ref().unwrap().text().trim(),
+            "Ayse is the sister."
+        );
+        let (reply, replies) = std::sync::mpsc::channel();
+        a.convert.reply = Some(reply);
+        let _ = a.update(Message::ReviewEdit(
+            iced::widget::text_editor::Action::Edit(iced::widget::text_editor::Edit::Insert('!')),
+        ));
+        let _ = a.update(Message::ReviewDone);
+        assert!(a.convert.review.is_none());
+        assert!(replies.try_recv().unwrap().contains("sister"));
+    }
+
+    #[test]
+    fn film_notes_and_their_review_are_on_by_default() {
+        let s = Settings::default();
+        assert!(s.film_notes);
+        assert!(s.review_notes);
     }
 }

@@ -3,7 +3,8 @@
 //! screens with the mockups without screen-capture rights. `VERBACUE_GUI_SHOT_FILE`
 //! opens a video first, and `VERBACUE_GUI_SHOT_SCREEN=settings` opens Settings.
 //! `VERBACUE_GUI_SHOT_START=1` presses Start, and `VERBACUE_GUI_SHOT_MODEL` sets the
-//! Whisper model. In this mode the app never saves `gui.toml`.
+//! Whisper model, and `VERBACUE_GUI_SHOT_DEFAULTS=1` starts with the default settings.
+//! In this mode the app never saves `gui.toml`.
 //!
 //! `VERBACUE_GUI_REC=<folder>` records the whole flow instead: it saves about 10 JPEG
 //! frames per second into the folder, opens `VERBACUE_GUI_SHOT_FILE` (a path list)
