@@ -42,6 +42,19 @@ Windows). Keys for online services stay where the command line reads them.
 
 [SCREENSHOT]
 
+### Installers
+
+Each release also has installers for the desktop app:
+
+| System | File | Notes |
+|---|---|---|
+| macOS | `verbacue-<version>-macos-arm64.dmg` | Drag verbacue to Applications. The app is not signed: at the first start, right-click it and choose Open. |
+| Windows | `verbacue-<version>-windows-x64-<cpu\|cuda\|vulkan>-setup.exe` | A setup wizard with a Start menu entry and an uninstaller. |
+| Linux | `verbacue-<version>-linux-<amd64\|arm64>-<cpu-gui\|vulkan\|cuda>.deb` | For Debian, Ubuntu and similar: `sudo apt install ./verbacue-….deb`. Adds a menu entry. |
+| Linux | `verbacue-<version>-linux-<amd64\|arm64>-<cpu-gui\|vulkan\|cuda>.AppImage` | One file for most distributions: make it executable and start it. |
+
+`packaging/` holds the scripts and icons that make them.
+
 All binaries include the app, except the fully static Linux CPU binaries
 (`linux-*-cpu`, for servers and containers) and the MinGW build from `docker/build.sh`.
 On Linux without a GPU, use `linux-*-cpu-gui`; it links glibc 2.35 or newer

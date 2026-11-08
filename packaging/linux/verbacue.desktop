@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=verbacue
+GenericName=Subtitle maker
+Comment=Transcribe, translate and burn in subtitles for any video, on this computer
+Exec=verbacue gui
+Icon=verbacue
+Terminal=false
+Categories=AudioVideo;Video;
+Keywords=subtitles;translate;transcribe;whisper;srt;

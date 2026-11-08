@@ -56,10 +56,16 @@ jobs:
         run: |
           cp LICENSE THIRD-PARTY-LICENSES.txt dist/
           tar -czf verbacue-linux-${{ matrix.arch }}-${{ matrix.gpu }}.tar.gz -C dist verbacue LICENSE THIRD-PARTY-LICENSES.txt
+      # Every build with the desktop app also gets a .deb and an AppImage.
+      - name: Make the installers
+        if: matrix.gpu != 'cpu'
+        run: packaging/linux/make-packages.sh dist/verbacue ${{ matrix.gpu }} installers
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verbacue-linux-${{ matrix.arch }}-${{ matrix.gpu }}
-          path: verbacue-linux-${{ matrix.arch }}-${{ matrix.gpu }}.tar.gz
+          path: |
+            verbacue-linux-${{ matrix.arch }}-${{ matrix.gpu }}.tar.gz
+            installers/*
 
   # Windows builds use MSVC, the toolchain that whisper.cpp and llama.cpp support best.
   # docker/build.sh windows-x64 is a MinGW-w64 alternative for local builds only.
@@ -156,10 +162,19 @@ jobs:
         run: |
           cp LICENSE THIRD-PARTY-LICENSES.txt dist/
           cd dist && 7z a ../verbacue-windows-x64-${{ matrix.gpu }}.zip .
+      - name: Make the installer
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" -Q "-DVersion=$version" \
+            "-DVariant=${{ matrix.gpu }}" "-DSource=$(cygpath -w "$PWD/dist")" \
+            "-DOutput=$(cygpath -w "$PWD/installers")" \
+            packaging/windows/verbacue.iss
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verbacue-windows-x64-${{ matrix.gpu }}
-          path: verbacue-windows-x64-${{ matrix.gpu }}.zip
+          path: |
+            verbacue-windows-x64-${{ matrix.gpu }}.zip
+            installers/*
 
   # Apple Silicon only. The GPU (Metal) is always on; there is no CUDA on macOS.
   macos:
@@ -186,10 +201,16 @@ jobs:
         run: |
           mkdir dist && cp target/release/verbacue LICENSE THIRD-PARTY-LICENSES.txt dist/
           tar -czf verbacue-macos-arm64-metal.tar.gz -C dist .
+      - name: Make the DMG
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          packaging/macos/make-dmg.sh target/release/verbacue "verbacue-$version-macos-arm64.dmg"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verbacue-macos-arm64-metal
-          path: verbacue-macos-arm64-metal.tar.gz
+          path: |
+            verbacue-macos-arm64-metal.tar.gz
+            verbacue-*-macos-arm64.dmg
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
