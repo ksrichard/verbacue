@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>verbacue: done</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#120e0d}
+a{color:#ff8a4c}a:hover{color:#ffb38a}
+@keyframes pop{0%{transform:scale(.4);opacity:0}60%{transform:scale(1.12);opacity:1}100%{transform:scale(1)}}
+@keyframes confetti{0%{transform:translate(0,0) rotate(0);opacity:1}100%{transform:translate(var(--dx),220px) rotate(var(--r));opacity:0}}
+@keyframes fadeup{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+.pop{animation:pop .7s cubic-bezier(.2,.9,.3,1.4) both}
+.cf{position:absolute;top:0;width:10px;height:16px;border-radius:3px;animation:confetti 2.4s ease-in infinite}
+.in{animation:fadeup .6s ease-out both}.d1{animation-delay:.2s}.d2{animation-delay:.35s}
+.navlink{color:#cdbfb2;text-decoration:none;padding:10px 14px;border-radius:12px;display:flex;align-items:center;gap:10px;font-weight:500}
+.cta{display:inline-flex;align-items:center;gap:10px;background:#e8622a;color:#1a0f0a;text-decoration:none;font-weight:600;padding:14px 24px;border-radius:14px}
+.cta:hover{color:#1a0f0a}
+.ghost{display:inline-flex;align-items:center;gap:10px;color:#f3e9dc;text-decoration:none;border:1px solid rgba(243,233,220,.2);padding:14px 22px;border-radius:14px;font-weight:500}
+.ghost:hover{color:#f3e9dc;border-color:rgba(243,233,220,.4)}
+</style>
+</helmet>
+<div style="min-height:800px;display:flex;flex-wrap:wrap;font-family:Inter,system-ui,sans-serif;color:#f3e9dc;background:radial-gradient(900px 500px at 50% 0%,#24301f 0%,#120e0d 65%)">
+  <nav aria-label="Main" style="flex:1 1 220px;max-width:260px;padding:28px 18px;display:flex;flex-direction:column;gap:6px;border-right:1px solid rgba(243,233,220,.07)">
+    <div style="display:flex;align-items:center;gap:10px;padding:0 10px 22px">
+      <svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true"><rect width="34" height="34" rx="9" fill="#2b2220"></rect><rect x="5" y="15" width="24" height="3" rx="1.5" fill="#c9c2b8"></rect><rect x="7" y="11" width="6" height="11" rx="2" fill="#7a3b26"></rect><rect x="14" y="10" width="6" height="13" rx="2" fill="#3f8f3a"></rect><rect x="21" y="11" width="6" height="11" rx="2" fill="#f2c14e"></rect></svg>
+      <span style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:22px"><span style="color:#f3e9dc">verba</span><span style="color:#e8622a">cue</span></span>
+    </div>
+    <a class="navlink" href="Main.dc.html" style="background:rgba(232,98,42,.14);color:#ffb38a">New subtitles</a>
+    <a class="navlink" href="Settings.dc.html">Settings</a>
+  </nav>
+  <main style="flex:999 1 560px;min-width:0;padding:56px clamp(20px,5vw,64px);display:flex;flex-direction:column;align-items:center;gap:26px;position:relative;overflow:hidden">
+    <div aria-hidden="true" style="position:absolute;left:0;right:0;top:0;height:10px">
+      <div class="cf" style="left:20%;background:#e8622a;--dx:-40px;--r:300deg"></div>
+      <div class="cf" style="left:32%;background:#f2c14e;--dx:30px;--r:-260deg;animation-delay:.4s"></div>
+      <div class="cf" style="left:48%;background:#3f8f3a;--dx:-20px;--r:200deg;animation-delay:.8s"></div>
+      <div class="cf" style="left:61%;background:#f3e9dc;--dx:50px;--r:-320deg;animation-delay:.2s"></div>
+      <div class="cf" style="left:74%;background:#c8402f;--dx:-30px;--r:280deg;animation-delay:.6s"></div>
+    </div>
+    <div class="pop" style="width:120px;height:120px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#5dbb55,#2f7a2a);display:flex;align-items:center;justify-content:center;box-shadow:0 20px 60px -15px rgba(93,187,85,.6)">
+      <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="#f2ffe8" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-10"></path></svg>
+    </div>
+    <div class="in" style="text-align:center;display:flex;flex-direction:column;gap:8px">
+      <h1 style="margin:0;font-family:'Space Grotesk',sans-serif;font-size:clamp(30px,3.6vw,44px)">Served hot!</h1>
+      <p style="margin:0;color:#b9aa9c">[NUMBER] subtitle lines in Hungarian, ready to watch.</p>
+    </div>
+    <div class="in d1" style="width:min(620px,100%);border-radius:20px;background:rgba(243,233,220,.05);padding:18px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <div style="width:120px;aspect-ratio:16/9;border-radius:10px;background:linear-gradient(135deg,#3a2a24,#1b1412);display:flex;align-items:flex-end;justify-content:center;padding-bottom:8px;box-sizing:border-box"><span style="font-size:9px;background:rgba(0,0,0,.6);padding:2px 6px;border-radius:4px">[SUBTITLE]</span></div>
+      <div style="flex:1;min-width:180px;display:flex;flex-direction:column;gap:4px">
+        <span style="font-weight:600">[FILE NAME].hu.mp4</span>
+        <span style="font-size:13px;color:#a89a8d">Burned in · also saved: [FILE NAME].hu.srt</span>
+      </div>
+    </div>
+    <div class="in d2" style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center">
+      <a class="cta" href="#">Play video</a>
+      <a class="ghost" href="#">Show in folder</a>
+      <a class="ghost" href="Main.dc.html">Grill another one</a>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":800}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

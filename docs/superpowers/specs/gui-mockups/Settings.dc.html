@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>verbacue: settings</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#120e0d}
+a{color:#ff8a4c}a:hover{color:#ffb38a}
+@keyframes fadeup{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.card{animation:fadeup .5s ease-out both;border-radius:20px;background:rgba(243,233,220,.04);padding:22px;display:flex;flex-direction:column;gap:16px}
+.card.d1{animation-delay:.06s}.card.d2{animation-delay:.12s}.card.d3{animation-delay:.18s}
+.navlink{color:#cdbfb2;text-decoration:none;padding:10px 14px;border-radius:12px;display:flex;align-items:center;gap:10px;font-weight:500}
+.navlink:hover{background:rgba(243,233,220,.06);color:#f3e9dc}
+.row{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.lbl{display:flex;flex-direction:column;gap:3px;min-width:200px;flex:1}
+.lbl b{font-weight:600}.lbl span{font-size:13px;color:#a89a8d}
+.sel{background:#1f1714;color:#f3e9dc;border:1px solid rgba(243,233,220,.14);border-radius:12px;padding:10px 14px;font:inherit;min-height:44px;min-width:220px}
+.seg{display:flex;background:#1f1714;border-radius:12px;padding:4px;gap:4px}
+.seg button{all:unset;cursor:pointer;padding:10px 16px;border-radius:9px;font-weight:500;min-height:24px;transition:background .25s,color .25s}
+.sw{all:unset;cursor:pointer;width:52px;height:30px;border-radius:15px;position:relative;transition:background .3s}
+.sw:focus-visible,.seg button:focus-visible{outline:3px solid #ffb38a;outline-offset:2px}
+.knob{position:absolute;top:3px;width:24px;height:24px;border-radius:50%;background:#f3e9dc;transition:left .3s cubic-bezier(.3,1.4,.5,1)}
+.pill{font-size:12px;padding:4px 10px;border-radius:999px}
+.btn{all:unset;cursor:pointer;padding:9px 14px;border-radius:10px;border:1px solid rgba(243,233,220,.2);font-size:13px;font-weight:500}
+.btn:focus-visible{outline:3px solid #ffb38a;outline-offset:2px}
+</style>
+</helmet>
+<div style="min-height:800px;display:flex;flex-wrap:wrap;font-family:Inter,system-ui,sans-serif;color:#f3e9dc;background:radial-gradient(1200px 600px at 70% -10%,#2b1a14 0%,#120e0d 60%)">
+  <nav aria-label="Main" style="flex:1 1 220px;max-width:260px;padding:28px 18px;display:flex;flex-direction:column;gap:6px;border-right:1px solid rgba(243,233,220,.07)">
+    <div style="display:flex;align-items:center;gap:10px;padding:0 10px 22px">
+      <svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true"><rect width="34" height="34" rx="9" fill="#2b2220"></rect><rect x="5" y="15" width="24" height="3" rx="1.5" fill="#c9c2b8"></rect><rect x="7" y="11" width="6" height="11" rx="2" fill="#7a3b26"></rect><rect x="14" y="10" width="6" height="13" rx="2" fill="#3f8f3a"></rect><rect x="21" y="11" width="6" height="11" rx="2" fill="#f2c14e"></rect></svg>
+      <span style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:22px"><span style="color:#f3e9dc">verba</span><span style="color:#e8622a">cue</span></span>
+    </div>
+    <a class="navlink" href="Main.dc.html">New subtitles</a>
+    <a class="navlink" href="Settings.dc.html" style="background:rgba(232,98,42,.14);color:#ffb38a">Settings</a>
+  </nav>
+  <main style="flex:999 1 560px;min-width:0;padding:40px clamp(20px,5vw,64px);display:flex;flex-direction:column;gap:20px;max-width:900px">
+    <h1 style="margin:0 0 6px;font-family:'Space Grotesk',sans-serif;font-size:36px">Settings</h1>
+
+    <section class="card" aria-labelledby="h-speech">
+      <h2 id="h-speech" style="margin:0;font-size:18px;font-family:'Space Grotesk',sans-serif">Speech to text</h2>
+      <div class="row"><div class="lbl"><b>Whisper model</b><span>Bigger is more accurate and slower.</span></div>
+        <select class="sel" aria-label="Whisper model"><option>large-v3 (best, 3.1 GB)</option><option>large-v3-turbo (faster, 1.6 GB)</option><option>medium</option><option>small</option></select></div>
+      <div class="row"><div class="lbl"><b>Spoken language</b><span>Whisper detects it when you choose Auto.</span></div>
+        <select class="sel" aria-label="Spoken language"><option>Auto</option><option>Turkish</option><option>English</option></select></div>
+      <div class="row"><div class="lbl"><b>Skip silence and music</b><span>Stops Whisper from inventing text.</span></div>
+        <button type="button" class="sw" role="switch" aria-checked="{{vadOn}}" aria-label="Skip silence and music" onClick="{{toggleVad}}" style="{{vadTrack}}"><span class="knob" style="{{vadKnob}}"></span></button></div>
+    </section>
+
+    <section class="card d1" aria-labelledby="h-tr">
+      <h2 id="h-tr" style="margin:0;font-size:18px;font-family:'Space Grotesk',sans-serif">Translation</h2>
+      <div class="row"><div class="lbl"><b>Translator</b><span>Local runs offline. Online services need a key.</span></div>
+        <div class="seg" role="group" aria-label="Translator">
+          <sc-for list="{{translators}}" as="t" hint-placeholder-count="4"><button type="button" aria-pressed="{{t.on}}" onClick="{{t.pick}}" style="{{t.style}}">{{t.name}}</button></sc-for>
+        </div></div>
+      <div class="row"><div class="lbl"><b>Language model</b><span>Used by the local translator.</span></div>
+        <select class="sel" aria-label="Language model"><option>TranslateGemma 12B (7.3 GB)</option><option>TranslateGemma 27B (14.9 GB)</option><option>Gemma 3 12B</option><option>Gemma 4 26B-A4B</option></select></div>
+      <div class="row"><div class="lbl"><b>Form of address</b><span>Formal or informal "you".</span></div>
+        <select class="sel" aria-label="Form of address"><option>Informal</option><option>Formal</option></select></div>
+      <div class="row"><div class="lbl"><b>Glossary</b><span>Fixed translations for names and terms.</span></div>
+        <button type="button" class="btn">Choose a file…</button></div>
+    </section>
+
+    <section class="card d2" aria-labelledby="h-out">
+      <h2 id="h-out" style="margin:0;font-size:18px;font-family:'Space Grotesk',sans-serif">Output</h2>
+      <div class="row"><div class="lbl"><b>Subtitle format</b><span>For the separate file.</span></div>
+        <select class="sel" aria-label="Subtitle format"><option>SRT</option><option>WebVTT</option></select></div>
+      <div class="row"><div class="lbl"><b>Save to</b><span>Next to the video, or a folder you choose.</span></div>
+        <button type="button" class="btn">Next to the video</button></div>
+    </section>
+
+    <section class="card d3" aria-labelledby="h-models">
+      <h2 id="h-models" style="margin:0;font-size:18px;font-family:'Space Grotesk',sans-serif">Models on this computer</h2>
+      <div class="row"><div class="lbl"><b>large-v3</b><span>Whisper · 3.1 GB</span></div><span class="pill" style="background:rgba(63,143,58,.2);color:#bfe3b5">Downloaded</span><button type="button" class="btn">Remove</button></div>
+      <div class="row"><div class="lbl"><b>translategemma-12b</b><span>Translation · 7.3 GB</span></div><span class="pill" style="background:rgba(63,143,58,.2);color:#bfe3b5">Downloaded</span><button type="button" class="btn">Remove</button></div>
+      <div class="row"><div class="lbl"><b>translategemma-27b</b><span>Translation · 14.9 GB</span></div><span class="pill" style="background:rgba(243,233,220,.08);color:#cdbfb2">Not downloaded</span><button type="button" class="btn" style="border-color:#e8622a;color:#ffb38a">Download</button></div>
+    </section>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":800}}'>
+class Component extends DCLogic {
+state = { vad: true, tr: 'Local' };
+renderVals() {
+const vad = this.state.vad;
+const names = ['Local', 'DeepL', 'Google', 'Server'];
+return {
+vadOn: vad ? 'true' : 'false',
+vadTrack: 'background:' + (vad ? '#e8622a' : '#4a403b'),
+vadKnob: 'left:' + (vad ? '25px' : '3px'),
+toggleVad: () => this.setState({ vad: !vad }),
+translators: names.map((name) => ({
+name,
+on: this.state.tr === name ? 'true' : 'false',
+style: this.state.tr === name ? 'background:#e8622a;color:#1a0f0a' : 'color:#cdbfb2',
+pick: () => this.setState({ tr: name }),
+})),
+};
+}
+}
+</script>
+</body>
+</html>
