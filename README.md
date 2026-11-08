@@ -225,7 +225,7 @@ program can use one step alone:
 | `verbacue-media` | Reads the audio of any video; writes MKV with subtitle tracks or MP4 with burned-in text | FFmpeg |
 | `verbacue-translate` | Translates cues with a local model, DeepL, Google, Azure or an OpenAI-compatible server | llama.cpp (`local`), rustls (`online`) |
 | `verbacue` | All of the above as modules, behind features | what the features turn on |
-| `verbacue-cli` | The `verbacue` command: command line, progress bars and file names | all |
+| `verbacue-app` | The `verbacue` command: command line, progress bars and file names | all |
 
 The `verbacue` crate is the easy start. It has one module for each step: `audio`,
 `transcribe`, `subtitle`, `translate`, `video` and `models`. Its features select the

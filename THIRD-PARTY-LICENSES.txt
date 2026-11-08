@@ -4937,7 +4937,7 @@ SOFTWARE.
 MIT License (MIT)
 Used by:
   - verbacue 0.1.0
-  - verbacue-cli 0.1.0
+  - verbacue-app 0.1.0
   - verbacue-core 0.1.0
   - verbacue-media 0.1.0
   - verbacue-transcribe 0.1.0

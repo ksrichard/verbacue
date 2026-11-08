@@ -2041,7 +2041,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "verbacue-cli"
+name = "verbacue-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
