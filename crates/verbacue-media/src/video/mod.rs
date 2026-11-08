@@ -13,6 +13,7 @@ mod burn;
 mod embed;
 mod fonts;
 mod overlay;
+mod preview;
 
 use std::path::Path;
 
@@ -30,6 +31,7 @@ use verbacue_core::{
 
 use burn::{open_video_decoder, write_burned};
 use embed::write_embedded;
+pub use preview::{MediaInfo, PreviewFrame, media_info, preview_frames};
 
 pub struct SubtitleTrack<'a> {
     /// ISO 639-1 code, for example "hu".
