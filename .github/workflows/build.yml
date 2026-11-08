@@ -1,5 +1,5 @@
-# Builds self-contained verbacue binaries for macOS, Linux and Windows, with and without
-# CUDA. Each job checks that the binary links only system libraries. A tag that starts
+# Builds self-contained verbacue binaries for macOS, Linux and Windows, for the CPU and
+# for GPUs (CUDA, Vulkan). Each job checks that the binary links only system libraries. A tag that starts
 # with "v" also attaches the binaries to a GitHub release.
 name: build
 
@@ -14,6 +14,7 @@ permissions:
 env:
   RUST_VERSION: "1.94.0"
   CUDA_VERSION: "12.9.1"
+  VULKAN_VERSION: "1.4.313.2"
 
 jobs:
   linux:
@@ -23,7 +24,7 @@ jobs:
       fail-fast: false
       matrix:
         arch: [amd64, arm64]
-        gpu: [cpu, cuda]
+        gpu: [cpu, cuda, vulkan]
         include:
           - arch: amd64
             runner: ubuntu-24.04
@@ -39,6 +40,11 @@ jobs:
           args=""
           if [ "${{ matrix.gpu }}" = cuda ]; then
             args="--build-arg BASE=nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 --build-arg FEATURES=cuda"
+          fi
+          # Ubuntu 22.04 has no glslc and too old Vulkan headers (see docker/build.sh).
+          if [ "${{ matrix.gpu }}" = vulkan ]; then
+            args="--build-arg BASE=ubuntu:24.04 --build-arg FEATURES=vulkan"
+            args="$args --build-arg PACKAGES=libvulkan-dev,glslc,spirv-headers"
           fi
           docker buildx build $args --build-arg RUST_VERSION="$RUST_VERSION" \
             -f docker/linux.Dockerfile --output type=local,dest=dist .
@@ -71,10 +77,15 @@ jobs:
           name: verbacue-windows-x64-cpu
           path: verbacue-windows-x64-cpu.zip
 
-  # CUDA does not work with MinGW, so the CUDA build uses MSVC on Windows.
-  windows-cuda:
-    name: windows-x64-cuda
+  # The GPU builds use MSVC on Windows: CUDA does not work with MinGW, and the Vulkan
+  # SDK ships its import library for MSVC only.
+  windows-gpu:
+    name: windows-x64-${{ matrix.gpu }}
     runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        gpu: [cuda, vulkan]
     defaults:
       run:
         shell: bash
@@ -97,10 +108,21 @@ jobs:
       - name: Install Rust
         run: rustup toolchain install "$RUST_VERSION" --profile minimal && rustup default "$RUST_VERSION"
       - uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d # v0.2.36
+        if: matrix.gpu == 'cuda'
         with:
           cuda: ${{ env.CUDA_VERSION }}
           method: network
           sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
+      - name: Install the Vulkan SDK
+        if: matrix.gpu == 'vulkan'
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/vulkansdk.exe" \
+            "https://sdk.lunarg.com/sdk/download/$VULKAN_VERSION/windows/vulkansdk-windows-X64-$VULKAN_VERSION.exe"
+          "$RUNNER_TEMP/vulkansdk.exe" --root "C:\VulkanSDK" --accept-licenses --default-answer \
+            --confirm-command install
+          echo "VULKAN_SDK=C:\VulkanSDK" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=C:\VulkanSDK" >> "$GITHUB_ENV"
+          echo "C:\VulkanSDK\Bin" >> "$GITHUB_PATH"
       # FFmpeg from vcpkg, because the FFmpeg source build of ffmpeg-sys-next does not
       # support Windows targets. The static triplet also uses the static C runtime.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -115,10 +137,11 @@ jobs:
           echo "VCPKG_ROOT=$VCPKG_INSTALLATION_ROOT" >> "$GITHUB_ENV"
       - name: Build
         run: |
-          cargo build --release --locked --features cuda
+          cargo build --release --locked --features ${{ matrix.gpu }}
           mkdir dist && cp target/release/verbacue.exe dist/
       # cuBLAS has no static library on Windows, so the CUDA build ships its DLLs.
       - name: Add the CUDA DLLs
+        if: matrix.gpu == 'cuda'
         run: |
           for dll in cudart64_12 cublas64_12 cublasLt64_12; do
             cp "$CUDA_PATH/bin/$dll.dll" dist/
@@ -128,11 +151,11 @@ jobs:
       - name: Package
         run: |
           cp LICENSE THIRD-PARTY-LICENSES.txt dist/
-          cd dist && 7z a ../verbacue-windows-x64-cuda.zip .
+          cd dist && 7z a ../verbacue-windows-x64-${{ matrix.gpu }}.zip .
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: verbacue-windows-x64-cuda
-          path: verbacue-windows-x64-cuda.zip
+          name: verbacue-windows-x64-${{ matrix.gpu }}
+          path: verbacue-windows-x64-${{ matrix.gpu }}.zip
 
   # Apple Silicon only. The GPU (Metal) is always on; there is no CUDA on macOS.
   macos:
@@ -166,7 +189,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, windows-cpu, windows-cuda, macos]
+    needs: [linux, windows-cpu, windows-gpu, macos]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

@@ -1,8 +1,9 @@
 #!/bin/sh
 # Runs inside docker/linux.Dockerfile. Builds verbacue, checks what it links, and copies
 # it to the folder in $1. A CPU build is fully static (glibc included), so it has no
-# dynamic dependencies. A CUDA build must load the NVIDIA driver (libcuda.so) at run
-# time, which a static program cannot do, so it links glibc and the driver dynamically.
+# dynamic dependencies. GPU builds must load the driver at run time (libcuda.so for
+# CUDA, libvulkan.so.1 for Vulkan). A static program cannot do that, so GPU builds link
+# glibc and the driver dynamically.
 set -eu
 out=$1
 
@@ -40,7 +41,7 @@ case $(uname -m) in
 esac
 
 case ${FEATURES:-} in
-    *cuda*) ;;
+    *cuda* | *vulkan*) ;;
     # Static glibc. With an explicit --target, RUSTFLAGS apply only to verbacue and its
     # libraries, not to build scripts and proc macros, which cannot be static.
     # The static libstdc++ comes after libc and libgcc on the link line and calls into
@@ -59,9 +60,9 @@ case ${FEATURES:-} in
 esac
 
 features=${FEATURES:+--features $FEATURES}
-# The test binaries of a CUDA build need the driver, which the build has not got.
+# The CPU build runs the tests. GPU builds skip them, because the build has no GPU.
 case ${FEATURES:-} in
-    *cuda*) ;;
+    *cuda* | *vulkan*) ;;
     *) cargo test --workspace --release --locked --target $target ;;
 esac
 cargo build --release --locked --target $target $features
@@ -71,8 +72,10 @@ cp target/$target/release/verbacue "$out/"
 echo "linked libraries:"
 needed=$(readelf -d "$out/verbacue" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p')
 echo "${needed:-none (static)}"
+glibc='ld-linux.*|libc\.so.*|libm\.so.*|libgcc_s\.so.*|libpthread\.so.*|libdl\.so.*|librt\.so.*'
 case ${FEATURES:-} in
-    *cuda*) allowed='^(ld-linux.*|libc\.so.*|libm\.so.*|libgcc_s\.so.*|libpthread\.so.*|libdl\.so.*|librt\.so.*|libcuda\.so.*)$' ;;
+    *cuda*) allowed="^($glibc|libcuda\.so.*)\$" ;;
+    *vulkan*) allowed="^($glibc|libvulkan\.so\.1)\$" ;;
     *) allowed='^$' ;;
 esac
 bad=$(echo "$needed" | grep -Ev "$allowed" || true)

@@ -30,13 +30,18 @@ They come from the `build` GitHub workflow
 (`.github/workflows/build.yml`). Start it by hand, or push a tag such as `v0.2.0`;
 a tag also attaches the binaries to a GitHub release.
 
-| Binary                                 | GPU            | Needs on the target system                    |
-|----------------------------------------|----------------|-----------------------------------------------|
-| `macos-arm64-metal`                    | Metal          | macOS on Apple Silicon                        |
-| `linux-amd64-cpu`, `linux-arm64-cpu`   | none           | nothing: fully static, runs on any Linux      |
-| `linux-amd64-cuda`, `linux-arm64-cuda` | NVIDIA (CUDA)  | glibc 2.35 or newer, NVIDIA driver            |
-| `windows-x64-cpu`                      | none           | Windows 10 or 11                              |
-| `windows-x64-cuda`                     | NVIDIA (CUDA)  | Windows 10 or 11, NVIDIA driver               |
+| Binary                                     | GPU                         | Needs on the target system                 |
+|--------------------------------------------|-----------------------------|--------------------------------------------|
+| `macos-arm64-metal`                        | Metal                       | macOS on Apple Silicon                     |
+| `linux-amd64-cpu`, `linux-arm64-cpu`       | none                        | nothing: fully static, runs on any Linux   |
+| `linux-amd64-cuda`, `linux-arm64-cuda`     | NVIDIA (CUDA)               | glibc 2.35 or newer, NVIDIA driver         |
+| `linux-amd64-vulkan`, `linux-arm64-vulkan` | AMD, Intel, NVIDIA (Vulkan) | glibc 2.39 or newer, Vulkan driver         |
+| `windows-x64-cpu`                          | none                        | Windows 10 or 11                           |
+| `windows-x64-cuda`                         | NVIDIA (CUDA)               | Windows 10 or 11, NVIDIA driver            |
+| `windows-x64-vulkan`                       | AMD, Intel, NVIDIA (Vulkan) | Windows 10 or 11, GPU driver               |
+
+Use a CUDA binary for an NVIDIA GPU. Use a Vulkan binary for other GPUs, including the
+GPUs inside Intel and AMD processors.
 
 All binaries are self-contained. They need no FFmpeg, Python or other installed tools,
 and each build job checks what the binary links:
@@ -46,7 +51,11 @@ and each build job checks what the binary links:
 - The Linux CUDA binaries must load the NVIDIA driver (`libcuda.so`) at run time. A
   static program cannot do that, so they link glibc and the driver dynamically.
   CUDA and cuBLAS are inside the binary.
-- The Windows binaries need only the DLLs that are part of Windows. The CUDA zip has
+- The Linux Vulkan binaries load the Vulkan loader (`libvulkan.so.1`) in the same way.
+  The GPU driver package installs it. glibc 2.39 means Ubuntu 24.04, Debian 13,
+  Fedora 40 or newer.
+- The Windows binaries need only the DLLs that are part of Windows and of the GPU
+  driver (`vulkan-1.dll` for Vulkan). The CUDA zip has
   three CUDA DLLs next to `verbacue.exe`, because cuBLAS has no static library on
   Windows. Keep them in the same folder.
 - macOS does not allow fully static programs. The binary links only system
@@ -63,10 +72,11 @@ Graviton 2 or a Raspberry Pi 5).
 docker/build.sh linux-arm64 windows-x64     # writes dist/<target>/
 ```
 
-The targets are `linux-arm64`, `linux-amd64`, `linux-arm64-cuda`, `linux-amd64-cuda`
-and `windows-x64`. A target for another CPU type than the host's runs in emulation
-and is much slower. The Windows target is cross-compiled with MinGW-w64 and has no
-CUDA. For a Windows CUDA build, use the workflow or build on Windows.
+The targets are `linux-arm64`, `linux-amd64`, `linux-arm64-cuda`, `linux-amd64-cuda`,
+`linux-arm64-vulkan`, `linux-amd64-vulkan` and `windows-x64`. A target for another CPU
+type than the host's runs in emulation and is much slower. The Windows target is
+cross-compiled with MinGW-w64 and has no GPU support. For a Windows GPU build, use the
+workflow or build on Windows.
 
 ### Build on macOS
 
@@ -98,7 +108,8 @@ static, portable binary, use `docker/build.sh`.
 
 The easiest way is `docker/build.sh windows-x64` (CPU only). For a native build, for
 example with CUDA, install Visual Studio 2022 with the C++ tools, LLVM (for libclang),
-Rust and vcpkg. The CI workflow uses these steps for the CUDA build; they are not
+Rust and vcpkg, and the CUDA toolkit or the Vulkan SDK for a GPU build. The CI
+workflow uses these steps for the GPU builds; they are not
 tested on a real Windows machine yet.
 FFmpeg comes from vcpkg, because the FFmpeg source build of ffmpeg-sys-next does not
 support Windows targets. In a "Developer PowerShell for VS 2022":
