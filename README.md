@@ -48,7 +48,7 @@ Each release also has installers for the desktop app:
 
 | System | File | Notes |
 |---|---|---|
-| macOS | `verbacue-<version>-macos-arm64.dmg` | Drag verbacue to Applications. The app is not signed: at the first start, right-click it and choose Open. |
+| macOS | `verbacue-<version>-macos-arm64.dmg` | Drag verbacue to Applications. The app is not notarized by Apple: at the first start, right-click it and choose Open (on macOS 15 or newer, open it once, then choose Open Anyway in System Settings → Privacy & Security). |
 | Windows | `verbacue-<version>-windows-x64-<cpu\|cuda\|vulkan>-setup.exe` | A setup wizard with a Start menu entry and an uninstaller. |
 | Linux | `verbacue-<version>-linux-<amd64\|arm64>-<cpu-gui\|vulkan\|cuda>.deb` | For Debian, Ubuntu and similar: `sudo apt install ./verbacue-….deb`. Adds a menu entry. |
 | Linux | `verbacue-<version>-linux-<amd64\|arm64>-<cpu-gui\|vulkan\|cuda>.AppImage` | One file for most distributions: make it executable and start it. |

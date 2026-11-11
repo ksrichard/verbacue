@@ -1,8 +1,8 @@
 #!/bin/sh
 # Makes verbacue.app and a DMG with it and a link to /Applications.
 # Usage: packaging/macos/make-dmg.sh <verbacue binary> <output.dmg>
-# The app is not signed, so macOS asks for confirmation at the first start
-# (right-click, Open).
+# The app has only an ad-hoc signature (no Apple Developer ID), so macOS asks for
+# confirmation at the first start.
 set -eu
 cd "$(dirname "$0")/../.."
 binary=$1
@@ -33,6 +33,14 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+
+# Sign the bundle ad hoc. The linker signs the bare binary, but that signature does
+# not cover the bundle (Info.plist, the icon). A downloaded, quarantined app whose
+# bundle is not sealed is reported by Gatekeeper as "damaged" with no way to open it.
+# With an ad-hoc signature it is only "unverified", which the user can allow.
+codesign --force --sign - --identifier io.github.ksrichard.verbacue "$app"
+codesign --verify --strict --verbose=2 "$app"
+
 cp LICENSE THIRD-PARTY-LICENSES.txt "$work/verbacue/"
 ln -s /Applications "$work/verbacue/Applications"
 
