@@ -42,6 +42,24 @@ Windows). Keys for online services stay where the command line reads them.
 
 [SCREENSHOT]
 
+### Homebrew
+
+On macOS (Apple Silicon and Intel), Linux (x86_64 and arm64) and Windows in WSL:
+
+```sh
+brew install ksrichard/verbacue/verbacue          # the command, and the app as `verbacue gui`
+brew install --cask ksrichard/verbacue/verbacue-app   # macOS: verbacue.app in /Applications
+```
+
+Install one of the two; both include the `verbacue` command. The formula needs no
+confirmation at the first start; the cask does, because the app is not notarized
+(see the macOS row below). On Linux the formula installs the `cpu-gui` binary.
+
+The release workflow writes both from `packaging/homebrew/` and pushes them to the tap
+[ksrichard/homebrew-verbacue](https://github.com/ksrichard/homebrew-verbacue). That
+needs the repository secret `HOMEBREW_TAP_TOKEN`, a token that may write to the tap's
+contents. Without it, the files are only in the release run's `homebrew-tap` artifact.
+
 ### Installers
 
 Each release also has installers for the desktop app:
