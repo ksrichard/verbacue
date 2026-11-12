@@ -200,16 +200,23 @@ jobs:
         run: |
           brew install nasm
           rustup toolchain install "$RUST_VERSION" --profile minimal && rustup default "$RUST_VERSION"
-      # Do not tune the code for the CPU of the runner; x86-64-v3 needs AVX2, like the
-      # Linux and Windows x86_64 builds.
-      - name: Set the Intel CPU level
-        if: matrix.arch == 'x86_64'
+      # The C code checks for newer macOS versions at run time (@available). With the
+      # macOS 11 target these checks call __isPlatformVersionAtLeast from the clang
+      # runtime, which rustc does not link (-nodefaultlibs), so link it here.
+      # On Intel, do not tune the code for the CPU of the runner; x86-64-v3 needs AVX2,
+      # like the Linux and Windows x86_64 builds.
+      - name: Set the build flags
         run: |
-          {
-            echo "RUSTFLAGS=-C target-cpu=x86-64-v3"
-            echo "GGML_NATIVE=OFF"
-            for flag in AVX AVX2 FMA F16C BMI2; do echo "GGML_$flag=ON"; done
-          } >> "$GITHUB_ENV"
+          runtime="$(clang --print-runtime-dir)/libclang_rt.osx.a"
+          test -f "$runtime"
+          flags="-C link-arg=$runtime"
+          if [ "${{ matrix.arch }}" = x86_64 ]; then
+            flags="$flags -C target-cpu=x86-64-v3"
+            echo "GGML_NATIVE=OFF" >> "$GITHUB_ENV"
+            for flag in AVX AVX2 FMA F16C BMI2; do echo "GGML_$flag=ON" >> "$GITHUB_ENV"; done
+          fi
+          echo "RUSTFLAGS=$flags" >> "$GITHUB_ENV"
+          echo "RUSTFLAGS=$flags"
       - name: Test
         run: cargo test --workspace --release --locked
       - name: Build
