@@ -203,8 +203,21 @@ jobs:
           tar -czf verbacue-macos-arm64-metal.tar.gz -C dist .
       - name: Make the DMG
         run: |
+          python3 -m venv "$RUNNER_TEMP/dmgbuild"
+          "$RUNNER_TEMP/dmgbuild/bin/pip" install --quiet dmgbuild==1.6.7
+          export DMGBUILD="$RUNNER_TEMP/dmgbuild/bin/dmgbuild"
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           packaging/macos/make-dmg.sh target/release/verbacue "verbacue-$version-macos-arm64.dmg"
+      # The app must still be signed, and the window must have its background and layout.
+      - name: Check the DMG
+        run: |
+          hdiutil attach -nobrowse -readonly -mountpoint "$RUNNER_TEMP/dmg" verbacue-*-macos-arm64.dmg
+          ls -la "$RUNNER_TEMP/dmg"
+          codesign --verify --strict --verbose=2 "$RUNNER_TEMP/dmg/verbacue.app"
+          test -f "$RUNNER_TEMP/dmg/.background.tiff"
+          test -f "$RUNNER_TEMP/dmg/.DS_Store"
+          test -L "$RUNNER_TEMP/dmg/Applications"
+          hdiutil detach "$RUNNER_TEMP/dmg"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verbacue-macos-arm64-metal

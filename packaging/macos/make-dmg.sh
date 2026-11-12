@@ -1,6 +1,8 @@
 #!/bin/sh
-# Makes verbacue.app and a DMG with it and a link to /Applications.
+# Makes verbacue.app and a DMG with it and a link to /Applications, laid out on the
+# background from make-background.py (dmg-settings.py has the layout).
 # Usage: packaging/macos/make-dmg.sh <verbacue binary> <output.dmg>
+# Needs dmgbuild (python3 -m pip install dmgbuild), or its path in $DMGBUILD.
 # The app has only an ad-hoc signature (no Apple Developer ID), so macOS asks for
 # confirmation at the first start.
 set -eu
@@ -9,10 +11,11 @@ binary=$1
 out=$2
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 work=$(mktemp -d)
-app="$work/verbacue/verbacue.app"
+app="$work/verbacue.app"
 
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$binary" "$app/Contents/MacOS/verbacue"
+cp LICENSE THIRD-PARTY-LICENSES.txt "$app/Contents/Resources/"
 cp packaging/icons/verbacue.icns "$app/Contents/Resources/verbacue.icns"
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -41,10 +44,7 @@ PLIST
 codesign --force --sign - --identifier io.github.ksrichard.verbacue "$app"
 codesign --verify --strict --verbose=2 "$app"
 
-cp LICENSE THIRD-PARTY-LICENSES.txt "$work/verbacue/"
-ln -s /Applications "$work/verbacue/Applications"
-
 rm -f "$out"
-hdiutil create -quiet -volname verbacue -srcfolder "$work/verbacue" -format UDZO -ov "$out"
+"${DMGBUILD:-dmgbuild}" -s packaging/macos/dmg-settings.py -D app="$app" verbacue "$out"
 rm -rf "$work"
 echo "wrote $out"
