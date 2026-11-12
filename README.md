@@ -48,7 +48,7 @@ Each release also has installers for the desktop app:
 
 | System | File | Notes |
 |---|---|---|
-| macOS | `verbacue-<version>-macos-arm64.dmg` | Drag verbacue to Applications. The app is not notarized by Apple: at the first start, right-click it and choose Open (on macOS 15 or newer, open it once, then choose Open Anyway in System Settings → Privacy & Security). |
+| macOS | `verbacue-<version>-macos-universal.dmg` | For Apple Silicon and Intel Macs. Drag verbacue to Applications. The app is not notarized by Apple: at the first start, right-click it and choose Open (on macOS 15 or newer, open it once, then choose Open Anyway in System Settings → Privacy & Security). |
 | Windows | `verbacue-<version>-windows-x64-<cpu\|cuda\|vulkan>-setup.exe` | A setup wizard with a Start menu entry and an uninstaller. |
 | Linux | `verbacue-<version>-linux-<amd64\|arm64>-<cpu-gui\|vulkan\|cuda>.deb` | For Debian, Ubuntu and similar: `sudo apt install ./verbacue-….deb`. Adds a menu entry. |
 | Linux | `verbacue-<version>-linux-<amd64\|arm64>-<cpu-gui\|vulkan\|cuda>.AppImage` | One file for most distributions: make it executable and start it. |
@@ -70,7 +70,7 @@ a tag also attaches the binaries to a GitHub release.
 
 | Binary                                     | GPU                         | Needs on the target system                 |
 |--------------------------------------------|-----------------------------|--------------------------------------------|
-| `macos-arm64-metal`                        | Metal                       | macOS on Apple Silicon                     |
+| `macos-universal-metal`                    | Metal                       | macOS 11 or newer, Apple Silicon or Intel  |
 | `linux-amd64-cpu`, `linux-arm64-cpu`       | none                        | nothing: fully static, runs on any Linux   |
 | `linux-amd64-cpu-gui`, `linux-arm64-cpu-gui` | none                      | glibc 2.35 or newer                        |
 | `linux-amd64-cuda`, `linux-arm64-cuda`     | NVIDIA (CUDA)               | glibc 2.35 or newer, NVIDIA driver         |
@@ -98,11 +98,11 @@ and each build job checks what the binary links:
   three CUDA DLLs next to `verbacue.exe`, because cuBLAS has no static library on
   Windows. Keep them in the same folder.
 - macOS does not allow fully static programs. The binary links only system
-  frameworks.
+  frameworks. It is universal: one file with code for Apple Silicon and for Intel.
 
 The binaries contain the Mozilla root certificates, so model downloads also work on
-systems without a certificate store. The x86_64 binaries need a CPU with AVX2 (Intel
-since 2013, AMD since 2015). The arm64 Linux binaries need ARMv8.2 (for example AWS
+systems without a certificate store. The x86_64 binaries and the Intel code of the macOS binary need a CPU with
+AVX2 (Intel since 2013, AMD since 2015). The arm64 Linux binaries need ARMv8.2 (for example AWS
 Graviton 2 or a Raspberry Pi 5).
 
 ### Build in Docker (Linux and Windows)

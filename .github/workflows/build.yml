@@ -176,58 +176,115 @@ jobs:
             verbacue-windows-x64-${{ matrix.gpu }}.zip
             installers/*
 
-  # Apple Silicon only. The GPU (Metal) is always on; there is no CUDA on macOS.
+  # macOS builds natively for Apple Silicon and for Intel, then macos-universal joins
+  # the two into one universal binary. The GPU (Metal) is always on; there is no CUDA
+  # on macOS.
   macos:
-    name: macos-arm64-metal
-    runs-on: macos-15
+    name: macos-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x86_64
+            runner: macos-15-intel
+    env:
+      # The oldest macOS the app supports (LSMinimumSystemVersion in make-dmg.sh). Also
+      # used by the FFmpeg, whisper.cpp and llama.cpp builds.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install tools
         run: |
           brew install nasm
           rustup toolchain install "$RUST_VERSION" --profile minimal && rustup default "$RUST_VERSION"
+      # Do not tune the code for the CPU of the runner; x86-64-v3 needs AVX2, like the
+      # Linux and Windows x86_64 builds.
+      - name: Set the Intel CPU level
+        if: matrix.arch == 'x86_64'
+        run: |
+          {
+            echo "RUSTFLAGS=-C target-cpu=x86-64-v3"
+            echo "GGML_NATIVE=OFF"
+            for flag in AVX AVX2 FMA F16C BMI2; do echo "GGML_$flag=ON"; done
+          } >> "$GITHUB_ENV"
       - name: Test
         run: cargo test --workspace --release --locked
       - name: Build
         run: cargo build --release --locked
-      - name: Check the linked libraries
+      - name: Check the binary
         run: |
+          lipo -archs target/release/verbacue
+          test "$(lipo -archs target/release/verbacue)" = "${{ matrix.arch }}"
+          otool -l target/release/verbacue | grep -A3 LC_BUILD_VERSION
           otool -L target/release/verbacue
           if otool -L target/release/verbacue | tail -n +2 | grep -Ev '^\s+(/usr/lib/|/System/Library/)'; then
             echo "error: verbacue links a library that is not part of macOS" >&2
             exit 1
           fi
+      # Only for macos-universal; the release takes the artifacts named verbacue-*.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-bin-${{ matrix.arch }}
+          path: target/release/verbacue
+          retention-days: 1
+
+  macos-universal:
+    name: macos-universal-metal
+    needs: macos
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: macos-bin-*
+          path: bins
+      # lipo keeps the signature of each slice; sign the result as a whole once more.
+      - name: Join the binaries
+        run: |
+          mkdir dist
+          lipo -create -output dist/verbacue bins/macos-bin-arm64/verbacue bins/macos-bin-x86_64/verbacue
+          chmod +x dist/verbacue
+          codesign --force --sign - dist/verbacue
+          lipo -archs dist/verbacue
+          case " $(lipo -archs dist/verbacue) " in *" x86_64 "*" arm64 "* | *" arm64 "*" x86_64 "*) ;;
+            *) echo "error: dist/verbacue is not universal" >&2; exit 1 ;;
+          esac
+          dist/verbacue --version
       - name: Package
         run: |
-          mkdir dist && cp target/release/verbacue LICENSE THIRD-PARTY-LICENSES.txt dist/
-          tar -czf verbacue-macos-arm64-metal.tar.gz -C dist .
+          cp LICENSE THIRD-PARTY-LICENSES.txt dist/
+          tar -czf verbacue-macos-universal-metal.tar.gz -C dist .
       - name: Make the DMG
         run: |
           python3 -m venv "$RUNNER_TEMP/dmgbuild"
           "$RUNNER_TEMP/dmgbuild/bin/pip" install --quiet dmgbuild==1.6.7
           export DMGBUILD="$RUNNER_TEMP/dmgbuild/bin/dmgbuild"
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          packaging/macos/make-dmg.sh target/release/verbacue "verbacue-$version-macos-arm64.dmg"
+          packaging/macos/make-dmg.sh dist/verbacue "verbacue-$version-macos-universal.dmg"
       # The app must still be signed, and the window must have its background and layout.
       - name: Check the DMG
         run: |
-          hdiutil attach -nobrowse -readonly -mountpoint "$RUNNER_TEMP/dmg" verbacue-*-macos-arm64.dmg
+          hdiutil attach -nobrowse -readonly -mountpoint "$RUNNER_TEMP/dmg" verbacue-*-macos-universal.dmg
           ls -la "$RUNNER_TEMP/dmg"
           codesign --verify --strict --verbose=2 "$RUNNER_TEMP/dmg/verbacue.app"
+          lipo -archs "$RUNNER_TEMP/dmg/verbacue.app/Contents/MacOS/verbacue"
           test -f "$RUNNER_TEMP/dmg/.background.tiff"
           test -f "$RUNNER_TEMP/dmg/.DS_Store"
           test -L "$RUNNER_TEMP/dmg/Applications"
           hdiutil detach "$RUNNER_TEMP/dmg"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: verbacue-macos-arm64-metal
+          name: verbacue-macos-universal-metal
           path: |
-            verbacue-macos-arm64-metal.tar.gz
-            verbacue-*-macos-arm64.dmg
+            verbacue-macos-universal-metal.tar.gz
+            verbacue-*-macos-universal.dmg
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, windows, macos]
+    needs: [linux, windows, macos-universal]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -243,6 +300,7 @@ jobs:
           fi
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          pattern: verbacue-*
           path: artifacts
           merge-multiple: true
       # Installers sit in a subfolder of their artifact; a release takes only files.
