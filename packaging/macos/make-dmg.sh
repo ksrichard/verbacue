@@ -45,6 +45,7 @@ codesign --force --sign - --identifier io.github.ksrichard.verbacue "$app"
 codesign --verify --strict --verbose=2 "$app"
 
 rm -f "$out"
-"${DMGBUILD:-dmgbuild}" -s packaging/macos/dmg-settings.py -D app="$app" verbacue "$out"
+"${DMGBUILD:-dmgbuild}" -s packaging/macos/dmg-settings.py \
+    -D app="$app" -D packaging="$PWD/packaging" verbacue "$out"
 rm -rf "$work"
 echo "wrote $out"
