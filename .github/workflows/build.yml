@@ -256,9 +256,10 @@ jobs:
           chmod +x dist/verbacue
           codesign --force --sign - dist/verbacue
           lipo -archs dist/verbacue
-          case " $(lipo -archs dist/verbacue) " in *" x86_64 "*" arm64 "* | *" arm64 "*" x86_64 "*) ;;
-            *) echo "error: dist/verbacue is not universal" >&2; exit 1 ;;
-          esac
+          archs=" $(lipo -archs dist/verbacue) "
+          for arch in arm64 x86_64; do
+            case $archs in *" $arch "*) ;; *) echo "error: dist/verbacue has no $arch code" >&2; exit 1 ;; esac
+          done
           dist/verbacue --version
       - name: Package
         run: |
