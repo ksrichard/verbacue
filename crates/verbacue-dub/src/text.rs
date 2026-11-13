@@ -111,7 +111,9 @@ fn expand_numbers(text: &str, lang: &str) -> String {
             out.push_str(&whole);
             continue;
         };
-        out.push_str(&numbers::to_words(n, lang).unwrap_or(whole));
+        // num2words writes some nouns with a capital ("eine Million"), but the rest of
+        // the text is already lower case.
+        out.push_str(&numbers::to_words(n, lang).map_or(whole, |w| w.to_lowercase()));
         if chars.get(i) == Some(&decimal) && chars.get(i + 1).is_some_and(char::is_ascii_digit) {
             let start = i + 1;
             let mut end = start;
@@ -445,6 +447,10 @@ mod tests {
         assert_eq!(
             clean("Ich habe 5 Äpfel.", "de").as_deref(),
             Some("ich habe fünf äpfel.")
+        );
+        assert_eq!(
+            clean("Es kostet 1.000.000 Euro.", "de").as_deref(),
+            Some("es kostet eine million euro.")
         );
     }
 
