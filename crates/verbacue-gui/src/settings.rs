@@ -133,6 +133,7 @@ enum BackendDef {
     Google,
     Azure,
     OpenaiCompat,
+    Claude,
     None,
 }
 

@@ -257,9 +257,9 @@ Night's Watch = Éjjeli Őrség
 | `--to` | `en` (or `$VERBACUE_TO`) | Target language code, see `verbacue languages` |
 | `--from` | `auto` | Source language code; `auto` detects it |
 | `--model` | `large-v3` | Whisper model name (tiny, base, small, medium, large-v3, large-v3-turbo) or a file path |
-| `--translator` | `local` | `local` (GGUF model), `deepl`, `google` or `azure` (online, see below), `openai-compat` (your own model server, see below), or `none` (transcript only) |
+| `--translator` | `local` | `local` (GGUF model), `deepl`, `google` or `azure` (online, see below), `openai-compat` (your own model server, see below), `claude` (Claude Code CLI, see below), or `none` (transcript only) |
 | `--endpoint` | `http://localhost:8080/v1` | Base URL of the server for `openai-compat` |
-| `--endpoint-model` | first listed | Model name on the server |
+| `--endpoint-model` | first listed | Model name on the server, or the model for `claude` (CLI default if not set) |
 | `--llm-model` | `translategemma-12b` | Translation model: `translategemma-12b`, `translategemma-27b`, `gemma-3-12b`, `gemma-4-26b-a4b`, or a path to any GGUF instruct model |
 | `--register` | `informal` | Form of address: `informal` (Hungarian "te") or `formal` ("ön") |
 | `--glossary` | | File with `term = translation` lines |
@@ -408,6 +408,24 @@ or translate that batch line by line.
 Use a general instruct model on the server. llama-server has a special mode for
 TranslateGemma that translates the whole prompt and ignores the schema, so
 TranslateGemma works only with the local translator.
+
+### Claude Code CLI (optional)
+
+`--translator claude` runs `claude -p` and sends the subtitles to Claude. It needs the
+[Claude Code CLI](https://docs.claude.com/claude-code) on your PATH and a login. Claude
+reads a long text well, so verbacue sends the whole file in one request. It adds the
+file name, the languages, the form of address, the glossary and `--context`. A file
+with more than 800 lines goes in parts of 800 lines. Each part gets the last translated
+lines of the part before. The CLI runs with no tools. The subtitle text goes to
+Anthropic, and the use counts against your Claude plan or API bill.
+
+```sh
+verbacue movie.mkv --to hu --translator claude --context "Two sisters, Ayse and Kerem"
+verbacue movie.mkv --to hu --translator claude --endpoint-model sonnet
+```
+
+If the answer has missing or extra lines, verbacue asks again with a stricter prompt,
+then with smaller parts. Set `VERBACUE_CLAUDE_BIN` to use another program than `claude`.
 
 ### Models
 

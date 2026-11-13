@@ -369,6 +369,11 @@ impl Pipeline {
         };
         let texts: Vec<String> = cues.iter().map(|c| c.text.clone()).collect();
         let mut hints = translate::Hints {
+            title: job
+                .video
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
             notes: settings.notes.trim().to_string(),
             film_notes: String::new(),
             names: translate::proper_names(&texts),

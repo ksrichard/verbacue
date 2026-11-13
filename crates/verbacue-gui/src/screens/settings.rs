@@ -69,7 +69,7 @@ fn key_source(backend: Backend) -> Option<(&'static str, &'static str)> {
         Backend::Google => Some(("GOOGLE_TRANSLATE_API_KEY", "google.key")),
         Backend::Azure => Some(("AZURE_TRANSLATOR_KEY", "azure.key")),
         Backend::OpenaiCompat => Some(("OPENAI_API_KEY", "openai.key")),
-        Backend::Local | Backend::None => None,
+        Backend::Local | Backend::Claude | Backend::None => None,
     }
 }
 
@@ -221,6 +221,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
             label: "Azure".to_string(),
         },
         Choice {
+            value: Backend::Claude,
+            label: "Claude (Claude Code CLI)".to_string(),
+        },
+        Choice {
             value: Backend::None,
             label: "No translation".to_string(),
         },
@@ -352,7 +356,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 .on_press(Message::Setting(SettingChange::Glossary(None))),
         );
     }
-    if matches!(s.translator, Backend::Local | Backend::OpenaiCompat) {
+    if matches!(
+        s.translator,
+        Backend::Local | Backend::OpenaiCompat | Backend::Claude
+    ) {
         translation.push(setting_row(
             "Read the whole story first",
             "Notes about the characters before translating. Slower; better names and forms of address.",

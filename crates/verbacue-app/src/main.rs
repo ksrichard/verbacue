@@ -556,7 +556,7 @@ fn translate_files(inputs: &[PathBuf], from: Option<String>, args: &TranslateArg
             .with_context(|| format!("cannot read {}", input.display()))?;
         let cues = subtitle::parse_srt(&text)
             .with_context(|| format!("cannot parse {}", input.display()))?;
-        let translated = run_translation(&cues, &source, args, &mut translator)?;
+        let translated = run_translation(&cues, &source, input, args, &mut translator)?;
         write_output(&out, &translated, args.format)?;
     }
     Ok(())
@@ -590,6 +590,7 @@ fn burn_output_path(video: &Path, subtitles: &Path) -> PathBuf {
 fn run_translation(
     cues: &[Cue],
     source_lang: &str,
+    input: &Path,
     args: &TranslateArgs,
     translator: &mut Option<Box<dyn Translator>>,
 ) -> Result<Vec<Cue>> {
@@ -625,6 +626,10 @@ fn run_translation(
     );
     let texts: Vec<String> = cues.iter().map(|c| c.text.clone()).collect();
     let hints = translate::Hints {
+        title: input
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
         notes: args.context.clone().unwrap_or_default(),
         film_notes: String::new(),
         names: translate::proper_names(&texts),
