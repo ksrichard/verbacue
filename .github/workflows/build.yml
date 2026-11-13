@@ -347,4 +347,4 @@ jobs:
           git -c user.name="github-actions[bot]" \
             -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             commit -m "verbacue ${GITHUB_REF_NAME#v}"
-          git push
+          git push origin HEAD:main
