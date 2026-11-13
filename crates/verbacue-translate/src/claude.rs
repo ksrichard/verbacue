@@ -52,6 +52,10 @@ impl ClaudeModel {
             // An empty list turns off all tools, so the model cannot touch files.
             .args(["--tools", ""])
             .arg("--no-session-persistence")
+            // No MCP servers and no project CLAUDE.md: they slow the start and add
+            // text that the translation does not need.
+            .arg("--strict-mcp-config")
+            .current_dir(std::env::temp_dir())
             .args(["--system-prompt", system]);
         if let Some(model) = &self.model {
             cmd.args(["--model", model]);
