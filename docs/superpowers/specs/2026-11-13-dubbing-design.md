@@ -55,8 +55,8 @@ The pilot chose each part in the conversation.
 
 ### New crate: `verbacue-dub`
 
-The crate holds the dubbing steps. It depends on `verbacue-core` and `ort`. The
-`verbacue-media` crate does the audio decoding, encoding and the new track.
+The crate holds the dubbing steps. It depends on `verbacue-core`, `verbacue-media`
+and `ort`. `verbacue-media` does the audio decoding, encoding and the new track.
 
 ### Pipeline
 
@@ -181,8 +181,8 @@ The command line and the desktop app have the same settings for dubbing.
 ## Delivery
 
 The pilot wants one pull request from `feature/dubbing` for the whole feature. The
-steps below are commits in that pull request, in this order. Each commit builds and
-passes the tests, so a reviewer can read the pull request one commit at a time.
+steps below come in this order. Each step has one or more commits. Each commit builds
+and passes the tests, so a reviewer can read the pull request one commit at a time.
 
 1. **Export spike** (go or no-go). The export scripts and the parity test (Python,
    developers only). If the GPT decoder with the KV cache does not export with matching
