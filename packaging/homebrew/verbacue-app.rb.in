@@ -15,8 +15,8 @@ cask "verbacue-app" do
     strategy :github_latest
   end
 
-  # The app also holds the command line; the formula installs the same command.
-  conflicts_with formula: "verbacue"
+  # The app also holds the command line. Casks cannot declare a conflict with a
+  # formula; with the formula installed, linking the binary below fails instead.
   depends_on macos: ">= :big_sur"
 
   app "verbacue.app"
