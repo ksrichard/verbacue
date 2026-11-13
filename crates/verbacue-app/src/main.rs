@@ -237,9 +237,12 @@ fn main() -> Result<()> {
         Some(Command::Models { action }) => match action {
             ModelsAction::List => print_models(),
             ModelsAction::Download { name } => {
-                let spec =
-                    models::find(&name).with_context(|| format!("unknown model {name:?}"))?;
-                let path = ensure_model(spec)?;
+                let path = match models::bundle(&name) {
+                    Some(b) => ensure_bundle(b)?,
+                    None => ensure_model(
+                        models::find(&name).with_context(|| format!("unknown model {name:?}"))?,
+                    )?,
+                };
                 out!("{}", path.display());
                 Ok(())
             }
@@ -689,6 +692,17 @@ fn ensure_model(spec: &'static models::ModelSpec) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Like [`models::ensure_bundle`], with one progress bar per file.
+fn ensure_bundle(b: &'static models::Bundle) -> Result<PathBuf> {
+    if let Some(licence) = b.licence {
+        eprintln!("{licence}");
+    }
+    for file in b.files {
+        ensure_model(models::find(file).context("bundle file is not a known model")?)?;
+    }
+    Ok(b.cached_dir()?)
+}
+
 /// Like [`models::resolve`], with a download progress bar.
 fn resolve_model(value: &str, kind: models::Kind) -> Result<PathBuf> {
     match models::find(value) {
@@ -707,10 +721,19 @@ fn print_models() -> Result<()> {
             ""
         };
         out!(
-            "  {:<16} {:<8} {:>9}  {mark}",
+            "  {:<16} {:<10} {:>9}  {mark}",
             m.name,
             m.kind.to_string(),
             models::human_size(m.size)
+        );
+    }
+    for b in models::bundles() {
+        let mark = if b.is_cached() { "downloaded" } else { "" };
+        out!(
+            "  {:<16} {:<10} {:>9}  {mark}",
+            b.name,
+            b.kind.to_string(),
+            models::human_size(b.size())
         );
     }
     Ok(())

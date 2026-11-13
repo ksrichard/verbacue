@@ -1,0 +1,26 @@
+[package]
+name = "verbacue-dub"
+description = "Speaks translated subtitles with XTTS-v2 and takes the original voices out with HTDemucs, as ONNX graphs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+# GPU support on Linux and Windows. NVIDIA only; needs the CUDA toolkit.
+cuda = ["ort/cuda"]
+
+[dependencies]
+# A static ONNX Runtime, so the binary needs no libonnxruntime at run time.
+# tls-rustls is for the build script, which downloads ONNX Runtime.
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "ndarray", "download-binaries", "tls-rustls"] }
+tracing = { version = "0.1.44" }
+verbacue-core = { path = "../verbacue-core", version = "0.1.0" }
+
+# On macOS: CoreML, which uses only system frameworks.
+[target.'cfg(target_os = "macos")'.dependencies]
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "ndarray", "download-binaries", "tls-rustls", "coreml"] }
+
+[lints]
+workspace = true

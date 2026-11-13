@@ -437,6 +437,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 Kind::Whisper => "Whisper",
                 Kind::Llm => "Translation",
                 Kind::Vad => "Silence detection",
+                Kind::Voice => "Voice",
+                Kind::Separation => "Voice separation",
             };
             let hint = format!("{kind} · {}", models::human_size(m.size));
             let control: Element<'_, Message> = match app.downloads.get(m.name) {
