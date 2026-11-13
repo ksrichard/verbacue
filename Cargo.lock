@@ -5517,6 +5517,7 @@ name = "verbacue-dub"
 version = "0.1.0"
 dependencies = [
  "ort",
+ "serde_json",
  "tracing",
  "verbacue-core",
 ]
