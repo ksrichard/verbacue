@@ -46,6 +46,27 @@ files to listen to.
 
 ONNX cannot export the torchaudio STFT, so the mel spectrograms are not in the graphs.
 
+## Voice separation
+
+```sh
+uv run export_demucs.py out
+```
+
+This writes `htdemucs_vocals.onnx`, the vocals model of `htdemucs_ft` (MIT licence).
+The input `mix` is 7.8 s of 44.1 kHz stereo audio, `[1, 2, 343980]`. The output
+`stems` is `[1, 4, 2, 343980]`, in the order drums, bass, other, vocals. Use only
+index 3: the other sources of this model are not good.
+
+## Publish
+
+```sh
+uv run hf auth login
+uv run publish.py out <user>/verbacue-voice
+```
+
+This uploads all files to Hugging Face and writes `publish.md` with the URL, SHA256
+and size of each file.
+
 ## Licence
 
 The XTTS-v2 weights are under the

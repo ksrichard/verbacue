@@ -14,6 +14,8 @@ dependencies = [
     "huggingface-hub>=0.26",
     "soundfile>=0.12",
     "six>=1.16",
+    "demucs-onnx>=0.3.4",
+    "demucs>=4.0.1",
 ]
 
 [tool.uv]
