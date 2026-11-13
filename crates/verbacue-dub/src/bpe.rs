@@ -2,6 +2,7 @@
 //!
 //! `vocab.json` is a Hugging Face `tokenizers` file. This code does the same steps as
 //! that library for this one file:
+//! 0. Convert Chinese, Japanese and Korean to Latin letters ([`romanize`]).
 //! 1. Find the special tokens (`[SPACE]`, `[hu]`, ...) in the text.
 //! 2. Split the rest into words and punctuation (the `Whitespace` pre-tokenizer).
 //! 3. Start each word as single characters, then apply the merges in rank order.
@@ -11,7 +12,7 @@ use std::{collections::HashMap, path::Path};
 use serde_json::Value;
 use verbacue_core::{Context as _, Result};
 
-use crate::text;
+use crate::{romanize, text};
 
 const UNK: i64 = 1;
 
@@ -85,7 +86,8 @@ impl Tokenizer {
     /// `[<lang>]` in front and writes each space as `[SPACE]`.
     pub fn encode(&self, text: &str, lang: &str) -> Vec<i64> {
         let code = text::xtts_code(lang).unwrap_or(lang);
-        let text = format!("[{code}]{text}").replace(' ', "[SPACE]");
+        let latin = romanize::to_latin(text, code);
+        let text = format!("[{code}]{latin}").replace(' ', "[SPACE]");
         let mut ids = Vec::new();
         let mut rest = text.as_str();
         while !rest.is_empty() {
@@ -229,6 +231,21 @@ mod tests {
             ["kívánok", ",", "hogy", "?!"]
         );
         assert_eq!(pre_tokenize("नमस्ते"), ["नमस्ते"]);
+    }
+
+    #[test]
+    #[ignore = "needs tools/xtts-export/out from the export scripts"]
+    fn cjk_has_no_unknown_tokens() {
+        let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/xtts-export/out");
+        let t = Tokenizer::load(&out.join("vocab.json")).unwrap();
+        for (text, lang) in [
+            ("我们明天早上见吧！", "zh"),
+            ("ちょっと待ってください！", "ja"),
+            ("잠깐만 기다려 주세요!", "ko"),
+        ] {
+            let ids = t.encode(text, lang);
+            assert!(ids.len() > 3 && !ids.contains(&UNK), "{lang}: {ids:?}");
+        }
     }
 
     #[test]

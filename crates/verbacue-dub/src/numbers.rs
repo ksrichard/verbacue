@@ -5,13 +5,77 @@
 //! multiplier ("kétezer", but "százkettő"). English has no commas between the groups,
 //! because a comma makes the voice stop inside the number.
 
-/// The words for `n` in `lang`. Only `hu` and `en` have words; other languages return
-/// `None` and keep the digits.
+/// The words for `n` in `lang`. Only `hu`, `en` and Chinese have words; other
+/// languages return `None` and keep the digits.
 pub fn to_words(n: u64, lang: &str) -> Option<String> {
     match lang {
         "hu" => Some(hu(n)),
         "en" => Some(en(n)),
+        "zh" | "zh-cn" => Some(zh(n)),
         _ => None,
+    }
+}
+
+const ZH_DIGITS: [char; 10] = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
+
+/// One group of four digits, such as "一千九百五十六". `lead` is true for the
+/// highest group, where "两" is used for 2 in front of a unit.
+fn zh_below_10000(n: u64) -> String {
+    let mut s = String::new();
+    let mut zero = false;
+    for (unit, value) in [("千", 1000), ("百", 100), ("十", 10), ("", 1)] {
+        let d = (n / value % 10) as usize;
+        if d == 0 {
+            zero = !s.is_empty();
+            continue;
+        }
+        if zero {
+            s.push('零');
+            zero = false;
+        }
+        s.push(if d == 2 && unit == "千" {
+            '两'
+        } else {
+            ZH_DIGITS[d]
+        });
+        s.push_str(unit);
+    }
+    s
+}
+
+fn zh(n: u64) -> String {
+    if n == 0 {
+        return "零".into();
+    }
+    const UNITS: [&str; 5] = ["", "万", "亿", "万亿", "亿亿"];
+    let mut groups = Vec::new();
+    let mut rest = n;
+    while rest > 0 {
+        groups.push(rest % 10_000);
+        rest /= 10_000;
+    }
+    let mut s = String::new();
+    let mut gap = false;
+    for (i, &g) in groups.iter().enumerate().rev() {
+        if g == 0 {
+            gap = !s.is_empty();
+            continue;
+        }
+        if !s.is_empty() && (gap || g < 1000) {
+            s.push('零');
+        }
+        gap = false;
+        let mut words = zh_below_10000(g);
+        if g == 2 && i > 0 {
+            words = "两".into();
+        }
+        s.push_str(&words);
+        s.push_str(UNITS[i]);
+    }
+    // "一十五" is said "十五" at the start of a number.
+    match s.strip_prefix("一十") {
+        Some(rest) => format!("十{rest}"),
+        None => s,
     }
 }
 
@@ -224,6 +288,28 @@ mod tests {
             ),
         ] {
             assert_eq!(to_words(n, "en").unwrap(), words, "{n}");
+        }
+    }
+
+    #[test]
+    fn numbers_zh() {
+        for (n, words) in [
+            (0, "零"),
+            (2, "二"),
+            (10, "十"),
+            (15, "十五"),
+            (105, "一百零五"),
+            (110, "一百一十"),
+            (1956, "一千九百五十六"),
+            (2002, "两千零二"),
+            (10_010, "一万零一十"),
+            (20_003, "两万零三"),
+            (100_000, "十万"),
+            (1_000_000, "一百万"),
+            (123_456_789, "一亿两千三百四十五万六千七百八十九"),
+            (200_000_000, "两亿"),
+        ] {
+            assert_eq!(to_words(n, "zh-cn").unwrap(), words, "{n}");
         }
     }
 

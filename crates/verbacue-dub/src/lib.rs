@@ -5,6 +5,7 @@
 
 pub mod bpe;
 pub mod numbers;
+pub mod romanize;
 pub mod session;
 pub mod text;
 

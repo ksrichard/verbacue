@@ -160,6 +160,13 @@ fn decimal_words(frac: &str, lang: &str) -> String {
             let words = numbers::to_words(n, lang).unwrap_or_default();
             format!(" egész {words} {unit}").trim_end().to_string()
         }
+        "zh-cn" => {
+            let digits: String = frac
+                .chars()
+                .filter_map(|c| numbers::to_words(c.to_digit(10)?.into(), lang))
+                .collect();
+            format!("点{digits}")
+        }
         _ => {
             let digits: Vec<String> = frac
                 .chars()
