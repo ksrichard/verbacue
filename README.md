@@ -55,10 +55,12 @@ Install one of the two; both include the `verbacue` command. The formula needs n
 confirmation at the first start; the cask does, because the app is not notarized
 (see the macOS row below). On Linux the formula installs the `cpu-gui` binary.
 
-The release workflow writes both from `packaging/homebrew/` and pushes them to the tap
-[ksrichard/homebrew-verbacue](https://github.com/ksrichard/homebrew-verbacue). That
-needs the repository secret `HOMEBREW_TAP_TOKEN`, a token that may write to the tap's
-contents. Without it, the files are only in the release run's `homebrew-tap` artifact.
+After each release, the `homebrew` workflow (`.github/workflows/homebrew.yml`) writes
+both from `packaging/homebrew/`, installs them with Homebrew on macOS and Linux, and then
+pushes them to the tap [ksrichard/homebrew-verbacue](https://github.com/ksrichard/homebrew-verbacue).
+That needs the repository secret `HOMEBREW_TAP_TOKEN`, a token that may write to the tap's
+contents. Start the workflow by hand with a version such as `0.1.0` to test or republish
+the tap of an existing release.
 
 ### Installers
 
