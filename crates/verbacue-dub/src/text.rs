@@ -86,12 +86,16 @@ fn remove_non_speech(text: &str) -> String {
 
 /// Turns digit runs into words. A run with thousands separators ("1.000" in `hu`,
 /// "1,000" in `en`) is one number. A decimal number ("12,5" in `hu`, "12.5" in `en`)
-/// is read in two parts.
+/// is read in two parts. English, Chinese, Japanese, Korean and Hindi write numbers with
+/// "," for thousands and "." for decimals. The other languages use the opposite.
 fn expand_numbers(text: &str, lang: &str) -> String {
     if numbers::to_words(0, lang).is_none() {
         return text.to_string();
     }
-    let (thousands, decimal) = if lang == "en" { (',', '.') } else { ('.', ',') };
+    let (thousands, decimal) = match lang {
+        "en" | "zh-cn" | "ja" | "ko" | "hi" => (',', '.'),
+        _ => ('.', ','),
+    };
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
@@ -115,7 +119,7 @@ fn expand_numbers(text: &str, lang: &str) -> String {
                 end += 1;
             }
             let frac: String = chars[start..end].iter().collect();
-            out.push_str(&decimal_words(&frac, lang));
+            out.push_str(&decimal_words(&frac, n, lang));
             i = end;
         }
     }
@@ -147,8 +151,14 @@ fn read_number(chars: &[char], start: usize, thousands: char) -> (String, usize)
     }
 }
 
-fn decimal_words(frac: &str, lang: &str) -> String {
+/// The words after the decimal mark. Most languages say their "point" word and read
+/// the digits one by one. `whole` is the number in front of the mark.
+fn decimal_words(frac: &str, whole: u64, lang: &str) -> String {
     let n: u64 = frac.parse().unwrap_or(0);
+    let digits: Vec<String> = frac
+        .chars()
+        .filter_map(|c| numbers::to_words(c.to_digit(10)?.into(), lang))
+        .collect();
     match lang {
         "hu" => {
             let unit = match frac.len() {
@@ -160,19 +170,34 @@ fn decimal_words(frac: &str, lang: &str) -> String {
             let words = numbers::to_words(n, lang).unwrap_or_default();
             format!(" egész {words} {unit}").trim_end().to_string()
         }
-        "zh-cn" => {
-            let digits: String = frac
-                .chars()
-                .filter_map(|c| numbers::to_words(c.to_digit(10)?.into(), lang))
-                .collect();
-            format!("点{digits}")
+        // No spaces: the digits are single kanji or hanzi.
+        "zh-cn" | "ja" => format!("点{}", digits.concat()),
+        // Russian: "целая" after a number that ends in 1 (but not 11), else "целых".
+        "ru" => {
+            let word = if whole % 10 == 1 && whole % 100 != 11 {
+                "целая"
+            } else {
+                "целых"
+            };
+            format!(" {word} {}", digits.join(" "))
         }
         _ => {
-            let digits: Vec<String> = frac
-                .chars()
-                .filter_map(|c| numbers::to_words(c.to_digit(10)?.into(), lang))
-                .collect();
-            format!(" point {}", digits.join(" "))
+            let point = match lang {
+                "ar" => "فاصلة",
+                "cs" => "celá",
+                "de" => "Komma",
+                "es" => "punto",
+                "fr" => "virgule",
+                "hi" => "दशमलव",
+                "it" => "virgola",
+                "ko" => "점",
+                "nl" => "komma",
+                "pl" => "przecinek",
+                "pt" => "vírgula",
+                "tr" => "virgül",
+                _ => "point",
+            };
+            format!(" {point} {}", digits.join(" "))
         }
     }
 }
@@ -367,6 +392,39 @@ mod tests {
     }
 
     #[test]
+    fn decimals_use_the_point_word_of_the_language() {
+        for (text, lang, expected) in [
+            ("2,5", "de", "zwei Komma fünf"),
+            ("3,14", "fr", "trois virgule un quatre"),
+            ("1,5", "es", "uno punto cinco"),
+            ("2,5", "ru", "два целых пять"),
+            ("1,5", "ru", "один целая пять"),
+            ("11,5", "ru", "одиннадцать целых пять"),
+            ("3,14", "pl", "trzy przecinek jeden cztery"),
+            ("3,14", "cs", "tři celá jedna čtyři"),
+            ("3.14", "ja", "三点一四"),
+            ("3.14", "zh-cn", "三点一四"),
+            ("3.14", "ko", "삼 점 일 사"),
+            ("3.14", "hi", "तीन दशमलव एक चार"),
+        ] {
+            assert_eq!(clean(text, lang).as_deref(), Some(expected), "{lang}");
+        }
+    }
+
+    #[test]
+    fn thousands_separator_follows_the_language() {
+        for (text, lang, expected) in [
+            ("1.000", "de", "eintausend"),
+            ("1,000", "ko", "천"),
+            ("1,000", "hi", "एक हज़ार"),
+            ("1,000", "ja", "千"),
+            ("1,000", "zh-cn", "一千"),
+        ] {
+            assert_eq!(clean(text, lang).as_deref(), Some(expected), "{lang}");
+        }
+    }
+
+    #[test]
     fn clean_expands_symbols_and_abbreviations() {
         assert_eq!(
             clean("Dr. Kiss 14% & 1.000 Ft", "hu").as_deref(),
@@ -383,10 +441,10 @@ mod tests {
     }
 
     #[test]
-    fn other_languages_keep_digits() {
+    fn german_numbers_become_words() {
         assert_eq!(
             clean("Ich habe 5 Äpfel.", "de").as_deref(),
-            Some("ich habe 5 äpfel.")
+            Some("ich habe fünf äpfel.")
         );
     }
 
