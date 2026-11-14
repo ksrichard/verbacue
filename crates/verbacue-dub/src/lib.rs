@@ -4,6 +4,7 @@
 //! Both run as ONNX graphs with ONNX Runtime. `tools/xtts-export` makes the graphs.
 
 pub mod bpe;
+pub mod fit;
 pub mod mel;
 pub mod numbers;
 pub mod resample;
