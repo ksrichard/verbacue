@@ -55,6 +55,9 @@ impl ClaudeModel {
             // No MCP servers and no project CLAUDE.md: they slow the start and add
             // text that the translation does not need.
             .arg("--strict-mcp-config")
+            // Only local settings: the user's own CLAUDE.md would change the style
+            // of the translation.
+            .args(["--setting-sources", "local"])
             .current_dir(std::env::temp_dir())
             .args(["--system-prompt", system]);
         if let Some(model) = &self.model {
@@ -384,5 +387,6 @@ mod tests {
         let out = translate_cues_with(&mut t, &cues, "en", &Hints::default(), &()).unwrap();
         assert_eq!(out.len(), 3);
         assert!(out.iter().zip(lines).all(|(c, l)| c.text != l));
+        eprintln!("{:?}", out.iter().map(|c| &c.text).collect::<Vec<_>>());
     }
 }
