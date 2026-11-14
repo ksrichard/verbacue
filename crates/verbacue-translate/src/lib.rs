@@ -479,6 +479,11 @@ impl<M: ChatModel> Translator for LlmTranslator<M> {
         } else {
             language_name(source_lang)
         };
+        // One request per part, and one more to merge the parts. The progress counts
+        // the requests.
+        let chunks = lines.len().div_ceil(NOTES_CHUNK) as u64;
+        let total = if chunks > 1 { chunks + 1 } else { chunks };
+        progress.update(0, total);
         let mut parts = Vec::new();
         for chunk in lines.chunks(NOTES_CHUNK) {
             check_cancel(progress)?;
@@ -491,6 +496,7 @@ impl<M: ChatModel> Translator for LlmTranslator<M> {
                 chunk.join("\n")
             );
             parts.push(self.free_text(&user, progress)?);
+            progress.update(parts.len() as u64, total);
         }
         let notes = match parts.len() {
             0 => return Ok(None),
@@ -504,7 +510,9 @@ impl<M: ChatModel> Translator for LlmTranslator<M> {
                      story so far. Plain text only.",
                     parts.join("\n---\n")
                 );
-                self.free_text(&user, progress)?
+                let merged = self.free_text(&user, progress)?;
+                progress.update(total, total);
+                merged
             }
         };
         let notes = notes.trim().to_string();
@@ -1122,8 +1130,12 @@ mod tests {
         let model = ScriptedModel::new(&["part one", "part two", "merged notes"]);
         let mut t = LlmTranslator::new(model, &config());
         let text: Vec<String> = (0..250).map(|i| format!("line {i}")).collect();
-        let notes = t.film_notes(&text, "en", &()).unwrap();
+        let steps = std::sync::Mutex::new(Vec::new());
+        let progress = |done, total| steps.lock().unwrap().push((done, total));
+        let notes = t.film_notes(&text, "en", &progress).unwrap();
         assert_eq!(notes.as_deref(), Some("merged notes"));
+        // Two parts and the merge.
+        assert_eq!(*steps.lock().unwrap(), [(0, 3), (1, 3), (2, 3), (3, 3)]);
         assert_eq!(t.model.prompts.len(), 3);
         assert!(t.model.prompts[0].contains("line 0") && !t.model.prompts[0].contains("line 249"));
         assert!(t.model.prompts[2].contains("part one") && t.model.prompts[2].contains("part two"));
