@@ -14,6 +14,8 @@ macro_rules! out {
 
 #[cfg(windows)]
 mod console;
+#[cfg(feature = "dub")]
+mod dubbing;
 mod launch;
 
 use std::{
@@ -80,6 +82,15 @@ struct Cli {
 
     #[command(flatten)]
     translate: TranslateArgs,
+
+    /// Also write movie.<to>.dub.mkv: a new audio track that speaks the translation.
+    #[cfg(feature = "dub")]
+    #[arg(long)]
+    dub: bool,
+
+    #[cfg(feature = "dub")]
+    #[command(flatten)]
+    dub_args: dubbing::DubArgs,
 
     /// Show debug logs. Repeat for more detail.
     #[arg(short, long, global = true, action = clap::ArgAction::Count)]
@@ -185,6 +196,37 @@ enum Command {
         #[command(subcommand)]
         action: ModelsAction,
     },
+    /// Dub a video with an existing subtitle file: a new audio track speaks it.
+    #[cfg(feature = "dub")]
+    Dub {
+        video: PathBuf,
+        subtitles: PathBuf,
+        /// The language of the subtitles. By default it comes from the file name
+        /// (movie.hu.srt).
+        #[arg(long)]
+        to: Option<String>,
+        /// Output file. By default `movie.<lang>.dub.mkv`.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Overwrite the output file if it exists.
+        #[arg(long)]
+        force: bool,
+        /// Audio track to use, as listed by `verbacue tracks`.
+        #[arg(long, default_value_t = 0)]
+        audio_track: usize,
+        #[command(flatten)]
+        args: dubbing::DubArgs,
+    },
+    /// List the studio voices for --dub-voice.
+    #[cfg(feature = "dub")]
+    Voices {
+        /// The voice model: xtts-v2, xtts-v2-int8, or a folder with the model files.
+        #[arg(long)]
+        dub_model: Option<String>,
+        /// Accept the licence of the voice model without a question.
+        #[arg(long)]
+        accept_model_licence: bool,
+    },
     /// Speak one line with XTTS-v2, to test the voice model.
     #[cfg(feature = "dub")]
     #[command(hide = true)]
@@ -276,6 +318,21 @@ fn main() -> Result<()> {
         },
         Some(Command::Translate { inputs, from, args }) => translate_files(&inputs, from, &args),
         #[cfg(feature = "dub")]
+        Some(Command::Dub {
+            video,
+            subtitles,
+            to,
+            output,
+            force,
+            audio_track,
+            args,
+        }) => dubbing::dub_file(&video, &subtitles, to, output, force, audio_track, &args),
+        #[cfg(feature = "dub")]
+        Some(Command::Voices {
+            dub_model,
+            accept_model_licence,
+        }) => dubbing::print_voices(dub_model.as_deref(), accept_model_licence),
+        #[cfg(feature = "dub")]
         Some(Command::Speak {
             text,
             lang,
@@ -283,7 +340,7 @@ fn main() -> Result<()> {
             model,
             seed,
             output,
-        }) => speak(&text, &lang, &voice, &model, seed, &output),
+        }) => dubbing::speak(&text, &lang, &voice, &model, seed, &output),
         Some(Command::Burn {
             video,
             subtitles,
@@ -305,50 +362,6 @@ fn main() -> Result<()> {
         }
         None => process_videos(&cli),
     }
-}
-
-/// Speaks one line into a WAV file.
-#[cfg(feature = "dub")]
-fn speak(text: &str, lang: &str, voice: &str, model: &str, seed: u64, output: &Path) -> Result<()> {
-    use verbacue::dub::{self, Xtts};
-
-    if !dub::supports(lang) {
-        bail!(
-            "XTTS-v2 cannot speak {lang:?}; it knows {}",
-            dub::LANGUAGES.join(", ")
-        );
-    }
-    let (dir, int8) = if Path::new(model).is_dir() {
-        let dir = PathBuf::from(model);
-        let int8 = !dir.join("gpt.onnx").is_file();
-        (dir, int8)
-    } else {
-        let bundle = models::bundle(model)
-            .filter(|b| b.kind == models::Kind::Voice)
-            .with_context(|| format!("unknown voice model {model:?}"))?;
-        (ensure_bundle(bundle)?, model.ends_with("int8"))
-    };
-    let start = std::time::Instant::now();
-    let mut xtts = Xtts::load(&dir, int8)?;
-    let voice = if Path::new(voice).is_file() {
-        let (audio, rate) = dub::wav::read(Path::new(voice))?;
-        xtts.clone_voice(&dub::resample::resample(&audio, rate, dub::SAMPLE_RATE))?
-    } else {
-        xtts.studio_voice(voice).with_context(|| {
-            format!(
-                "unknown voice {voice:?}; the studio voices are: {}",
-                xtts.studio_voices().join(", ")
-            )
-        })?
-    };
-    let latents = xtts.latents(text, lang, &voice, seed)?;
-    let audio = xtts.vocode(&latents, &voice)?;
-    dub::wav::write(output, &audio, dub::SAMPLE_RATE)?;
-    #[expect(clippy::cast_precision_loss, reason = "a duration")]
-    let seconds = audio.len() as f32 / dub::SAMPLE_RATE as f32;
-    eprintln!("{seconds:.1} s of speech in {:.1?}", start.elapsed());
-    out!("{}", output.display());
-    Ok(())
 }
 
 /// Prints the help. A closed pipe (`verbacue | head`) is not an error.
@@ -428,7 +441,15 @@ fn process_videos(cli: &Cli) -> Result<()> {
         if videos.len() > 1 {
             tracing::info!("[{}/{}] {}", i + 1, videos.len(), video.display());
         }
-        let sink = BarSink::new(video);
+        #[cfg_attr(
+            not(feature = "dub"),
+            expect(unused_mut, reason = "set only for dubbing")
+        )]
+        let mut sink = BarSink::new(video);
+        #[cfg(feature = "dub")]
+        {
+            sink.accept_licence = cli.dub_args.accept_model_licence;
+        }
         let result = pipeline.run(&job_for(video, cli), &sink);
         sink.finish();
         if let Err(e) = result {
@@ -470,6 +491,8 @@ fn job_for(video: &Path, cli: &Cli) -> Job {
         embed: cli.embed,
         burn: cli.burn,
         force: args.force,
+        #[cfg(feature = "dub")]
+        dub: cli.dub.then(|| cli.dub_args.options()),
     }
 }
 
@@ -477,6 +500,8 @@ fn job_for(video: &Path, cli: &Cli) -> Job {
 struct BarSink<'a> {
     video: &'a Path,
     bar: Mutex<Option<Bar>>,
+    /// `--accept-model-licence`.
+    accept_licence: bool,
 }
 
 impl<'a> BarSink<'a> {
@@ -484,6 +509,7 @@ impl<'a> BarSink<'a> {
         Self {
             video,
             bar: Mutex::new(None),
+            accept_licence: false,
         }
     }
 
@@ -510,6 +536,13 @@ impl Sink for BarSink<'_> {
                     Step::Embed => percent_bar("embedding"),
                     Step::Burn => percent_bar("burning"),
                     Step::Notes => Bar::new("reading", "{msg:>12} {spinner} {elapsed}"),
+                    Step::Separate => percent_bar("audio"),
+                    Step::Speakers => Bar::new("voices", "{msg:>12} {spinner} {elapsed}"),
+                    Step::Speak => Bar::new(
+                        "speaking",
+                        "{msg:>12} [{bar:30}] {pos}/{len} lines eta {eta}",
+                    ),
+                    Step::Mix => percent_bar("mixing"),
                     Step::Save => return,
                 };
                 if let Ok(mut current) = self.bar.lock() {
@@ -535,6 +568,43 @@ impl Sink for BarSink<'_> {
             Event::Note(text) => tracing::warn!("{text}"),
             Event::Cue(_) => {}
         }
+    }
+
+    fn accept_licence(&self, model: &str, licence: &str) -> bool {
+        #[cfg(feature = "dub")]
+        {
+            self.accept_licence || dubbing::ask_licence(model, licence)
+        }
+        #[cfg(not(feature = "dub"))]
+        {
+            let _ = (model, licence);
+            false
+        }
+    }
+}
+
+#[cfg(feature = "dub")]
+impl verbacue::dub::Events for BarSink<'_> {
+    fn step(&self, step: verbacue::dub::DubStep) {
+        use verbacue::dub::DubStep;
+        self.event(Event::Step(match step {
+            DubStep::Separate => Step::Separate,
+            DubStep::Speakers => Step::Speakers,
+            DubStep::Speak => Step::Speak,
+            DubStep::Mix => Step::Mix,
+        }));
+    }
+
+    fn progress(&self, done: u64, total: u64) {
+        self.event(Event::Progress { done, total });
+    }
+
+    fn note(&self, text: &str) {
+        self.event(Event::Note(text));
+    }
+
+    fn cancelled(&self) -> bool {
+        false
     }
 }
 
@@ -866,5 +936,35 @@ mod tests {
         let translation = job.translation.unwrap();
         assert_eq!(translation.notes, "Ayşe and Kerem are siblings.");
         assert!(translation.film_notes);
+    }
+
+    #[cfg(feature = "dub")]
+    #[test]
+    fn dub_flags_reach_the_job() {
+        use verbacue::dub::{Original, VoiceChoice};
+        let cli = Cli::parse_from([
+            "verbacue",
+            "movie.mkv",
+            "--to",
+            "hu",
+            "--dub",
+            "--dub-voice",
+            "Ana Florence",
+            "--dub-original",
+            "lower",
+            "--dub-speed-limit",
+            "1.2",
+            "--dub-model",
+            "xtts-v2",
+        ]);
+        let dub = job_for(Path::new("movie.mkv"), &cli).dub.unwrap();
+        assert_eq!(dub.voice, VoiceChoice::Studio("Ana Florence".into()));
+        assert_eq!(dub.original, Original::Lower);
+        assert!((dub.speed_limit - 1.2).abs() < 1e-6);
+        assert_eq!(dub.model, "xtts-v2");
+
+        let plain = Cli::parse_from(["verbacue", "movie.mkv"]);
+        assert!(job_for(Path::new("movie.mkv"), &plain).dub.is_none());
+        assert!(Cli::try_parse_from(["verbacue", "m.mkv", "--dub-speed-limit", "2"]).is_err());
     }
 }

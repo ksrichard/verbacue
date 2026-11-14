@@ -39,7 +39,7 @@ pub enum VoiceChoice {
     Studio(String),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Options {
     pub voice: VoiceChoice,
     pub original: Original,
@@ -149,7 +149,9 @@ pub fn dub(job: DubJob<'_>, sink: &dyn Events) -> Result<()> {
         );
     }
 
-    let mut xtts = Xtts::load(job.models_dir, job.options.model.ends_with("int8"))?;
+    // A folder without `gpt.onnx` holds only the INT8 model.
+    let int8 = job.options.model.ends_with("int8") || !job.models_dir.join("gpt.onnx").is_file();
+    let mut xtts = Xtts::load(job.models_dir, int8)?;
     let default_voice = xtts
         .studio_voice(DEFAULT_STUDIO_VOICE)
         .ok_or_else(|| Error::new(ErrorKind::Model, "the model has no default studio voice"))?;
@@ -402,6 +404,52 @@ mod tests {
     fn default_model_is_a_voice_bundle() {
         assert!(["xtts-v2", "xtts-v2-int8"].contains(&default_model()));
         assert_eq!(Options::default().original, Original::Remove);
+    }
+
+    /// Cancels at the second progress event of the speak step.
+    #[derive(Default)]
+    struct CancelInSpeak {
+        speaking: std::sync::atomic::AtomicBool,
+        events: std::sync::atomic::AtomicU32,
+    }
+
+    impl Events for CancelInSpeak {
+        fn step(&self, step: DubStep) {
+            use std::sync::atomic::Ordering;
+            self.speaking
+                .store(step == DubStep::Speak, Ordering::SeqCst);
+        }
+        fn progress(&self, _: u64, _: u64) {
+            use std::sync::atomic::Ordering;
+            if self.speaking.load(Ordering::SeqCst) {
+                self.events.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        fn note(&self, _: &str) {}
+        fn cancelled(&self) -> bool {
+            self.events.load(std::sync::atomic::Ordering::SeqCst) >= 2
+        }
+    }
+
+    #[test]
+    #[ignore = "needs tools/xtts-export/out from the export scripts"]
+    fn cancel_during_speak_leaves_no_output() {
+        let Some(video) = test_video("verbacue-run-speak-cancel.mkv") else {
+            return;
+        };
+        let models = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/xtts-export/out");
+        let temp = std::env::temp_dir().join("verbacue-run-speak-cancel-tmp");
+        let output = std::env::temp_dir().join("verbacue-run-speak-cancel.hu.dub.mkv");
+        let cues = [
+            Cue::new(0, 1500, "Jó napot!"),
+            Cue::new(2000, 3500, "Hogy van?"),
+            Cue::new(3600, 3900, "Jól."),
+        ];
+        let sink = CancelInSpeak::default();
+        let err = dub(job(&video, &cues, &temp, &output, &models), &sink).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::Cancelled);
+        assert!(!output.exists());
+        assert_eq!(std::fs::read_dir(&temp).unwrap().count(), 0);
     }
 
     #[test]

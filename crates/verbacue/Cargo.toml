@@ -10,7 +10,7 @@ homepage.workspace = true
 # This crate re-exports the verbacue-* crates as modules. Each feature turns on one
 # crate, so a program builds only the C libraries it uses.
 [features]
-default = ["transcribe", "video", "local", "online", "download"]
+default = ["transcribe", "video", "local", "online", "download", "dub"]
 # Reads the audio of any file that FFmpeg can open (verbacue-media).
 audio = ["dep:verbacue-media"]
 # Speech to text with Whisper (verbacue-transcribe). Also reads the audio of any video.
@@ -22,7 +22,7 @@ local = ["verbacue-translate/local"]
 # Translation with DeepL, Google, Azure or an OpenAI-compatible server.
 online = ["verbacue-translate/online"]
 # Speaks translated subtitles with XTTS-v2 (verbacue-dub).
-dub = ["dep:verbacue-dub"]
+dub = ["dep:verbacue-dub", "video"]
 # Downloads the known models into the cache and checks their SHA256.
 download = ["verbacue-core/download"]
 # GPU support on Linux and Windows. NVIDIA only; needs the CUDA toolkit.

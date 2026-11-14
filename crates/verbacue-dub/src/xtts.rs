@@ -94,6 +94,19 @@ impl Latents {
     }
 }
 
+/// The names of the studio voices in a model folder, sorted, without loading the model.
+///
+/// # Errors
+/// Returns an error if `speakers.safetensors` cannot be read.
+pub fn studio_voices_in(dir: &Path) -> Result<Vec<String>> {
+    let mut names: Vec<String> = safetensors::load(&dir.join("speakers.safetensors"))?
+        .into_keys()
+        .filter_map(|k| k.strip_suffix(".cond_latents").map(str::to_string))
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
 /// XTTS-v2, loaded from the files of the `xtts-v2` or `xtts-v2-int8` model.
 pub struct Xtts {
     conditioning: Session,

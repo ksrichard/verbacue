@@ -478,6 +478,35 @@ Whisper is unloaded before the translation model loads, so the peak is about 9 G
   lines are in the right order. If no font has the letters of a script, `--burn`
   stops with an error; `--embed` always works.
 
+### Dubbing
+
+`--dub` writes `movie.<to>.dub.mkv`. It has all original streams, a new audio track
+that speaks the translation, and the subtitles as soft tracks. The new track is the
+default audio track, with the title "<Language> (AI voice)".
+
+```sh
+verbacue movie.mkv --to hu --dub --dub-original lower --dub-voice "Ana Florence"
+verbacue dub movie.mkv movie.hu.srt     # dub with an existing subtitle file
+verbacue voices                         # list the studio voices
+```
+
+- The voice model is XTTS-v2, run with ONNX Runtime on the CPU (or CUDA in a CUDA
+  build). It is under the Coqui Public Model License: **non-commercial use only**.
+  verbacue asks you to accept the licence before the first download. Without a
+  terminal, add `--accept-model-licence`.
+- It speaks en, es, fr, de, it, pt, pl, tr, ru, nl, cs, ar, zh, ja, hu, ko and hi.
+  For another `--to`, verbacue stops before it transcribes.
+- `--dub-original lower` keeps the original audio and makes it quieter while a new
+  line plays. `remove` takes the original voices out; it comes in a later version,
+  and until then it works as `lower`.
+- `--dub-voice` is `clone` (the voice of each speaker; also a later version, until
+  then the default studio voice) or a studio voice name.
+- A line that is longer than its cue plays faster, up to `--dub-speed-limit`
+  (default 1.3). Then it may use the silence before the next line. Above that, it
+  plays up to 1.5 times faster with a warning, and it never plays over the next line.
+- `--dub-model` is `xtts-v2-int8` (default; about twice as fast on a CPU), `xtts-v2`
+  (default in a CUDA build), or a folder with the model files.
+
 ## Tests
 
 ```sh
