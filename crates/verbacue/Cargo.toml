@@ -10,7 +10,7 @@ homepage.workspace = true
 # This crate re-exports the verbacue-* crates as modules. Each feature turns on one
 # crate, so a program builds only the C libraries it uses.
 [features]
-default = ["transcribe", "video", "local", "online", "download", "dub"]
+default = ["transcribe", "video", "local", "online", "download"]
 # Reads the audio of any file that FFmpeg can open (verbacue-media).
 audio = ["dep:verbacue-media"]
 # Speech to text with Whisper (verbacue-transcribe). Also reads the audio of any video.

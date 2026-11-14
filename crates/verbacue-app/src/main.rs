@@ -501,6 +501,7 @@ struct BarSink<'a> {
     video: &'a Path,
     bar: Mutex<Option<Bar>>,
     /// `--accept-model-licence`.
+    #[cfg(feature = "dub")]
     accept_licence: bool,
 }
 
@@ -509,6 +510,7 @@ impl<'a> BarSink<'a> {
         Self {
             video,
             bar: Mutex::new(None),
+            #[cfg(feature = "dub")]
             accept_licence: false,
         }
     }
