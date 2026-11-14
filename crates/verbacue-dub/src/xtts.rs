@@ -39,7 +39,7 @@ const LAYERS: usize = 30;
 const HEADS: usize = 16;
 const DIM: usize = 1024;
 const COND_LEN: usize = 32;
-const SPEAKER_DIM: usize = 512;
+pub const SPEAKER_DIM: usize = 512;
 
 /// A voice: the GPT conditioning and the speaker embedding of the vocoder.
 #[derive(Clone, Debug)]
@@ -238,22 +238,32 @@ impl Xtts {
             Tensor::from_array(([1, m.n_mels, m.frames], m.data)).map_err(model_error)?,
             COND_LEN * DIM,
         )?;
-        let a16 = resample::resample(
-            &audio_24k[..audio_24k.len().min(24_000 * 30)],
-            24_000,
-            16_000,
-        );
+        let speaker_emb = self
+            .speaker_embedding(&audio_24k[..audio_24k.len().min(24_000 * 30)])?
+            .to_vec();
+        Ok(Voice {
+            cond_latents,
+            speaker_emb,
+        })
+    }
+
+    /// The speaker embedding of speech at 24 kHz: 512 values, with length 1. Lines of
+    /// the same speaker give similar embeddings.
+    ///
+    /// # Errors
+    /// Returns an error if the speaker encoder fails.
+    pub fn speaker_embedding(&mut self, audio_24k: &[f32]) -> Result<[f32; SPEAKER_DIM]> {
+        let a16 = resample::resample(audio_24k, 24_000, 16_000);
         let m = mel::speaker_mel(&a16);
-        let speaker_emb = run_one(
+        let values = run_one(
             &mut self.speaker,
             "mel",
             Tensor::from_array(([1, m.n_mels, m.frames], m.data)).map_err(model_error)?,
             SPEAKER_DIM,
         )?;
-        Ok(Voice {
-            cond_latents,
-            speaker_emb,
-        })
+        values
+            .try_into()
+            .map_err(|_| Error::new(ErrorKind::Model, "the speaker encoder gave a wrong size"))
     }
 
     /// The latents for one subtitle line. The line is cleaned and split into parts that

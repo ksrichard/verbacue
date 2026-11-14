@@ -500,8 +500,11 @@ verbacue voices                         # list the studio voices
   vocals model (316 MB download) and keeps the music and effects. It needs about
   0.55 s per second of audio on an Apple Silicon CPU. `lower` keeps the original
   audio and makes it quieter while a new line plays; it is much faster.
-- `--dub-voice` is `clone` (the voice of each speaker; also a later version, until
-  then the default studio voice) or a studio voice name.
+- `--dub-voice clone` (default) finds the speakers and speaks each line in the voice
+  of its speaker. The XTTS-v2 speaker encoder groups the lines by voice, and the
+  loudest 10 seconds of each speaker become the voice sample. A speaker with less
+  than 3 seconds of speech gets the studio voice. `--dub-voice <name>` uses one
+  studio voice for all lines.
 - A line that is longer than its cue plays faster, up to `--dub-speed-limit`
   (default 1.3). Then it may use the silence before the next line. Above that, it
   plays up to 1.5 times faster with a warning, and it never plays over the next line.

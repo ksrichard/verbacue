@@ -13,12 +13,14 @@ use verbacue_media::{
 use crate::{
     fit,
     mix::{self, Mixer},
-    separate,
+    separate, speakers,
     xtts::{DEFAULT_STUDIO_VOICE, Latents, SAMPLE_RATE, Voice, Xtts},
 };
 
 /// The sample rate of the mix. HTDemucs works at 44.1 kHz.
 const MIX_RATE: u32 = 44_100;
+/// A speaker needs this much speech for a cloned voice.
+const MIN_SPEAKER_MS: u64 = 3000;
 /// The expected speech time for one character, for the length check.
 const MS_PER_CHAR: u64 = 70;
 
@@ -176,21 +178,25 @@ pub fn dub(job: DubJob<'_>, sink: &dyn Events) -> Result<()> {
     let default_voice = xtts
         .studio_voice(DEFAULT_STUDIO_VOICE)
         .ok_or_else(|| Error::new(ErrorKind::Model, "the model has no default studio voice"))?;
-    let voice = match &job.options.voice {
-        VoiceChoice::Studio(name) => xtts.studio_voice(name).ok_or_else(|| {
-            Error::new(
-                ErrorKind::InvalidInput,
-                format!("unknown studio voice {name:?}"),
-            )
-        })?,
+    let slots = fit::slots(job.cues);
+    // One voice for each speaker, and the speaker of each slot.
+    let (voices, voice_of) = match &job.options.voice {
+        VoiceChoice::Studio(name) => {
+            let voice = xtts.studio_voice(name).ok_or_else(|| {
+                Error::new(
+                    ErrorKind::InvalidInput,
+                    format!("unknown studio voice {name:?}"),
+                )
+            })?;
+            (vec![voice], vec![0; slots.len()])
+        }
         VoiceChoice::Clone => {
-            sink.note("voice cloning is not available yet; all lines use the studio voice");
-            default_voice.clone()
+            sink.step(DubStep::Speakers);
+            clone_speakers(&mut xtts, &slots, &reference, &default_voice, sink)?
         }
     };
 
     sink.step(DubStep::Speak);
-    let slots = fit::slots(job.cues);
     let mut mixer = Mixer::new(background);
     for (n, slot) in slots.iter().enumerate() {
         check_cancel(&progress)?;
@@ -201,7 +207,7 @@ pub fn dub(job: DubJob<'_>, sink: &dyn Events) -> Result<()> {
             &mut xtts,
             cue,
             job.lang,
-            &voice,
+            &voices[voice_of[n]],
             &default_voice,
             n as u64,
             line,
@@ -221,7 +227,7 @@ pub fn dub(job: DubJob<'_>, sink: &dyn Events) -> Result<()> {
         let speech_voice = if latents.voice_is_default {
             &default_voice
         } else {
-            &voice
+            &voices[voice_of[n]]
         };
         let audio = xtts.vocode(&latents.latents.stretch(1.0 / f.factor), speech_voice)?;
         let original_speech = mix::read_mono(&reference, slot.start_ms, slot.end_ms)?;
@@ -253,6 +259,46 @@ pub fn dub(job: DubJob<'_>, sink: &dyn Events) -> Result<()> {
         job.subtitle_tracks,
         &progress,
     )
+}
+
+/// Finds the speakers and clones a voice for each one. Returns the voices and the
+/// voice index of each slot. A speaker with less than 3 s of speech, and a slot with
+/// no speaker, get the default studio voice.
+fn clone_speakers(
+    xtts: &mut Xtts,
+    slots: &[fit::Slot],
+    speech: &RawAudio,
+    default_voice: &Voice,
+    sink: &dyn Events,
+) -> Result<(Vec<Voice>, Vec<usize>)> {
+    let groups = speakers::find(xtts, slots, speech, sink)?;
+    let count = groups.iter().flatten().max().map_or(0, |&g| g + 1);
+    // Index 0 is the default voice; speaker g has index g + 1.
+    let mut voices = vec![default_voice.clone()];
+    for g in 0..count {
+        let lines: Vec<(u64, u64)> = slots
+            .iter()
+            .zip(&groups)
+            .filter(|(_, group)| **group == Some(g))
+            .map(|(s, _)| (s.start_ms, s.end_ms))
+            .collect();
+        let speech_ms: u64 = lines.iter().map(|(a, b)| b - a).sum();
+        let voice = if speech_ms < MIN_SPEAKER_MS {
+            sink.note(&format!(
+                "speaker {} has only {:.1} s of speech; the studio voice speaks their lines",
+                g + 1,
+                speech_ms as f32 / 1000.0
+            ));
+            default_voice.clone()
+        } else {
+            let sample = speakers::sample(&lines, speech, speakers::SAMPLE_MS)?;
+            xtts.clone_voice(&sample)?
+        };
+        voices.push(voice);
+    }
+    tracing::info!("found {count} speakers");
+    let voice_of = groups.iter().map(|g| g.map_or(0, |g| g + 1)).collect();
+    Ok((voices, voice_of))
 }
 
 /// The latents of a line, and whether they use the default voice.
