@@ -24,6 +24,7 @@ rustfft = { version = "6.4.1" }
 serde_json = { version = "1.0.154" }
 tracing = { version = "0.1.44" }
 verbacue-core = { path = "../verbacue-core", version = "0.1.0" }
+verbacue-media = { path = "../verbacue-media", version = "0.1.0" }
 
 # On macOS: CoreML, which uses only system frameworks.
 [target.'cfg(target_os = "macos")'.dependencies]

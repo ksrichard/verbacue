@@ -6,9 +6,11 @@
 pub mod bpe;
 pub mod fit;
 pub mod mel;
+pub mod mix;
 pub mod numbers;
 pub mod resample;
 pub mod romanize;
+pub mod run;
 pub mod safetensors;
 pub mod sampling;
 pub mod session;
@@ -16,5 +18,6 @@ pub mod text;
 pub mod wav;
 pub mod xtts;
 
+pub use run::{DubJob, DubStep, Events, Options, Original, VoiceChoice, default_model, dub};
 pub use text::{LANGUAGES, supports};
 pub use xtts::{DEFAULT_STUDIO_VOICE, Latents, SAMPLE_RATE, Voice, Xtts};

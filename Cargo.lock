@@ -5867,6 +5867,7 @@ dependencies = [
  "serde_json",
  "tracing",
  "verbacue-core",
+ "verbacue-media",
 ]
 
 [[package]]
