@@ -354,6 +354,10 @@ music, because Whisper tends to invent text there. A filter then removes typical
 invented lines ("Thanks for watching", subtitle credits), empty or punctuation-only
 lines, and long runs of the same line.
 
+Whisper sometimes misses a few lines, or repeats one line instead of the next. So a
+second pass finds the speech that no subtitle covers, and transcribes only those parts
+again. It needs the voice activity model, so `--no-vad` turns it off.
+
 Whisper often ends a segment in the middle of a sentence. verbacue joins such segments
 and then splits them again at sentence ends. A cue is at most about 6 seconds and
 84 columns long. Its time is shared out by text length.
