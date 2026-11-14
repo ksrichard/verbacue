@@ -31,6 +31,15 @@ uv run parity.py ckpt out
 It also writes `out/fixtures/`: `tokens.json` for the Rust tokenizer test, and WAV
 files to listen to.
 
+Then write the fixtures for the Rust voice cloning tests:
+
+```sh
+uv run clone_fixtures.py out
+```
+
+`clone.safetensors` holds each step of cloning `reference.wav`: the resampled audio,
+both mel spectrograms, and the outputs of `conditioning.onnx` and `speaker.onnx`.
+
 ## The files
 
 | File | What it does |

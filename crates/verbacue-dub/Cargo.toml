@@ -19,6 +19,8 @@ ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "
 lindera = { version = "6.2.0", default-features = false, features = ["embed-ipadic"] }
 # Chinese characters to pinyin.
 pinyin = { version = "0.11.0", default-features = false, features = ["with_tone_num_end"] }
+# The FFT for the mel spectrograms of a voice sample.
+rustfft = { version = "6.4.1" }
 serde_json = { version = "1.0.154" }
 tracing = { version = "0.1.44" }
 verbacue-core = { path = "../verbacue-core", version = "0.1.0" }

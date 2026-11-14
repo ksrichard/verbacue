@@ -124,8 +124,12 @@ pilot's account, with the CPML licence attached.
 
 ### ONNX Runtime
 
-`ort` 2.0 links ONNX Runtime statically. The app uses CoreML on macOS and CUDA in the
-CUDA builds. The CPU is the fallback.
+`ort` 2.0 links ONNX Runtime statically. The app uses CUDA in the CUDA builds. The CPU
+is the fallback.
+
+XTTS-v2 runs on the CPU on macOS. CoreML gives `inf` in the conditioning encoder, refuses
+the growing KV cache of the GPT, and is slower than the CPU for the vocoder. On an Apple
+Silicon CPU, one short line takes about 2 seconds.
 
 ### Language
 

@@ -11,6 +11,7 @@
 //! | [`transcribe`] | Speech to text with Whisper | `transcribe` | `verbacue-transcribe` |
 //! | [`subtitle`] | Reads, writes and lays out SRT and WebVTT | always | `verbacue-core` |
 //! | [`translate`] | Translates cues with a language model or a service | `local`, `online` | `verbacue-translate` |
+//! | [`dub`] | Speaks translated cues with XTTS-v2 | `dub` | `verbacue-dub` |
 //! | [`video`] | Writes MKV with subtitle tracks, or MP4 with burned-in text | `video` | `verbacue-media` |
 //! | [`models`] | Known models, the model cache and verified downloads | `download` | `verbacue-core` |
 //! | [`pipeline`] | All steps for one video, with progress events and cancel | `transcribe` | this crate |
@@ -46,6 +47,8 @@
 //! # }
 //! ```
 
+#[cfg(feature = "dub")]
+pub use verbacue_dub as dub;
 #[cfg(feature = "audio")]
 pub use verbacue_media::audio;
 #[cfg(feature = "video")]

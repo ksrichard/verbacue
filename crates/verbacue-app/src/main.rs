@@ -185,6 +185,28 @@ enum Command {
         #[command(subcommand)]
         action: ModelsAction,
     },
+    /// Speak one line with XTTS-v2, to test the voice model.
+    #[cfg(feature = "dub")]
+    #[command(hide = true)]
+    Speak {
+        #[arg(long)]
+        text: String,
+        /// The language code of the text.
+        #[arg(long)]
+        lang: String,
+        /// A studio voice, or a WAV file with a voice sample to clone.
+        #[arg(long, default_value = verbacue::dub::DEFAULT_STUDIO_VOICE)]
+        voice: String,
+        /// xtts-v2, xtts-v2-int8, or a folder with the model files.
+        #[arg(long, default_value = "xtts-v2")]
+        model: String,
+        /// The same seed gives the same speech.
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// The output WAV file (24 kHz mono).
+        #[arg(short, long)]
+        output: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -253,6 +275,15 @@ fn main() -> Result<()> {
             }
         },
         Some(Command::Translate { inputs, from, args }) => translate_files(&inputs, from, &args),
+        #[cfg(feature = "dub")]
+        Some(Command::Speak {
+            text,
+            lang,
+            voice,
+            model,
+            seed,
+            output,
+        }) => speak(&text, &lang, &voice, &model, seed, &output),
         Some(Command::Burn {
             video,
             subtitles,
@@ -274,6 +305,50 @@ fn main() -> Result<()> {
         }
         None => process_videos(&cli),
     }
+}
+
+/// Speaks one line into a WAV file.
+#[cfg(feature = "dub")]
+fn speak(text: &str, lang: &str, voice: &str, model: &str, seed: u64, output: &Path) -> Result<()> {
+    use verbacue::dub::{self, Xtts};
+
+    if !dub::supports(lang) {
+        bail!(
+            "XTTS-v2 cannot speak {lang:?}; it knows {}",
+            dub::LANGUAGES.join(", ")
+        );
+    }
+    let (dir, int8) = if Path::new(model).is_dir() {
+        let dir = PathBuf::from(model);
+        let int8 = !dir.join("gpt.onnx").is_file();
+        (dir, int8)
+    } else {
+        let bundle = models::bundle(model)
+            .filter(|b| b.kind == models::Kind::Voice)
+            .with_context(|| format!("unknown voice model {model:?}"))?;
+        (ensure_bundle(bundle)?, model.ends_with("int8"))
+    };
+    let start = std::time::Instant::now();
+    let mut xtts = Xtts::load(&dir, int8)?;
+    let voice = if Path::new(voice).is_file() {
+        let (audio, rate) = dub::wav::read(Path::new(voice))?;
+        xtts.clone_voice(&dub::resample::resample(&audio, rate, dub::SAMPLE_RATE))?
+    } else {
+        xtts.studio_voice(voice).with_context(|| {
+            format!(
+                "unknown voice {voice:?}; the studio voices are: {}",
+                xtts.studio_voices().join(", ")
+            )
+        })?
+    };
+    let latents = xtts.latents(text, lang, &voice, seed)?;
+    let audio = xtts.vocode(&latents, &voice)?;
+    dub::wav::write(output, &audio, dub::SAMPLE_RATE)?;
+    #[expect(clippy::cast_precision_loss, reason = "a duration")]
+    let seconds = audio.len() as f32 / dub::SAMPLE_RATE as f32;
+    eprintln!("{seconds:.1} s of speech in {:.1?}", start.elapsed());
+    out!("{}", output.display());
+    Ok(())
 }
 
 /// Prints the help. A closed pipe (`verbacue | head`) is not an error.

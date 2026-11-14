@@ -21,10 +21,12 @@ video = ["audio", "verbacue-media/video"]
 local = ["verbacue-translate/local"]
 # Translation with DeepL, Google, Azure or an OpenAI-compatible server.
 online = ["verbacue-translate/online"]
+# Speaks translated subtitles with XTTS-v2 (verbacue-dub).
+dub = ["dep:verbacue-dub"]
 # Downloads the known models into the cache and checks their SHA256.
 download = ["verbacue-core/download"]
 # GPU support on Linux and Windows. NVIDIA only; needs the CUDA toolkit.
-cuda = ["verbacue-transcribe?/cuda", "verbacue-translate/cuda"]
+cuda = ["verbacue-transcribe?/cuda", "verbacue-translate/cuda", "verbacue-dub?/cuda"]
 # GPU support on Linux and Windows for any GPU with a Vulkan driver.
 vulkan = ["verbacue-transcribe?/vulkan", "verbacue-translate/vulkan"]
 # Derives clap::ValueEnum for the option enums, for command-line tools.
@@ -32,6 +34,7 @@ clap = ["verbacue-core/clap", "verbacue-translate/clap"]
 
 [dependencies]
 verbacue-core = { path = "../verbacue-core", version = "0.1.0" }
+verbacue-dub = { path = "../verbacue-dub", version = "0.1.0", optional = true }
 verbacue-media = { path = "../verbacue-media", version = "0.1.0", default-features = false, optional = true }
 verbacue-transcribe = { path = "../verbacue-transcribe", version = "0.1.0", optional = true }
 verbacue-translate = { path = "../verbacue-translate", version = "0.1.0", default-features = false }
