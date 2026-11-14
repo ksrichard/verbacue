@@ -2,10 +2,11 @@
 //!
 //! Claude reads a long context well, so one request can hold a whole subtitle file.
 //! The prompt goes in on stdin, because a film is too long for the command line.
-//! The CLI runs with no tools and without a saved session, so it answers once.
+//! The CLI runs with no tools and without a saved session, so it answers once. It
+//! streams its answer, so the progress can count the translated lines as they come.
 
 use std::{
-    io::{Read, Write},
+    io::{BufRead as _, BufReader, Read, Write},
     process::{Command, Stdio},
     time::Duration,
 };
@@ -48,7 +49,10 @@ impl ClaudeModel {
 
     fn command(&self, system: &str) -> Command {
         let mut cmd = Command::new(&self.bin);
-        cmd.args(["-p", "--output-format", "json"])
+        // stream-json needs --verbose in print mode; the partial messages carry the
+        // answer while the model writes it.
+        cmd.args(["-p", "--output-format", "stream-json", "--verbose"])
+            .arg("--include-partial-messages")
             // An empty list turns off all tools, so the model cannot touch files.
             .args(["--tools", ""])
             .arg("--no-session-persistence")
@@ -93,7 +97,9 @@ impl ClaudeModel {
                     let _ = stdin.write_all(prompt.user.as_bytes());
                 }
             });
-            let out = scope.spawn(move || read_all(&mut stdout));
+            // Only a translation counts lines; the film notes are free text.
+            let count = !prompt.grammar.is_empty();
+            let out = scope.spawn(move || read_stream(stdout.take(), count, progress));
             let err = scope.spawn(move || read_all(&mut stderr));
             let status = loop {
                 if progress.cancelled() {
@@ -120,16 +126,71 @@ impl ClaudeModel {
         let status =
             status.map_err(|e| Error::new(ErrorKind::Other, format!("claude failed: {e}")))?;
         if !status.success() {
-            // The CLI can report an API error as a JSON envelope on stdout.
-            let reason = match (err.trim(), parse_envelope(&out)) {
+            // The CLI can report an API error as a result line on stdout.
+            let reason = match (err.trim(), parse_result(&out)) {
                 ("", Err(_)) => String::new(),
                 ("", Ok(text)) => text,
                 (stderr, _) => stderr.to_string(),
             };
             bail!("claude exited with {status}: {reason}");
         }
-        parse_envelope(&out)
+        parse_result(&out)
     }
+}
+
+/// Reads the stream of the CLI and returns all of it. With `count`, it reports the
+/// lines of the answer that are done: each new `"id"` key starts a line, so the line
+/// before it is done. The total is 0, because only the caller knows the batch size.
+fn read_stream(pipe: Option<impl Read>, count: bool, progress: &dyn Progress) -> String {
+    let mut all = String::new();
+    let Some(pipe) = pipe else {
+        return all;
+    };
+    let mut answer = String::new();
+    let mut done = 0;
+    for line in BufReader::new(pipe).lines() {
+        let Ok(line) = line else {
+            break;
+        };
+        if count && let Some(text) = text_delta(&line) {
+            answer.push_str(&text);
+            let started = answer.matches("\"id\"").count() as u64;
+            if started > done + 1 {
+                done = started - 1;
+                progress.update(done, 0);
+            }
+        }
+        all.push_str(&line);
+        all.push('\n');
+    }
+    all
+}
+
+/// The new answer text in a stream line, if the line has some.
+fn text_delta(line: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Line {
+        event: Option<Event>,
+    }
+    #[derive(Deserialize)]
+    struct Event {
+        delta: Option<Delta>,
+    }
+    #[derive(Deserialize)]
+    struct Delta {
+        text: Option<String>,
+    }
+    serde_json::from_str::<Line>(line).ok()?.event?.delta?.text
+}
+
+/// The answer text from the last `result` line of the stream.
+fn parse_result(stream: &str) -> Result<String> {
+    let line = stream
+        .lines()
+        .rev()
+        .find(|l| l.contains("\"type\":\"result\""))
+        .unwrap_or(stream);
+    parse_envelope(line)
 }
 
 fn read_all(pipe: &mut Option<impl Read>) -> String {
@@ -140,7 +201,7 @@ fn read_all(pipe: &mut Option<impl Read>) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-/// The answer text from the JSON that `--output-format json` prints.
+/// The answer text from a `result` line.
 fn parse_envelope(stdout: &str) -> Result<String> {
     #[derive(Deserialize)]
     struct Envelope {
@@ -213,12 +274,24 @@ mod tests {
             self.dir.join("claude").display().to_string()
         }
 
-        /// Queues the answer of the model, wrapped as the CLI wraps it.
+        /// Queues the answer of the model as the CLI streams it: text pieces of 40
+        /// characters, then the result line.
         fn reply(&self, n: usize, answer: &str) {
-            let envelope = serde_json::json!({
+            let chars: Vec<char> = answer.chars().collect();
+            let mut stream = String::new();
+            for piece in chars.chunks(40) {
+                let text: String = piece.iter().collect();
+                let event = serde_json::json!({
+                    "type": "stream_event",
+                    "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": text}}
+                });
+                stream.push_str(&format!("{event}\n"));
+            }
+            let result = serde_json::json!({
                 "type": "result", "subtype": "success", "is_error": false, "result": answer
             });
-            fs::write(self.dir.join(format!("reply{n}")), envelope.to_string()).unwrap();
+            stream.push_str(&format!("{result}\n"));
+            fs::write(self.dir.join(format!("reply{n}")), stream).unwrap();
         }
 
         fn requests(&self) -> usize {
@@ -290,9 +363,26 @@ mod tests {
         assert!(stdin.contains(r#"{"id":100,"text":"line 100"}"#));
         assert!(stdin.contains("movie.mkv") && stdin.contains("Two sisters talk."));
         let args = fake.read("args1");
-        assert!(args.contains("--output-format\njson") && args.contains("--tools\n\n"));
+        assert!(args.contains("--output-format\nstream-json") && args.contains("--tools\n\n"));
         assert!(args.contains("--model\nsonnet"));
         assert!(args.contains("Winterfell = Deres") && args.contains("Hungarian"));
+    }
+
+    #[test]
+    fn the_progress_counts_lines_while_claude_writes() {
+        let fake = Fake::new("progress");
+        fake.reply(1, &answer(1..=100));
+        let steps = std::sync::Mutex::new(Vec::new());
+        let progress = |done, total| steps.lock().unwrap().push((done, total));
+        let mut t = translator(&fake, None);
+        translate_cues_with(&mut t, &cues(100), "en", &Hints::default(), &progress).unwrap();
+
+        let steps = steps.into_inner().unwrap();
+        // Many steps inside the one request, always growing, and the end at 100.
+        assert!(steps.len() > 20, "{steps:?}");
+        assert!(steps.windows(2).all(|w| w[0].0 <= w[1].0), "{steps:?}");
+        assert!(steps.iter().all(|&(_, total)| total == 100));
+        assert_eq!(steps.last(), Some(&(100, 100)));
     }
 
     #[test]

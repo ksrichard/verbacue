@@ -283,6 +283,26 @@ pub fn translate_cues(
     translate_cues_with(translator, cues, source_lang, &Hints::default(), progress)
 }
 
+/// The progress of one batch as the progress of the whole file. A model that streams
+/// its answer reports the lines of the batch that are done (see the Claude model).
+struct BatchProgress<'a> {
+    inner: &'a dyn Progress,
+    before: u64,
+    size: u64,
+    total: u64,
+}
+
+impl Progress for BatchProgress<'_> {
+    fn update(&self, done: u64, _total: u64) {
+        self.inner
+            .update(self.before + done.min(self.size), self.total);
+    }
+
+    fn cancelled(&self) -> bool {
+        self.inner.cancelled()
+    }
+}
+
 /// Like [`translate_cues`], with knowledge about the whole video.
 ///
 /// # Errors
@@ -323,7 +343,13 @@ pub fn translate_cues_with(
             upcoming,
             hints,
         };
-        translated.extend(translator.translate_with(&batch, progress)?);
+        let in_batch = BatchProgress {
+            inner: progress,
+            before: translated.len() as u64,
+            size: chunk.len() as u64,
+            total: lines.len() as u64,
+        };
+        translated.extend(translator.translate_with(&batch, &in_batch)?);
         progress.update(translated.len() as u64, lines.len() as u64);
     }
     Ok(cues
