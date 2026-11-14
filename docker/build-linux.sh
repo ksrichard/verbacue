@@ -71,6 +71,7 @@ case ${FEATURES:-} in
     *cuda* | *vulkan* | *gui*) ;;
     *)
         cargo test --workspace --exclude verbacue-gui --exclude verbacue-app \
+            --exclude verbacue-installer \
             --release --locked --target $target
         cargo test -p verbacue-app --no-default-features --release --locked --target $target
         ;;

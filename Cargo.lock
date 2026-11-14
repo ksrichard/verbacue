@@ -5425,6 +5425,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "verbacue-installer"
+version = "0.1.0"
+dependencies = [
+ "iced",
+ "reqwest",
+ "serde",
+ "sha2",
+ "tokio",
+ "verbacue-core",
+]
+
+[[package]]
 name = "verbacue-media"
 version = "0.1.0"
 dependencies = [
