@@ -1,11 +1,13 @@
 # Cross-compiles a self-contained Windows x64 binary (CPU only) with MinGW-w64.
-# It links everything statically, so it needs only the DLLs that come with Windows.
+# It links everything else statically, so it needs only the DLLs that come with
+# Windows.
 # Use docker/build.sh; it writes dist/windows-x64/verbacue.exe. This is for local
 # builds only: CI builds Windows natively with MSVC. This build has no desktop app.
+# dist/windows-x64 also gets onnxruntime.dll, which dubbing loads at run time.
 FROM rust:1.94-trixie AS build
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        clang libclang-dev cmake nasm pkg-config make \
+        clang libclang-dev cmake nasm pkg-config make unzip \
         gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
     && rm -rf /var/lib/apt/lists/*
 # whisper.cpp and llama.cpp use std::thread, which needs the POSIX thread variant.
@@ -32,6 +34,16 @@ RUN git clone --depth 1 --branch release/9.0 https://github.com/FFmpeg/FFmpeg /f
     && make -j"$(nproc)" install \
     && rm -f /opt/ffmpeg/include/libavutil/hwcontext_d3d1*.h \
     && rm -rf /ffmpeg-src
+
+# Dubbing loads Microsoft's onnxruntime.dll at run time (its C API works from MinGW).
+# The version must match the ort crate.
+ARG ORT_VERSION=1.31.0
+ARG ORT_SHA256=3958d8a44984160692c1b4ffd0de3cb48f8c39f9d34bb31e433db06e30b82195
+RUN curl -fsSL -o /tmp/ort.zip \
+        "https://github.com/microsoft/onnxruntime/releases/download/v$ORT_VERSION/onnxruntime-win-x64-$ORT_VERSION.zip" \
+    && echo "$ORT_SHA256  /tmp/ort.zip" | sha256sum -c - \
+    && unzip -q -j /tmp/ort.zip '*/lib/*.dll' -d /opt/onnxruntime \
+    && rm /tmp/ort.zip
 
 # Do not tune the code for the CPU of the build machine; x86-64-v3 needs AVX2.
 # llama-cpp-sys-2 links advapi32 (registry calls of ggml) only for MSVC.

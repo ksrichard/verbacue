@@ -12,8 +12,7 @@ repository = "https://github.com/ksrichard/verbacue"
 homepage = "https://github.com/ksrichard/verbacue"
 
 [workspace.lints.rust]
-# Only crates/verbacue-media/src/hwdecode.rs (hardware decoding on macOS and Windows) allows
-# unsafe code.
+# Only a few small modules that call C functions allow unsafe code. Each says why.
 unsafe_code = "deny"
 # ffmpeg-sys-next always asks to link QTKit on macOS. The linker skips it because QTKit
 # has no arm64 version, and prints a warning that we cannot fix from here.

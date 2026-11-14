@@ -1,7 +1,7 @@
 #!/bin/sh
 # Runs inside docker/linux.Dockerfile. Builds verbacue, checks what it links, and copies
-# it to the folder in $1. A CPU build is fully static (glibc included), so it has no
-# dynamic dependencies. GPU builds must load the driver at run time (libcuda.so for
+# it to the folder in $1. The amd64 CPU build is fully static (glibc included), so it has
+# no dynamic dependencies. GPU builds must load the driver at run time (libcuda.so for
 # CUDA, libvulkan.so.1 for Vulkan), and the desktop app must load the window and
 # graphics libraries. A static program cannot do that, so GPU builds and the CPU build
 # with the desktop app (FEATURES=gui) link glibc dynamically.
@@ -41,47 +41,52 @@ case $(uname -m) in
         ;;
 esac
 
+# The amd64 CPU build links glibc statically. On arm64, the static libc.a of glibc 2.35
+# uses the small GOT model, and with ONNX Runtime the program has too many GOT entries
+# for it. lld links it, but glibc then stops at start. So the arm64 CPU build links
+# glibc dynamically, like the GPU builds.
+static=no
 case ${FEATURES:-} in
     *cuda* | *vulkan* | *gui*) ;;
-    # Static glibc. With an explicit --target, RUSTFLAGS apply only to verbacue and its
-    # libraries, not to build scripts and proc macros, which cannot be static.
-    # The static libstdc++ comes after libc and libgcc on the link line and calls into
-    # both, so link them once more at the end. rustc ends the link line in dynamic
-    # mode, so name the archives; -lc would pick libc.so.
-    *)
-        export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+crt-static \
-            -C link-arg=-Wl,--start-group -C link-arg=-l:libc.a -C link-arg=-l:libgcc.a \
-            -C link-arg=-Wl,--end-group"
-        # On arm64, libm.a uses the small GOT model, and a static PIE of this size
-        # has too many GOT entries for it. A plain static binary has far fewer.
-        if [ "$target" = aarch64-unknown-linux-gnu ]; then
-            export RUSTFLAGS="$RUSTFLAGS -C relocation-model=static"
-        fi
-        ;;
+    *) [ "$target" = x86_64-unknown-linux-gnu ] && static=yes ;;
 esac
+if [ $static = yes ]; then
+    # With an explicit --target, RUSTFLAGS apply only to verbacue and its libraries,
+    # not to build scripts and proc macros, which cannot be static. The static
+    # libstdc++ comes after libc and libgcc on the link line and calls into both, so
+    # link them once more at the end. rustc ends the link line in dynamic mode, so
+    # name the archives; -lc would pick libc.so.
+    export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+crt-static \
+        -C link-arg=-Wl,--start-group -C link-arg=-l:libc.a -C link-arg=-l:libgcc.a \
+        -C link-arg=-Wl,--end-group"
+fi
 
-# The static CPU build has no desktop app; all other builds include it. Only the
-# Vulkan build has dubbing: the prebuilt ONNX Runtime needs the C++ library of GCC 13,
-# which Ubuntu 22.04 (the base of the other builds) does not have.
+# The CPU build has no desktop app; all other builds include it. All builds have
+# dubbing.
 case ${FEATURES:-} in
-    *vulkan*) features="--features $FEATURES" ;;
-    *cuda*) features="--no-default-features --features gui,$FEATURES" ;;
-    *gui*) features="--no-default-features --features gui" ;;
-    *) features="--no-default-features" ;;
+    *cuda* | *vulkan* | *gui*) features="--features $FEATURES" ;;
+    *) features="--no-default-features --features dub" ;;
 esac
-# The static CPU build runs the tests. GPU builds skip them, because the build has no
+# The CPU build runs the tests. GPU builds skip them, because the build has no
 # GPU, and the CPU build with the desktop app has the same code as the static one.
 case ${FEATURES:-} in
     *cuda* | *vulkan* | *gui*) ;;
     *)
         cargo test --workspace --exclude verbacue-gui --exclude verbacue-app \
-            --exclude verbacue-dub --release --locked --target $target
-        cargo test -p verbacue-app --no-default-features --release --locked --target $target
+            --release --locked --target $target
+        cargo test -p verbacue-app --no-default-features --features dub --release --locked \
+            --target $target
         ;;
 esac
 cargo build --release --locked --target $target $features
 mkdir -p "$out"
 cp target/$target/release/verbacue "$out/"
+# ONNX Runtime loads its CUDA part for dubbing from the folder of the program.
+case ${FEATURES:-} in *cuda*)
+    cp -L target/$target/release/libonnxruntime_providers_shared.so \
+        target/$target/release/libonnxruntime_providers_cuda.so "$out/"
+    ;;
+esac
 
 echo "linked libraries:"
 needed=$(readelf -d "$out/verbacue" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p')
@@ -91,7 +96,7 @@ case ${FEATURES:-} in
     *cuda*) allowed="^($glibc|libcuda\.so.*)\$" ;;
     *vulkan*) allowed="^($glibc|libvulkan\.so\.1)\$" ;;
     *gui*) allowed="^($glibc)\$" ;;
-    *) allowed='^$' ;;
+    *) [ $static = yes ] && allowed='^$' || allowed="^($glibc)\$" ;;
 esac
 bad=$(echo "$needed" | grep -Ev "$allowed" || true)
 if [ -n "$bad" ]; then

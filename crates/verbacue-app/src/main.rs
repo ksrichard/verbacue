@@ -262,6 +262,8 @@ enum ModelsAction {
 }
 
 fn main() -> Result<()> {
+    #[cfg(feature = "dub")]
+    verbacue::dub::session::fix_argv0();
     let args = std::env::args_os().len().saturating_sub(1);
     let gui_command = std::env::args_os().nth(1).is_some_and(|a| a == "gui");
     match launch::mode(

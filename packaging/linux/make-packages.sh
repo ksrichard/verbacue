@@ -1,12 +1,15 @@
 #!/bin/sh
 # Makes a .deb and an AppImage of the desktop app for one Linux build.
 # Usage: packaging/linux/make-packages.sh <verbacue binary> <cpu-gui|vulkan|cuda> <out dir>
+# Libraries next to the binary (*.so, the CUDA part of ONNX Runtime) go next to it in
+# the packages too.
 # The host must have the architecture of the binary (amd64 or arm64).
 set -eu
 cd "$(dirname "$0")/../.."
 binary=$1
 variant=$2
 out=$3
+libs=$(find "$(dirname "$binary")" -maxdepth 1 -name '*.so' | sort)
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 case $(uname -m) in
     x86_64) deb_arch=amd64 app_arch=x86_64 ;;
@@ -28,7 +31,15 @@ recommends="libwayland-client0, libx11-6, libxcursor1, libxi6, libxrandr2, libeg
 deb="$work/deb"
 mkdir -p "$deb/DEBIAN" "$deb/usr/bin" "$deb/usr/share/applications" \
     "$deb/usr/share/icons/hicolor/256x256/apps" "$deb/usr/share/doc/verbacue"
-install -m 755 "$binary" "$deb/usr/bin/verbacue"
+if [ -n "$libs" ]; then
+    # Keep the libraries out of /usr/bin. verbacue finds its real folder at start.
+    mkdir -p "$deb/usr/lib/verbacue"
+    install -m 755 "$binary" "$deb/usr/lib/verbacue/verbacue"
+    for lib in $libs; do install -m 644 "$lib" "$deb/usr/lib/verbacue/"; done
+    ln -s ../lib/verbacue/verbacue "$deb/usr/bin/verbacue"
+else
+    install -m 755 "$binary" "$deb/usr/bin/verbacue"
+fi
 install -m 644 packaging/linux/verbacue.desktop "$deb/usr/share/applications/"
 install -m 644 packaging/icons/verbacue-256.png "$deb/usr/share/icons/hicolor/256x256/apps/verbacue.png"
 install -m 644 LICENSE "$deb/usr/share/doc/verbacue/copyright"
@@ -71,6 +82,7 @@ chmod +x "$tools/appimagetool"
 app="$work/verbacue.AppDir"
 mkdir -p "$app/usr/bin"
 install -m 755 "$binary" "$app/usr/bin/verbacue"
+for lib in $libs; do install -m 644 "$lib" "$app/usr/bin/"; done
 ln -s usr/bin/verbacue "$app/AppRun"
 # In an AppImage, "Exec" names the AppRun entry; no arguments opens the app.
 sed 's/^Exec=.*/Exec=verbacue/' packaging/linux/verbacue.desktop > "$app/verbacue.desktop"

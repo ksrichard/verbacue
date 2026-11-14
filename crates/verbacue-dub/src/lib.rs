@@ -5,6 +5,8 @@
 
 pub mod bpe;
 pub mod fit;
+#[cfg(old_glibc)]
+mod glibc;
 pub mod mel;
 pub mod mix;
 pub mod numbers;

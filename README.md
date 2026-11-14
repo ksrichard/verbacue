@@ -75,7 +75,7 @@ Each release also has installers for the desktop app:
 
 `packaging/` holds the scripts and icons that make them.
 
-All binaries include the app, except the fully static Linux CPU binaries
+All binaries include the app, except the Linux CPU binaries
 (`linux-*-cpu`, for servers and containers) and the MinGW build from `docker/build.sh`.
 On Linux without a GPU, use `linux-*-cpu-gui`; it links glibc 2.35 or newer
 dynamically, because a static program cannot open a window. Without a display (for example
@@ -91,12 +91,13 @@ a tag also attaches the binaries to a GitHub release.
 | Binary                                     | GPU                         | Needs on the target system                 |
 |--------------------------------------------|-----------------------------|--------------------------------------------|
 | `macos-universal-metal`                    | Metal                       | macOS 11 or newer, Apple Silicon or Intel  |
-| `linux-amd64-cpu`, `linux-arm64-cpu`       | none                        | nothing: fully static, runs on any Linux   |
+| `linux-amd64-cpu`                          | none                        | nothing: fully static, runs on any Linux   |
+| `linux-arm64-cpu`                          | none                        | glibc 2.35 or newer                        |
 | `linux-amd64-cpu-gui`, `linux-arm64-cpu-gui` | none                      | glibc 2.35 or newer                        |
-| `linux-amd64-cuda`, `linux-arm64-cuda`     | NVIDIA (CUDA)               | glibc 2.35 or newer, NVIDIA driver         |
+| `linux-amd64-cuda`, `linux-arm64-cuda`     | NVIDIA (CUDA 13)            | glibc 2.35 or newer, NVIDIA driver 580+    |
 | `linux-amd64-vulkan`, `linux-arm64-vulkan` | AMD, Intel, NVIDIA (Vulkan) | glibc 2.39 or newer, Vulkan driver         |
 | `windows-x64-cpu`                          | none                        | Windows 10 or 11                           |
-| `windows-x64-cuda`                         | NVIDIA (CUDA)               | Windows 10 or 11, NVIDIA driver            |
+| `windows-x64-cuda`                         | NVIDIA (CUDA 13)            | Windows 10 or 11, NVIDIA driver 580+       |
 | `windows-x64-vulkan`                       | AMD, Intel, NVIDIA (Vulkan) | Windows 10 or 11, GPU driver               |
 
 Use a CUDA binary for an NVIDIA GPU. Use a Vulkan binary for other GPUs, including the
@@ -105,18 +106,24 @@ GPUs inside Intel and AMD processors.
 All binaries are self-contained. They need no FFmpeg, Python or other installed tools,
 and each build job checks what the binary links:
 
-- The Linux CPU binaries are fully static, glibc included. They have no dynamic
-  dependencies and run even in an empty container.
+- The Linux amd64 CPU binary is fully static, glibc included. It has no dynamic
+  dependencies and runs even in an empty container.
+- The Linux arm64 CPU binary links glibc dynamically. On arm64, the static glibc
+  cannot link a program of this size with ONNX Runtime.
 - The Linux CUDA binaries must load the NVIDIA driver (`libcuda.so`) at run time. A
   static program cannot do that, so they link glibc and the driver dynamically.
-  CUDA and cuBLAS are inside the binary.
+  CUDA and cuBLAS are inside the binary. Next to it are the two CUDA libraries of
+  ONNX Runtime for dubbing (`libonnxruntime_providers_*.so`). Keep them in the same
+  folder.
 - The Linux Vulkan binaries load the Vulkan loader (`libvulkan.so.1`) in the same way.
   The GPU driver package installs it. glibc 2.39 means Ubuntu 24.04, Debian 13,
   Fedora 40 or newer.
 - The Windows binaries need only the DLLs that are part of Windows and of the GPU
   driver (`vulkan-1.dll` for Vulkan). The CUDA zip has
   three CUDA DLLs next to `verbacue.exe`, because cuBLAS has no static library on
-  Windows. Keep them in the same folder.
+  Windows. Every Windows zip also has Microsoft's ONNX Runtime DLLs for dubbing
+  (`onnxruntime.dll`; the CUDA zip also has its CUDA part), because ONNX Runtime has
+  no static build for Windows. Keep them in the same folder.
 - macOS does not allow fully static programs. The binary links only system
   frameworks. It is universal: one file with code for Apple Silicon and for Intel.
 
@@ -189,7 +196,7 @@ cargo build --release
 | Feature             | GPU                         | Platforms       | Build needs        |
 |---------------------|-----------------------------|-----------------|--------------------|
 | (always, on macOS)  | Apple GPU (Metal)           | macOS           | nothing            |
-| `--features cuda`   | NVIDIA                      | Linux, Windows  | CUDA toolkit 12    |
+| `--features cuda`   | NVIDIA                      | Linux, Windows  | CUDA toolkit 13    |
 | `--features vulkan` | AMD, Intel, NVIDIA (Vulkan) | Linux, Windows  | Vulkan SDK         |
 
 Without a GPU feature, Whisper and the translation model run on the CPU. This works,
@@ -490,8 +497,11 @@ verbacue dub movie.mkv movie.hu.srt     # dub with an existing subtitle file
 verbacue voices                         # list the studio voices
 ```
 
-- The voice model is XTTS-v2, run with ONNX Runtime on the CPU (or CUDA in a CUDA
-  build). It is under the Coqui Public Model License: **non-commercial use only**.
+- Dubbing works in every binary. The voice model is XTTS-v2. ONNX Runtime runs it on
+  the CPU, and in a CUDA build on the NVIDIA GPU. For the GPU, dubbing also needs the
+  CUDA 13 runtime libraries (cuBLAS, cuRAND) and cuDNN 9, and on Linux glibc 2.38 or
+  newer. Without them, dubbing runs on the CPU. macOS has no GPU dubbing.
+- The XTTS-v2 model is under the Coqui Public Model License: **non-commercial use only**.
   verbacue asks you to accept the licence before the first download. Without a
   terminal, add `--accept-model-licence`.
 - It speaks en, es, fr, de, it, pt, pl, tr, ru, nl, cs, ar, zh, ja, hu, ko and hi.
