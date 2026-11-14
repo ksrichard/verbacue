@@ -240,6 +240,11 @@ verbacue movie.mkv --to hu --format vtt -o subtitles.vtt
 # output are skipped; --force does them again.
 verbacue ~/Videos/Season1 --to hu
 
+# The subtitle files of an earlier run are used again: movie.tr.srt skips the
+# transcription, and movie.hu.srt also skips the translation. So this only adds
+# the burned-in video. --force (or "Replace" in the app) makes them again.
+verbacue movie.mkv --to hu --burn
+
 # Video with subtitles
 verbacue movie.mkv --to hu --embed   # movie.hu.mkv: streams copied, soft subtitle tracks
 verbacue movie.mkv --to hu --burn    # movie.hu.mp4: subtitles drawn into the picture
@@ -282,7 +287,7 @@ Night's Watch = Éjjeli Őrség
 | `--embed` | | Also write `movie.<to>.mkv` with soft subtitle tracks |
 | `--burn` | | Also write `movie.<to>.mp4` with burned-in subtitles |
 | `--no-vad` | | Do not skip silence with voice activity detection |
-| `--force` | | Process files that already have an output |
+| `--force` | | Process files that already have an output, and make the subtitle files of an earlier run again |
 | `-v` | | Debug logs; `-vv` for more |
 
 ## Use as a Rust library

@@ -243,6 +243,54 @@ pub fn dub_output(job: &Job) -> PathBuf {
     video_output(job, "dub.mkv")
 }
 
+/// The cues of a subtitle file from an earlier run, if it exists, reads well and the
+/// job does not force a new run.
+fn earlier(path: &Path, job: &Job) -> Option<Vec<Cue>> {
+    if job.force || !path.is_file() {
+        return None;
+    }
+    let text = fs::read_to_string(path).ok()?;
+    // A WebVTT file starts with a header block; the cues after it read like SRT.
+    let text = match job.format {
+        Format::Vtt => text
+            .replace("\r\n", "\n")
+            .split_once("\n\n")
+            .map_or_else(String::new, |(_, cues)| cues.to_string()),
+        Format::Srt => text,
+    };
+    let cues = subtitle::parse_srt(&text).ok()?;
+    (!cues.is_empty()).then_some(cues)
+}
+
+/// The transcript of an earlier run: its language, path and cues. With an unknown
+/// spoken language, exactly one transcript file must exist, so that the language is
+/// clear.
+fn earlier_transcript(job: &Job) -> Option<(String, PathBuf, Vec<Cue>)> {
+    let candidates: Vec<String> = match &job.language {
+        Some(lang) => vec![lang.clone()],
+        None => verbacue_core::languages::languages()
+            .iter()
+            .map(|(code, _)| (*code).to_string())
+            .filter(|code| *code != job.target && output_path(job, code).is_file())
+            .collect(),
+    };
+    let [lang] = candidates.as_slice() else {
+        return None;
+    };
+    // Without a translation, `output` names the transcript.
+    let path = match (&job.output, &job.translation) {
+        (Some(out), None) => out.clone(),
+        _ => output_path(job, lang),
+    };
+    Some((lang.clone(), path.clone(), earlier(&path, job)?))
+}
+
+/// Tells the user that a file of an earlier run is used again.
+fn reused(sink: &dyn Sink, what: &str, path: &Path) {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    sink.event(Event::Note(&format!("reused the {what} {name}")));
+}
+
 /// True when `job` writes a dubbed video.
 fn dubbing(job: &Job) -> bool {
     #[cfg(feature = "dub")]
@@ -299,13 +347,6 @@ impl Pipeline {
         #[cfg(feature = "dub")]
         let dub_model = dub::check(job, sink)?;
 
-        let whisper = resolve(&job.whisper_model, models::Kind::Whisper, sink)?;
-        let vad = if job.vad {
-            let spec = models::find(models::VAD).context("VAD model missing")?;
-            Some(ensure(spec, sink)?)
-        } else {
-            None
-        };
         #[cfg(feature = "dub")]
         let dub_dirs = dub_model.map(|m| m.download(sink)).transpose()?;
         #[cfg(feature = "dub")]
@@ -313,35 +354,26 @@ impl Pipeline {
         #[cfg(not(feature = "dub"))]
         let dub_dirs: Option<&DubDirs> = None;
 
-        sink.event(Event::Step(Step::Decode));
-        let pcm = audio::decode_pcm(&job.video, job.audio_track, &report)?;
-        tracing::info!("decoded {}", audio_length(pcm.len()));
-        sink.event(Event::Step(Step::Transcribe));
-        let opts = transcribe::Options {
-            model: &whisper,
-            vad_model: vad.as_deref(),
-            language: job.language.as_deref(),
-        };
-        let transcript = transcribe::transcribe(&pcm, &opts, &report)?;
-        drop(pcm);
-        tracing::info!(
-            "transcribed {} cues, language {}",
-            transcript.cues.len(),
-            transcript.language
-        );
-
         let mut files = Vec::new();
-        let source_lang = transcript.language.clone();
-        let source_cues = subtitle::layout_transcript(&transcript.cues);
-        // Without a translation, `output` names the original transcript, since nothing
-        // else is written.
-        let source_out = match (&job.output, &job.translation) {
-            (Some(out), None) => out.clone(),
-            _ => output_path(job, &source_lang),
+        let (source_lang, source_cues) = if let Some((lang, path, cues)) = earlier_transcript(job) {
+            reused(sink, "transcript", &path);
+            if job.subtitles {
+                files.push(path);
+            }
+            (lang, cues)
+        } else {
+            let (lang, cues) = self.transcribe(job, sink)?;
+            // Without a translation, `output` names the original transcript, since
+            // nothing else is written.
+            let source_out = match (&job.output, &job.translation) {
+                (Some(out), None) => out.clone(),
+                _ => output_path(job, &lang),
+            };
+            if job.subtitles {
+                write(&source_out, &cues, job.format, sink, &mut files)?;
+            }
+            (lang, cues)
         };
-        if job.subtitles {
-            write(&source_out, &source_cues, job.format, sink, &mut files)?;
-        }
 
         let target_cues = match &job.translation {
             None => None,
@@ -352,6 +384,14 @@ impl Pipeline {
                 );
                 sink.event(Event::Note(&note));
                 None
+            }
+            Some(_) if let Some(cues) = earlier(&output_path(job, &job.target), job) => {
+                let path = output_path(job, &job.target);
+                reused(sink, "translation", &path);
+                if job.subtitles {
+                    files.push(path);
+                }
+                Some(cues)
             }
             Some(settings) => {
                 let cues = self.translate(job, settings, &source_cues, &source_lang, sink)?;
@@ -385,6 +425,39 @@ impl Pipeline {
             files,
             skipped: false,
         })
+    }
+
+    /// Loads the speech models, decodes the audio and transcribes it. Returns the spoken
+    /// language and the cues.
+    fn transcribe(&mut self, job: &Job, sink: &dyn Sink) -> Result<(String, Vec<Cue>)> {
+        let report = Report(sink);
+        let whisper = resolve(&job.whisper_model, models::Kind::Whisper, sink)?;
+        let vad = if job.vad {
+            let spec = models::find(models::VAD).context("VAD model missing")?;
+            Some(ensure(spec, sink)?)
+        } else {
+            None
+        };
+        sink.event(Event::Step(Step::Decode));
+        let pcm = audio::decode_pcm(&job.video, job.audio_track, &report)?;
+        tracing::info!("decoded {}", audio_length(pcm.len()));
+        sink.event(Event::Step(Step::Transcribe));
+        let opts = transcribe::Options {
+            model: &whisper,
+            vad_model: vad.as_deref(),
+            language: job.language.as_deref(),
+        };
+        let transcript = transcribe::transcribe(&pcm, &opts, &report)?;
+        drop(pcm);
+        tracing::info!(
+            "transcribed {} cues, language {}",
+            transcript.cues.len(),
+            transcript.language
+        );
+        Ok((
+            transcript.language,
+            subtitle::layout_transcript(&transcript.cues),
+        ))
     }
 
     /// Translates `cues` and lays out the result. The translator loads on first use and
@@ -846,6 +919,82 @@ mod tests {
         fn cancelled(&self) -> bool {
             self.cancel
         }
+    }
+
+    const SRT: &str = "1\n00:00:01,000 --> 00:00:02,000\nMerhaba\n\n";
+
+    fn reuse_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("verbacue-pipeline-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn earlier_files_skip_transcription_and_translation() {
+        let dir = reuse_dir("reuse");
+        std::fs::write(dir.join("movie.tr.srt"), SRT).unwrap();
+        std::fs::write(dir.join("movie.hu.srt"), SRT.replace("Merhaba", "Szia")).unwrap();
+        let mut j = Job::new(dir.join("movie.mkv"), "hu");
+        j.translation = Some(Translation::default());
+        // Without subtitle files and videos, the job is not "done", so it runs. It
+        // needs no model, because both files exist.
+        j.subtitles = false;
+        let sink = Record::default();
+        let outcome = Pipeline::new().run(&j, &sink).unwrap();
+        assert_eq!(outcome.source_language, "tr");
+        let events = sink.events.lock().unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.contains("reused the transcript movie.tr.srt")),
+            "{events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| e.contains("reused the translation movie.hu.srt"))
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.contains("Decode") || e.contains("Translate"))
+        );
+    }
+
+    #[test]
+    fn the_transcript_must_be_clear_and_force_ignores_it() {
+        let dir = reuse_dir("reuse-unclear");
+        let mut j = Job::new(dir.join("movie.mkv"), "hu");
+        j.translation = Some(Translation::default());
+        std::fs::write(dir.join("movie.tr.srt"), SRT).unwrap();
+        assert_eq!(earlier_transcript(&j).map(|t| t.0).as_deref(), Some("tr"));
+        // Two transcripts: the spoken language is not clear.
+        std::fs::write(dir.join("movie.de.srt"), SRT).unwrap();
+        assert!(earlier_transcript(&j).is_none());
+        // A given spoken language picks its file.
+        j.language = Some("de".into());
+        assert_eq!(earlier_transcript(&j).map(|t| t.0).as_deref(), Some("de"));
+        j.force = true;
+        assert!(earlier_transcript(&j).is_none());
+    }
+
+    #[test]
+    fn an_earlier_webvtt_file_reads_too() {
+        let dir = reuse_dir("reuse-vtt");
+        let path = dir.join("movie.hu.vtt");
+        std::fs::write(
+            &path,
+            "WEBVTT\n\n1\n00:00:01.000 --> 00:00:02.500\nSzia\n\n",
+        )
+        .unwrap();
+        let mut j = Job::new(dir.join("movie.mkv"), "hu");
+        j.format = subtitle::Format::Vtt;
+        let cues = earlier(&path, &j).unwrap();
+        assert_eq!(cues, [Cue::new(1000, 2500, "Szia")]);
+        // An empty or broken file is not used.
+        std::fs::write(&path, "").unwrap();
+        assert!(earlier(&path, &j).is_none());
     }
 
     #[test]
