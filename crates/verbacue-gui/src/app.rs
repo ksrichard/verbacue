@@ -22,7 +22,7 @@ use crate::{
     queue::{Item, Status},
     screens::{
         self,
-        choose::{Choose, OutputMode},
+        choose::{Choose, Output, Outputs},
         convert::Convert,
         pick::Pick,
         settings::SettingChange,
@@ -49,7 +49,7 @@ pub enum Screen {
 pub struct Selection {
     pub video: PathBuf,
     pub info: MediaInfo,
-    pub mode: OutputMode,
+    pub outputs: Outputs,
     /// A language code, or [`KEEP`] for no translation.
     pub target: String,
     pub track: usize,
@@ -90,7 +90,8 @@ pub enum Message {
     Remove(usize),
     /// Copies the shown video's options to every waiting video.
     ApplyToAll,
-    Mode(OutputMode),
+    /// Turns one output of the shown video on or off.
+    Toggle(Output),
     Target(String),
     Track(usize),
     /// The notes about the shown video.
@@ -147,7 +148,7 @@ pub struct App {
     force: bool,
     next_id: u64,
     /// The options of recent entries, for the files being checked.
-    recent_options: HashMap<PathBuf, (String, OutputMode)>,
+    recent_options: HashMap<PathBuf, (String, Outputs)>,
     /// The id of each file being checked, given in the order the user chose them.
     chosen: HashMap<PathBuf, u64>,
     /// Start the queue when all opened files are checked; true also replaces outputs.
@@ -426,14 +427,15 @@ impl App {
             }
             Message::OpenRecent(i) => match self.settings.recent.get(i).cloned() {
                 Some(r) => {
-                    let mode = if r.dub && cfg!(feature = "dub") {
-                        OutputMode::Dub
-                    } else if r.burn {
-                        OutputMode::Burn
-                    } else {
-                        OutputMode::Srt
+                    let mut outputs = Outputs {
+                        subtitles: r.subtitles,
+                        burn: r.burn,
+                        dub: r.dub && cfg!(feature = "dub"),
                     };
-                    self.check(r.path, Some((r.target, mode)))
+                    if !(outputs.burn || outputs.dub) {
+                        outputs.subtitles = true;
+                    }
+                    self.check(r.path, Some((r.target, outputs)))
                 }
                 None => Task::none(),
             },
@@ -501,13 +503,9 @@ impl App {
                 if let Some(shown) = self.selection().cloned() {
                     for item in &mut self.queue {
                         if item.status == Status::Waiting {
-                            item.selection.mode = shown.mode;
+                            item.selection.outputs = shown.outputs;
                             item.selection.target.clone_from(&shown.target);
-                            if shown.mode == OutputMode::Dub
-                                && screens::choose::dub_blocked(&item.selection.target).is_some()
-                            {
-                                item.selection.mode = OutputMode::Srt;
-                            }
+                            item.selection.outputs.fit(&item.selection.target);
                             if shown.track < item.selection.info.audio.len() {
                                 item.selection.track = shown.track;
                             }
@@ -516,12 +514,11 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Mode(mode) => {
+            Message::Toggle(output) => {
                 if let Some(s) = self.selection_mut()
-                    && (mode != OutputMode::Dub
-                        || screens::choose::dub_blocked(&s.target).is_none())
+                    && (output != Output::Dub || screens::choose::dub_blocked(&s.target).is_none())
                 {
-                    s.mode = mode;
+                    s.outputs.toggle(output);
                     self.choose.mode_changed = Instant::now();
                 }
                 Task::none()
@@ -529,11 +526,7 @@ impl App {
             Message::Target(code) => {
                 if let Some(s) = self.selection_mut() {
                     s.target = code;
-                    if s.mode == OutputMode::Dub
-                        && screens::choose::dub_blocked(&s.target).is_some()
-                    {
-                        s.mode = OutputMode::Srt;
-                    }
+                    s.outputs.fit(&s.target);
                 }
                 Task::none()
             }
@@ -784,8 +777,9 @@ impl App {
                 self.settings.remember(Recent {
                     path: s.video.clone(),
                     target: s.target.clone(),
-                    burn: s.mode == OutputMode::Burn,
-                    dub: s.mode == OutputMode::Dub,
+                    subtitles: s.outputs.subtitles,
+                    burn: s.outputs.burn,
+                    dub: s.outputs.dub,
                 });
                 if s.target != KEEP {
                     self.settings.target = s.target.clone();
@@ -859,10 +853,10 @@ impl App {
 
     /// Adds a checked video to the end of the queue.
     fn add(&mut self, video: PathBuf, info: MediaInfo) -> Task<Message> {
-        let (target, mode) = self
+        let (target, outputs) = self
             .recent_options
             .remove(&video)
-            .unwrap_or_else(|| (self.settings.target.clone(), OutputMode::Burn));
+            .unwrap_or_else(|| (self.settings.target.clone(), Outputs::default()));
         let id = self.chosen.remove(&video).unwrap_or_else(|| {
             self.next_id += 1;
             self.next_id - 1
@@ -883,7 +877,7 @@ impl App {
                 selection: Selection {
                     video: video.clone(),
                     info,
-                    mode,
+                    outputs,
                     target,
                     track: 0,
                     notes: String::new(),
@@ -949,9 +943,10 @@ impl App {
         job.language = settings.language.clone();
         job.format = settings.format;
         job.out_dir = settings.out_dir.clone();
-        job.burn = s.mode == OutputMode::Burn;
+        job.subtitles = s.outputs.subtitles;
+        job.burn = s.outputs.burn;
         #[cfg(feature = "dub")]
-        if s.mode == OutputMode::Dub {
+        if s.outputs.dub {
             job.dub = Some(self.dub_options());
         }
         job.translation = (!keep && settings.translator != verbacue::translate::Backend::None)
@@ -1020,16 +1015,12 @@ impl App {
         } else {
             verbacue::translate::language_name(&s.target).to_string()
         };
-        let mode = match s.mode {
-            OutputMode::Burn => "burned in",
-            OutputMode::Srt => "subtitle file",
-            OutputMode::Dub => "dubbed voice",
-        };
+        let mode = s.outputs.label();
         format!("{name} · {language} · {mode}")
     }
 
     /// Reads the facts of `path` on the blocking thread pool.
-    fn check(&mut self, path: PathBuf, options: Option<(String, OutputMode)>) -> Task<Message> {
+    fn check(&mut self, path: PathBuf, options: Option<(String, Outputs)>) -> Task<Message> {
         self.pick.hovering = false;
         self.pick.error = None;
         self.pick.checking = Some(path.clone());
@@ -1185,7 +1176,10 @@ fn download(name: &'static str) -> Task<Message> {
 mod tests {
     use super::*;
     use crate::{
-        screens::{choose::OutputMode, settings::SettingChange},
+        screens::{
+            choose::{Output, Outputs},
+            settings::SettingChange,
+        },
         settings::Recent,
         worker::{Failure, Reply, Update, friendly},
     };
@@ -1267,6 +1261,7 @@ mod tests {
         a.settings.recent.push(Recent {
             path: path.clone(),
             target: "hu".into(),
+            subtitles: false,
             burn: true,
             dub: false,
         });
@@ -1275,7 +1270,14 @@ mod tests {
         let _ = a.update(Message::MediaChecked(Ok((path, info()))));
         let selection = a.selection().unwrap();
         assert_eq!(selection.target, "hu");
-        assert_eq!(selection.mode, OutputMode::Burn);
+        assert_eq!(
+            selection.outputs,
+            Outputs {
+                subtitles: false,
+                burn: true,
+                dub: false
+            }
+        );
     }
 
     fn chosen(dir: &str) -> App {
@@ -1291,22 +1293,27 @@ mod tests {
     }
 
     #[test]
-    fn burn_card_builds_a_burn_job() {
-        let mut a = chosen("burn");
-        let _ = a.update(Message::Mode(OutputMode::Burn));
+    fn a_new_video_gets_subtitles_and_a_burned_in_video() {
+        let a = chosen("burn");
         let job = a.job().unwrap();
-        assert!(job.burn && !job.embed);
+        assert!(job.subtitles && job.burn && !job.embed);
         assert_eq!(job.target, "hu");
         assert!(job.translation.is_some());
     }
 
     #[test]
-    fn srt_card_builds_a_subtitle_only_job() {
-        let mut a = chosen("srt");
-        let _ = a.update(Message::Mode(OutputMode::Srt));
+    fn the_cards_turn_outputs_on_and_off() {
+        let mut a = chosen("toggle");
+        let _ = a.update(Message::Toggle(Output::Burn));
         let job = a.job().unwrap();
-        assert!(!job.burn && !job.embed);
-        assert!(job.translation.is_some());
+        assert!(job.subtitles && !job.burn);
+        let _ = a.update(Message::Toggle(Output::Burn));
+        let _ = a.update(Message::Toggle(Output::Subtitles));
+        let job = a.job().unwrap();
+        assert!(!job.subtitles && job.burn);
+        // The last output stays on.
+        let _ = a.update(Message::Toggle(Output::Burn));
+        assert!(a.selection().unwrap().outputs.burn);
     }
 
     #[test]
@@ -1320,7 +1327,6 @@ mod tests {
     #[test]
     fn start_asks_before_replacing_an_existing_output() {
         let mut a = chosen("replace");
-        let _ = a.update(Message::Mode(OutputMode::Burn));
         let out = verbacue::pipeline::final_output(&a.job().unwrap()).unwrap();
         std::fs::write(&out, "").unwrap();
         let _ = a.update(Message::Start);
@@ -1331,7 +1337,6 @@ mod tests {
     #[test]
     fn confirm_replace_starts_with_force() {
         let mut a = chosen("force");
-        let _ = a.update(Message::Mode(OutputMode::Burn));
         let out = verbacue::pipeline::final_output(&a.job().unwrap()).unwrap();
         std::fs::write(&out, "").unwrap();
         let _ = a.update(Message::Start);
@@ -1629,25 +1634,25 @@ mod tests {
         let (mut a, _) = queued("own", &["a.mkv", "b.mkv"]);
         let _ = a.update(Message::Target("hu".into()));
         let _ = a.update(Message::Select(1));
-        let _ = a.update(Message::Mode(OutputMode::Srt));
+        let _ = a.update(Message::Toggle(Output::Burn));
         let _ = a.update(Message::Target("de".into()));
         let _ = a.update(Message::Select(0));
         assert_eq!(a.selection().unwrap().target, "hu");
-        assert_eq!(a.selection().unwrap().mode, OutputMode::Burn);
+        assert!(a.selection().unwrap().outputs.burn);
         assert_eq!(a.queue[1].selection.target, "de");
-        assert_eq!(a.queue[1].selection.mode, OutputMode::Srt);
+        assert!(!a.queue[1].selection.outputs.burn);
     }
 
     #[test]
     fn apply_to_all_copies_the_options_to_waiting_videos() {
         let (mut a, _) = queued("apply", &["a.mkv", "b.mkv", "c.mkv"]);
-        let _ = a.update(Message::Mode(OutputMode::Srt));
+        let _ = a.update(Message::Toggle(Output::Burn));
         let _ = a.update(Message::Target("hu".into()));
         let _ = a.update(Message::ApplyToAll);
         assert!(
             a.queue
                 .iter()
-                .all(|i| i.selection.target == "hu" && i.selection.mode == OutputMode::Srt)
+                .all(|i| i.selection.target == "hu" && !i.selection.outputs.burn)
         );
     }
 
@@ -1813,10 +1818,8 @@ mod tests {
         }
         let mut a = chosen("dub-blocked");
         let _ = a.update(Message::Target("th".into()));
-        let _ = a.update(Message::Mode(OutputMode::Dub));
-        if cfg!(feature = "dub") {
-            assert_ne!(a.selection().unwrap().mode, OutputMode::Dub);
-        }
+        let _ = a.update(Message::Toggle(Output::Dub));
+        assert!(!a.selection().unwrap().outputs.dub);
     }
 
     #[cfg(feature = "dub")]
@@ -1825,19 +1828,35 @@ mod tests {
         let mut a = chosen("dub");
         a.settings.dub_voice = "Ana Florence".into();
         a.settings.dub_original = settings::DubOriginal::Lower;
-        let _ = a.update(Message::Mode(OutputMode::Dub));
+        let _ = a.update(Message::Toggle(Output::Dub));
         let job = a.job().unwrap();
+        // All three outputs in one job.
+        assert!(job.subtitles && job.burn);
         let dub = job.dub.unwrap();
         assert_eq!(
             dub.voice,
             verbacue::dub::VoiceChoice::Studio("Ana Florence".into())
         );
         assert_eq!(dub.original, verbacue::dub::Original::Lower);
-        assert!(!job.burn && job.translation.is_some());
+        assert!(job.translation.is_some());
         // A language that the voice model cannot speak turns dubbing off.
         let _ = a.update(Message::Target("th".into()));
-        assert_eq!(a.selection().unwrap().mode, OutputMode::Srt);
         assert!(a.job().unwrap().dub.is_none());
+        // Without the other outputs, the subtitle files come back on.
+        let _ = a.update(Message::Target("hu".into()));
+        let _ = a.update(Message::Toggle(Output::Dub));
+        let _ = a.update(Message::Toggle(Output::Subtitles));
+        let _ = a.update(Message::Toggle(Output::Burn));
+        assert_eq!(
+            a.selection().unwrap().outputs,
+            Outputs {
+                subtitles: false,
+                burn: false,
+                dub: true
+            }
+        );
+        let _ = a.update(Message::Target("th".into()));
+        assert!(a.selection().unwrap().outputs.subtitles);
     }
 
     #[test]

@@ -59,10 +59,17 @@ pub struct Settings {
 pub struct Recent {
     pub path: PathBuf,
     pub target: String,
+    /// Subtitle files. Files from before the output choice do not have this key.
+    #[serde(default = "yes")]
+    pub subtitles: bool,
     pub burn: bool,
     /// A dubbed video. Files from before dubbing do not have this key.
     #[serde(default)]
     pub dub: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// What dubbing does with the original speech.
@@ -234,6 +241,7 @@ mod tests {
             recent: vec![Recent {
                 path: PathBuf::from("/v/Szép film.mkv"),
                 target: "hu".into(),
+                subtitles: true,
                 burn: true,
                 dub: true,
             }],
@@ -271,7 +279,7 @@ mod tests {
         assert_eq!(s.dub_original, DubOriginal::Remove);
         assert!((s.dub_speed_limit - 1.3).abs() < f32::EPSILON);
         assert_eq!(s.dub_model, default_dub_model());
-        assert!(s.recent[0].burn && !s.recent[0].dub);
+        assert!(s.recent[0].subtitles && s.recent[0].burn && !s.recent[0].dub);
     }
 
     #[test]
@@ -292,6 +300,7 @@ mod tests {
             s.remember(Recent {
                 path: PathBuf::from(format!("/v/{i}.mkv")),
                 target: "hu".into(),
+                subtitles: true,
                 burn: false,
                 dub: false,
             });
@@ -299,6 +308,7 @@ mod tests {
         s.remember(Recent {
             path: PathBuf::from("/v/5.mkv"),
             target: "en".into(),
+            subtitles: true,
             burn: true,
             dub: false,
         });
@@ -325,6 +335,7 @@ mod tests {
             s.remember(Recent {
                 path,
                 target: "hu".into(),
+                subtitles: true,
                 burn: false,
                 dub: false,
             });

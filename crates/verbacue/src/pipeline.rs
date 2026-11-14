@@ -37,6 +37,9 @@ pub struct Job {
     pub output: Option<PathBuf>,
     /// The folder for all output files. `None` writes them next to the video.
     pub out_dir: Option<PathBuf>,
+    /// Write the subtitle files (`.srt` or `.vtt`). The video outputs have the
+    /// subtitles in any case.
+    pub subtitles: bool,
     /// Also write an MKV with soft subtitle tracks.
     pub embed: bool,
     /// Also write an MP4 with the subtitles burned into the picture.
@@ -62,6 +65,7 @@ impl Job {
             format: Format::Srt,
             output: None,
             out_dir: None,
+            subtitles: true,
             embed: false,
             burn: false,
             force: false,
@@ -239,6 +243,17 @@ pub fn dub_output(job: &Job) -> PathBuf {
     video_output(job, "dub.mkv")
 }
 
+/// True when `job` writes a dubbed video.
+fn dubbing(job: &Job) -> bool {
+    #[cfg(feature = "dub")]
+    return job.dub.is_some();
+    #[cfg(not(feature = "dub"))]
+    {
+        let _ = job;
+        false
+    }
+}
+
 /// The last file that `job` writes. If it exists, the job is already done.
 pub fn final_output(job: &Job) -> Option<PathBuf> {
     #[cfg(feature = "dub")]
@@ -249,7 +264,7 @@ pub fn final_output(job: &Job) -> Option<PathBuf> {
         Some(video_output(job, "mp4"))
     } else if job.embed {
         Some(video_output(job, "mkv"))
-    } else if job.translation.is_some() {
+    } else if job.translation.is_some() && job.subtitles {
         Some(output_path(job, &job.target))
     } else {
         None
@@ -324,7 +339,9 @@ impl Pipeline {
             (Some(out), None) => out.clone(),
             _ => output_path(job, &source_lang),
         };
-        write(&source_out, &source_cues, job.format, sink, &mut files)?;
+        if job.subtitles {
+            write(&source_out, &source_cues, job.format, sink, &mut files)?;
+        }
 
         let target_cues = match &job.translation {
             None => None,
@@ -338,16 +355,18 @@ impl Pipeline {
             }
             Some(settings) => {
                 let cues = self.translate(job, settings, &source_cues, &source_lang, sink)?;
-                if !job.embed && !job.burn {
-                    sink.event(Event::Step(Step::Save));
+                if job.subtitles {
+                    if !job.embed && !job.burn && !dubbing(job) {
+                        sink.event(Event::Step(Step::Save));
+                    }
+                    write(
+                        &output_path(job, &job.target),
+                        &cues,
+                        job.format,
+                        sink,
+                        &mut files,
+                    )?;
                 }
-                write(
-                    &output_path(job, &job.target),
-                    &cues,
-                    job.format,
-                    sink,
-                    &mut files,
-                )?;
                 Some(cues)
             }
         };
@@ -799,6 +818,9 @@ mod tests {
         assert_eq!(final_output(&j), None);
         j.translation = Some(Translation::default());
         assert_eq!(final_output(&j), Some(PathBuf::from("/x/m.hu.srt")));
+        j.subtitles = false;
+        assert_eq!(final_output(&j), None);
+        j.subtitles = true;
         j.embed = true;
         assert_eq!(final_output(&j), Some(PathBuf::from("/x/m.hu.mkv")));
         j.burn = true;

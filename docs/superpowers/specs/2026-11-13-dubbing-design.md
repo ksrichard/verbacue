@@ -170,8 +170,8 @@ The command line and the desktop app have the same settings for dubbing.
 
 ### Desktop app
 
-- **Choose screen:** a third output option, "Dubbed voice", next to "Burned in" and
-  "Separate SRT file". It writes the dubbed MKV and the subtitle files.
+- **Choose screen:** the outputs are check boxes: "Subtitle file", "Burned in" and
+  "Dubbed voice". The user ticks one or more, so one run can write all three.
 - **Settings page:** a new "Dubbing" section with the settings in the table above.
   The app saves them in `gui.toml`. Old `gui.toml` files without these keys still load,
   with the defaults.

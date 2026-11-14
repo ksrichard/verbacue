@@ -51,7 +51,7 @@ pub fn start() -> Task<Message> {
     let message = if std::env::var_os("VERBACUE_GUI_SHOT_START").is_some() {
         Message::Start
     } else if std::env::var("VERBACUE_GUI_SHOT_SCREEN").is_ok_and(|s| s == "dub") {
-        Message::Mode(crate::screens::choose::OutputMode::Dub)
+        Message::Toggle(crate::screens::choose::Output::Dub)
     } else {
         return Task::none();
     };

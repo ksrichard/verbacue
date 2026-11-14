@@ -490,6 +490,7 @@ fn job_for(video: &Path, cli: &Cli) -> Job {
         format: args.format,
         output: args.output.clone(),
         out_dir: None,
+        subtitles: true,
         embed: cli.embed,
         burn: cli.burn,
         force: args.force,

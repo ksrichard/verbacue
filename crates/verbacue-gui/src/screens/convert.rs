@@ -191,11 +191,15 @@ impl Convert {
     }
 }
 
-/// The steps after the translation: burning, saving, or the dub steps.
+/// The steps after the translation: burning, then the dub steps. A job with only
+/// subtitle files has a save step instead.
 fn output_steps(job: &Job) -> Vec<StepView> {
+    let mut steps = Vec::new();
+    if job.burn {
+        steps.push(view(Step::Burn, "Burn in"));
+    }
     #[cfg(feature = "dub")]
     if let Some(options) = &job.dub {
-        let mut steps = Vec::new();
         if options.original == verbacue::dub::Original::Remove {
             steps.push(view(Step::Separate, "Separate voices"));
         }
@@ -204,13 +208,11 @@ fn output_steps(job: &Job) -> Vec<StepView> {
         }
         steps.push(view(Step::Speak, "Speak"));
         steps.push(view(Step::Mix, "Mix"));
-        return steps;
     }
-    vec![if job.burn {
-        view(Step::Burn, "Burn in")
-    } else {
-        view(Step::Save, "Save")
-    }]
+    if steps.is_empty() {
+        steps.push(view(Step::Save, "Save"));
+    }
+    steps
 }
 
 fn view(step: Step, label: &str) -> StepView {
