@@ -49,7 +49,7 @@ pub fn char_limit(lang: &str) -> usize {
 }
 
 /// Makes a subtitle line ready for the voice model. The line gets lower case, words
-/// for symbols, and one space between words. In `hu` and `en`, numbers become words.
+/// for symbols, and one space between words, and numbers become words.
 /// Returns `None` for a line with nothing to speak.
 pub fn clean(text: &str, lang: &str) -> Option<String> {
     let lang = xtts_code(lang).unwrap_or(lang);
@@ -111,19 +111,23 @@ fn expand_numbers(text: &str, lang: &str) -> String {
             out.push_str(&whole);
             continue;
         };
-        // num2words writes some nouns with a capital ("eine Million"), but the rest of
-        // the text is already lower case.
-        out.push_str(&numbers::to_words(n, lang).map_or(whole, |w| w.to_lowercase()));
-        if chars.get(i) == Some(&decimal) && chars.get(i + 1).is_some_and(char::is_ascii_digit) {
+        let words = if chars.get(i) == Some(&decimal)
+            && chars.get(i + 1).is_some_and(char::is_ascii_digit)
+        {
             let start = i + 1;
             let mut end = start;
             while chars.get(end).is_some_and(char::is_ascii_digit) {
                 end += 1;
             }
             let frac: String = chars[start..end].iter().collect();
-            out.push_str(&decimal_words(&frac, n, lang));
             i = end;
-        }
+            decimal_words(n, &frac, lang)
+        } else {
+            numbers::to_words(n, lang).unwrap_or(whole)
+        };
+        // num2words writes some nouns with a capital ("eine Million"), but the rest of
+        // the text is already lower case.
+        out.push_str(&words.to_lowercase());
     }
     out
 }
@@ -153,14 +157,24 @@ fn read_number(chars: &[char], start: usize, thousands: char) -> (String, usize)
     }
 }
 
-/// The words after the decimal mark. Most languages say their "point" word and read
-/// the digits one by one. `whole` is the number in front of the mark.
-fn decimal_words(frac: &str, whole: u64, lang: &str) -> String {
-    let n: u64 = frac.parse().unwrap_or(0);
+/// The words for a decimal number: `whole`, the decimal mark, then `frac`, the digits
+/// after the mark. Most languages say their word for the mark and read the digits one
+/// by one, like num2words.
+fn decimal_words(whole: u64, frac: &str, lang: &str) -> String {
+    let words = |n: u64| numbers::to_words(n, lang).unwrap_or_default();
     let digits: Vec<String> = frac
         .chars()
         .filter_map(|c| numbers::to_words(c.to_digit(10)?.into(), lang))
         .collect();
+    // The leading zeros of `frac` one by one, then the rest as one number.
+    let zeros_then_number = |zero: &str| {
+        let rest = frac.trim_start_matches('0');
+        let mut parts = vec![zero; frac.len() - rest.len()].join(" ");
+        if let Ok(n) = rest.parse::<u64>() {
+            parts = format!("{parts} {}", words(n)).trim_start().to_string();
+        }
+        parts
+    };
     match lang {
         "hu" => {
             let unit = match frac.len() {
@@ -169,24 +183,20 @@ fn decimal_words(frac: &str, whole: u64, lang: &str) -> String {
                 3 => "ezred",
                 _ => "",
             };
-            let words = numbers::to_words(n, lang).unwrap_or_default();
-            format!(" egész {words} {unit}").trim_end().to_string()
+            let n = frac.parse().unwrap_or(0);
+            format!("{} egész {} {unit}", words(whole), words(n))
+                .trim_end()
+                .to_string()
         }
         // No spaces: the digits are single kanji or hanzi.
-        "zh-cn" | "ja" => format!("点{}", digits.concat()),
-        // Russian: "целая" after a number that ends in 1 (but not 11), else "целых".
-        "ru" => {
-            let word = if whole % 10 == 1 && whole % 100 != 11 {
-                "целая"
-            } else {
-                "целых"
-            };
-            format!(" {word} {}", digits.join(" "))
-        }
+        "zh-cn" | "ja" => format!("{}点{}", words(whole), digits.concat()),
+        "ru" => ru_decimal(whole, frac)
+            .unwrap_or_else(|| format!("{} целых {}", words(whole), digits.join(" "))),
+        "cs" => format!("{} celá {}", words(whole), zeros_then_number("nula")),
+        "pl" => format!("{} przecinek {}", words(whole), zeros_then_number("zero")),
         _ => {
             let point = match lang {
                 "ar" => "فاصلة",
-                "cs" => "celá",
                 "de" => "Komma",
                 "es" => "punto",
                 "fr" => "virgule",
@@ -194,13 +204,52 @@ fn decimal_words(frac: &str, whole: u64, lang: &str) -> String {
                 "it" => "virgola",
                 "ko" => "점",
                 "nl" => "komma",
-                "pl" => "przecinek",
                 "pt" => "vírgula",
                 "tr" => "virgül",
                 _ => "point",
             };
-            format!(" {point} {}", digits.join(" "))
+            format!("{} {point} {}", words(whole), digits.join(" "))
         }
+    }
+}
+
+/// A Russian decimal number, as num2words reads it: "две целых пять десятых". Both
+/// parts take the feminine ("одна", "две"), and the unit names the number of digits.
+/// `None` for more than six digits after the mark.
+fn ru_decimal(whole: u64, frac: &str) -> Option<String> {
+    let unit = [
+        "десят",
+        "сот",
+        "тысячн",
+        "десятитысячн",
+        "стотысячн",
+        "миллионн",
+    ]
+    .get(frac.len().checked_sub(1)?)?;
+    let n: u64 = frac.parse().ok()?;
+    let singular = |n: u64| n % 10 == 1 && n % 100 != 11;
+    let whole_word = if singular(whole) {
+        "целая"
+    } else {
+        "целых"
+    };
+    let ending = if singular(n) { "ая" } else { "ых" };
+    Some(format!(
+        "{} {whole_word} {} {unit}{ending}",
+        ru_feminine(whole),
+        ru_feminine(n)
+    ))
+}
+
+/// The Russian words for `n` with a feminine last word: "одна", "две".
+fn ru_feminine(n: u64) -> String {
+    let words = numbers::to_words(n, "ru").unwrap_or_default();
+    match words.rsplit_once(' ') {
+        Some((head, "один")) => format!("{head} одна"),
+        Some((head, "два")) => format!("{head} две"),
+        None if words == "один" => "одна".to_string(),
+        None if words == "два" => "две".to_string(),
+        _ => words,
     }
 }
 
@@ -396,14 +445,22 @@ mod tests {
     #[test]
     fn decimals_use_the_point_word_of_the_language() {
         for (text, lang, expected) in [
-            ("2,5", "de", "zwei Komma fünf"),
+            ("2,5", "de", "zwei komma fünf"),
             ("3,14", "fr", "trois virgule un quatre"),
             ("1,5", "es", "uno punto cinco"),
-            ("2,5", "ru", "два целых пять"),
-            ("1,5", "ru", "один целая пять"),
-            ("11,5", "ru", "одиннадцать целых пять"),
-            ("3,14", "pl", "trzy przecinek jeden cztery"),
-            ("3,14", "cs", "tři celá jedna čtyři"),
+            // Russian, Czech and Polish read the digits after the mark as one number,
+            // like num2words.
+            ("2,5", "ru", "две целых пять десятых"),
+            ("1,1", "ru", "одна целая одна десятая"),
+            ("11,5", "ru", "одиннадцать целых пять десятых"),
+            ("22,25", "ru", "двадцать две целых двадцать пять сотых"),
+            ("0,001", "ru", "ноль целых одна тысячная"),
+            ("1,123", "ru", "одна целая сто двадцать три тысячных"),
+            ("5,0001", "ru", "пять целых одна десятитысячная"),
+            ("3,14", "pl", "trzy przecinek czternaście"),
+            ("1,01", "pl", "jeden przecinek zero jeden"),
+            ("3,14", "cs", "tři celá čtrnáct"),
+            ("0,001", "cs", "nula celá nula nula jedna"),
             ("3.14", "ja", "三点一四"),
             ("3.14", "zh-cn", "三点一四"),
             ("3.14", "ko", "삼 점 일 사"),
