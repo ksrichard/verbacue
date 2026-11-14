@@ -43,6 +43,13 @@ pub struct Settings {
     pub out_dir: Option<PathBuf>,
     /// The last target language.
     pub target: String,
+    /// "clone" for the voice of each speaker, or a studio voice.
+    pub dub_voice: String,
+    pub dub_original: DubOriginal,
+    /// The highest speed-up of a line, from 1.0 to 1.5.
+    pub dub_speed_limit: f32,
+    /// The voice model for dubbing.
+    pub dub_model: String,
     /// Newest first.
     pub recent: Vec<Recent>,
 }
@@ -53,6 +60,27 @@ pub struct Recent {
     pub path: PathBuf,
     pub target: String,
     pub burn: bool,
+    /// A dubbed video. Files from before dubbing do not have this key.
+    #[serde(default)]
+    pub dub: bool,
+}
+
+/// What dubbing does with the original speech.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DubOriginal {
+    /// Take the original voices out; keep music and effects.
+    Remove,
+    /// Keep the original audio, quieter while a new line plays.
+    Lower,
+}
+
+/// The default voice model of this build. Empty in a build without dubbing.
+pub fn default_dub_model() -> String {
+    #[cfg(feature = "dub")]
+    return verbacue::dub::default_model().to_string();
+    #[cfg(not(feature = "dub"))]
+    String::new()
 }
 
 impl Default for Settings {
@@ -72,6 +100,10 @@ impl Default for Settings {
             format: Format::Srt,
             out_dir: None,
             target: "en".to_string(),
+            dub_voice: "clone".to_string(),
+            dub_original: DubOriginal::Remove,
+            dub_speed_limit: 1.3,
+            dub_model: default_dub_model(),
             recent: Vec::new(),
         }
     }
@@ -195,10 +227,15 @@ mod tests {
             format: Format::Vtt,
             out_dir: Some(PathBuf::from("/out")),
             target: "hu".into(),
+            dub_voice: "Ana Florence".into(),
+            dub_original: DubOriginal::Lower,
+            dub_speed_limit: 1.15,
+            dub_model: "/models/xtts".into(),
             recent: vec![Recent {
                 path: PathBuf::from("/v/Szép film.mkv"),
                 target: "hu".into(),
                 burn: true,
+                dub: true,
             }],
         };
         save(&dir, &s).unwrap();
@@ -221,6 +258,23 @@ mod tests {
     }
 
     #[test]
+    fn old_settings_load_with_dub_defaults() {
+        let dir = temp_dir("old-dub");
+        std::fs::write(
+            dir.join(FILE),
+            "target = \"hu\"\n\n[[recent]]\npath = \"/v/a.mkv\"\ntarget = \"hu\"\nburn = true\n",
+        )
+        .unwrap();
+        let (s, notice) = load(&dir);
+        assert!(notice.is_none());
+        assert_eq!(s.dub_voice, "clone");
+        assert_eq!(s.dub_original, DubOriginal::Remove);
+        assert!((s.dub_speed_limit - 1.3).abs() < f32::EPSILON);
+        assert_eq!(s.dub_model, default_dub_model());
+        assert!(s.recent[0].burn && !s.recent[0].dub);
+    }
+
+    #[test]
     fn broken_file_is_renamed_and_reported() {
         let dir = temp_dir("broken");
         std::fs::write(dir.join(FILE), "vad = [").unwrap();
@@ -239,12 +293,14 @@ mod tests {
                 path: PathBuf::from(format!("/v/{i}.mkv")),
                 target: "hu".into(),
                 burn: false,
+                dub: false,
             });
         }
         s.remember(Recent {
             path: PathBuf::from("/v/5.mkv"),
             target: "en".into(),
             burn: true,
+            dub: false,
         });
         assert_eq!(s.recent.len(), 8);
         assert_eq!(s.recent[0].path, PathBuf::from("/v/5.mkv"));
@@ -270,6 +326,7 @@ mod tests {
                 path,
                 target: "hu".into(),
                 burn: false,
+                dub: false,
             });
         }
         s.drop_missing();

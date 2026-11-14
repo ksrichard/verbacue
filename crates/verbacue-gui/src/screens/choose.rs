@@ -23,6 +23,8 @@ use crate::{
 
 const FLAME_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#ff8a4c" stroke-width="2"><path d="M12 3c2 4 6 5 6 10a6 6 0 0 1-12 0c0-3 2-4 2-7 2 1 3 3 4 5 1-3 0-6 0-8z"/></svg>"##;
 const FILE_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#f2c14e" stroke-width="2"><path d="M6 3h9l4 4v14H6z"/><path d="M9 13h6M9 17h4"/></svg>"##;
+#[cfg(feature = "dub")]
+const VOICE_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#ff8a4c" stroke-width="2"><path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>"##;
 const PLAY_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="#1a0f0a"><path d="M8 5v14l11-7z"/></svg>"##;
 
 /// What the user wants to get.
@@ -32,6 +34,23 @@ pub enum OutputMode {
     Burn,
     /// Only subtitle files next to the video.
     Srt,
+    /// A new MKV with an audio track that speaks the translation.
+    Dub,
+}
+
+/// Why dubbing is not possible for `target`, or `None` when it is.
+pub fn dub_blocked(target: &str) -> Option<String> {
+    if target == KEEP {
+        return Some("Pick a language to translate to.".to_string());
+    }
+    #[cfg(feature = "dub")]
+    if !verbacue::dub::supports(target) {
+        return Some(format!(
+            "XTTS-v2 cannot speak {}.",
+            verbacue::translate::language_name(target)
+        ));
+    }
+    None
 }
 
 /// The state of this screen.
@@ -301,33 +320,48 @@ pub fn view(app: &App) -> Element<'_, Message> {
             a: a1,
             ..theme::TEXT
         });
-    let mode = if selection.burn {
-        OutputMode::Burn
-    } else {
-        OutputMode::Srt
-    };
+    let mode = selection.mode;
     let change = app.choose.mode_changed.elapsed().as_secs_f32().min(0.25) / 0.25;
-    let cards = row![
+    #[cfg_attr(
+        not(feature = "dub"),
+        expect(unused_mut, reason = "only dub adds a card")
+    )]
+    let mut cards = row![
         card(
             FLAME_ICON,
             "Burned in",
-            "A new MP4 with the subtitles drawn into the picture. Plays anywhere.",
+            "A new MP4 with the subtitles drawn into the picture. Plays anywhere.".into(),
             mode == OutputMode::Burn,
             change,
-            OutputMode::Burn,
+            Some(OutputMode::Burn),
             a2,
         ),
         card(
             FILE_ICON,
             "Separate SRT file",
-            "A subtitle file next to the video. Fast, and you can edit it later.",
+            "A subtitle file next to the video. Fast, and you can edit it later.".into(),
             mode == OutputMode::Srt,
             change,
-            OutputMode::Srt,
+            Some(OutputMode::Srt),
             a2,
         ),
     ]
     .spacing(14);
+    #[cfg(feature = "dub")]
+    {
+        let blocked = dub_blocked(&selection.target);
+        let enabled = blocked.is_none();
+        let body = blocked.unwrap_or_else(|| "A new MKV that speaks the translation.".into());
+        cards = cards.push(card(
+            VOICE_ICON,
+            "Dubbed voice",
+            body,
+            mode == OutputMode::Dub,
+            change,
+            enabled.then_some(OutputMode::Dub),
+            if enabled { a2 } else { 0.45 * a2 },
+        ));
+    }
 
     let languages = languages();
     let selected = languages
@@ -425,10 +459,11 @@ pub fn view(app: &App) -> Element<'_, Message> {
 fn card<'a>(
     icon: &'static [u8],
     title: &'a str,
-    body: &'a str,
+    body: String,
     selected: bool,
     change: f32,
-    mode: OutputMode,
+    // `None` shows the card without a click action.
+    mode: Option<OutputMode>,
     alpha: f32,
 ) -> Element<'a, Message> {
     let border_alpha = if selected { 0.1 + 0.9 * change } else { 0.1 };
@@ -476,7 +511,7 @@ fn card<'a>(
             snap: true,
         }
     })
-    .on_press(Message::Mode(mode))
+    .on_press_maybe(mode.map(Message::Mode))
     .into()
 }
 

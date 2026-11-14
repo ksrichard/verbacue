@@ -30,7 +30,7 @@ use crate::{
     settings::{self, Recent, Settings},
     theme,
     widgets::{backdrop::Backdrop, nav},
-    worker::{Failure, Update, Worker},
+    worker::{Failure, Reply, Update, Worker},
 };
 
 /// The screens of the app, in the order of the main flow.
@@ -49,8 +49,7 @@ pub enum Screen {
 pub struct Selection {
     pub video: PathBuf,
     pub info: MediaInfo,
-    /// Burned-in MP4 (true) or only subtitle files (false).
-    pub burn: bool,
+    pub mode: OutputMode,
     /// A language code, or [`KEEP`] for no translation.
     pub target: String,
     pub track: usize,
@@ -104,6 +103,8 @@ pub enum Message {
     ReviewEdit(iced::widget::text_editor::Action),
     /// The user checked the film notes; the translation starts.
     ReviewDone,
+    /// The answer to the licence dialog: true accepts it.
+    Licence(bool),
     Cancel,
     CloseRequested,
     ConfirmClose(bool),
@@ -146,7 +147,7 @@ pub struct App {
     force: bool,
     next_id: u64,
     /// The options of recent entries, for the files being checked.
-    recent_options: HashMap<PathBuf, (String, bool)>,
+    recent_options: HashMap<PathBuf, (String, OutputMode)>,
     /// The id of each file being checked, given in the order the user chose them.
     chosen: HashMap<PathBuf, u64>,
     /// Start the queue when all opened files are checked; true also replaces outputs.
@@ -159,6 +160,8 @@ pub struct App {
     pub vad_changed: Instant,
     /// When the film notes switch last changed, for its animation.
     pub film_notes_changed: Instant,
+    /// The studio voices of the voice model, when it is on this computer.
+    pub studio_voices: Vec<String>,
     /// How much larger than the mockups the whole interface draws.
     pub scale: f32,
     /// When the scale last changed.
@@ -249,6 +252,7 @@ impl App {
             downloads: HashMap::new(),
             vad_changed: now,
             film_notes_changed: now,
+            studio_voices: Vec::new(),
             scale: 1.0,
             scale_changed: None,
             worker: Arc::new(OnceLock::new()),
@@ -348,10 +352,31 @@ impl App {
     }
 
     fn show(&mut self, screen: Screen) {
+        if screen == Screen::Settings {
+            self.read_studio_voices();
+        }
         if self.screen != screen {
             self.screen = screen;
             self.opened = Instant::now();
             self.now = self.opened;
+        }
+    }
+
+    /// Reads the studio voices of the voice model, if it is on this computer.
+    fn read_studio_voices(&mut self) {
+        #[cfg(feature = "dub")]
+        {
+            let model = &self.settings.dub_model;
+            let dir = if std::path::Path::new(model).is_dir() {
+                Some(PathBuf::from(model))
+            } else {
+                models::bundle(model)
+                    .filter(|b| b.is_cached())
+                    .and_then(|b| b.cached_dir().ok())
+            };
+            self.studio_voices = dir
+                .and_then(|d| verbacue::dub::xtts::studio_voices_in(&d).ok())
+                .unwrap_or_default();
         }
     }
 
@@ -400,7 +425,16 @@ impl App {
                 Task::none()
             }
             Message::OpenRecent(i) => match self.settings.recent.get(i).cloned() {
-                Some(r) => self.check(r.path, Some((r.target, r.burn))),
+                Some(r) => {
+                    let mode = if r.dub && cfg!(feature = "dub") {
+                        OutputMode::Dub
+                    } else if r.burn {
+                        OutputMode::Burn
+                    } else {
+                        OutputMode::Srt
+                    };
+                    self.check(r.path, Some((r.target, mode)))
+                }
                 None => Task::none(),
             },
             Message::MediaChecked(result) => {
@@ -467,8 +501,13 @@ impl App {
                 if let Some(shown) = self.selection().cloned() {
                     for item in &mut self.queue {
                         if item.status == Status::Waiting {
-                            item.selection.burn = shown.burn;
+                            item.selection.mode = shown.mode;
                             item.selection.target.clone_from(&shown.target);
+                            if shown.mode == OutputMode::Dub
+                                && screens::choose::dub_blocked(&item.selection.target).is_some()
+                            {
+                                item.selection.mode = OutputMode::Srt;
+                            }
                             if shown.track < item.selection.info.audio.len() {
                                 item.selection.track = shown.track;
                             }
@@ -478,8 +517,11 @@ impl App {
                 Task::none()
             }
             Message::Mode(mode) => {
-                if let Some(s) = self.selection_mut() {
-                    s.burn = mode == OutputMode::Burn;
+                if let Some(s) = self.selection_mut()
+                    && (mode != OutputMode::Dub
+                        || screens::choose::dub_blocked(&s.target).is_none())
+                {
+                    s.mode = mode;
                     self.choose.mode_changed = Instant::now();
                 }
                 Task::none()
@@ -487,6 +529,11 @@ impl App {
             Message::Target(code) => {
                 if let Some(s) = self.selection_mut() {
                     s.target = code;
+                    if s.mode == OutputMode::Dub
+                        && screens::choose::dub_blocked(&s.target).is_some()
+                    {
+                        s.mode = OutputMode::Srt;
+                    }
                 }
                 Task::none()
             }
@@ -543,7 +590,23 @@ impl App {
                     self.convert.review =
                         Some(iced::widget::text_editor::Content::with_text(&notes));
                 } else if let Some(reply) = &self.convert.reply {
-                    let _ = reply.send(notes);
+                    let _ = reply.send(Reply::Notes(notes));
+                }
+                Task::none()
+            }
+            Message::Pipeline(Update::Licence { model, text }) => {
+                self.convert.licence = Some((model, text));
+                Task::none()
+            }
+            Message::Licence(accept) => {
+                if self.convert.licence.take().is_some()
+                    && let Some(reply) = &self.convert.reply
+                {
+                    let _ = reply.send(Reply::Licence(accept));
+                }
+                if !accept {
+                    self.convert.cancel.store(true, Ordering::Relaxed);
+                    self.convert.stopping = true;
                 }
                 Task::none()
             }
@@ -557,7 +620,7 @@ impl App {
                 if let (Some(content), Some(reply)) =
                     (self.convert.review.take(), &self.convert.reply)
                 {
-                    let _ = reply.send(content.text());
+                    let _ = reply.send(Reply::Notes(content.text()));
                 }
                 Task::none()
             }
@@ -626,7 +689,11 @@ impl App {
                 ) {
                     self.film_notes_changed = Instant::now();
                 }
+                let model_changed = matches!(change, SettingChange::DubModel(_));
                 change.apply(&mut self.settings);
+                if model_changed {
+                    self.read_studio_voices();
+                }
                 self.save_settings();
                 Task::none()
             }
@@ -670,6 +737,7 @@ impl App {
             }
             Message::ModelDone(name, result) => {
                 self.downloads.remove(name);
+                self.read_studio_voices();
                 if let Err(e) = result {
                     self.notice = Some(format!("Download of {name} failed: {e}"));
                 }
@@ -716,7 +784,8 @@ impl App {
                 self.settings.remember(Recent {
                     path: s.video.clone(),
                     target: s.target.clone(),
-                    burn: s.burn,
+                    burn: s.mode == OutputMode::Burn,
+                    dub: s.mode == OutputMode::Dub,
                 });
                 if s.target != KEEP {
                     self.settings.target = s.target.clone();
@@ -736,7 +805,8 @@ impl App {
                 self.queue[index].status = Status::Done(outcome, lines);
                 self.run_next()
             }
-            Err(failure) if failure.kind == ErrorKind::Cancelled => {
+            // A declined licence also ends the job with an error, after the stop.
+            Err(failure) if failure.kind == ErrorKind::Cancelled || self.convert.stopping => {
                 self.queue[index].status = Status::Waiting;
                 self.current = index;
                 self.run.clear();
@@ -789,10 +859,10 @@ impl App {
 
     /// Adds a checked video to the end of the queue.
     fn add(&mut self, video: PathBuf, info: MediaInfo) -> Task<Message> {
-        let (target, burn) = self
+        let (target, mode) = self
             .recent_options
             .remove(&video)
-            .unwrap_or_else(|| (self.settings.target.clone(), true));
+            .unwrap_or_else(|| (self.settings.target.clone(), OutputMode::Burn));
         let id = self.chosen.remove(&video).unwrap_or_else(|| {
             self.next_id += 1;
             self.next_id - 1
@@ -813,7 +883,7 @@ impl App {
                 selection: Selection {
                     video: video.clone(),
                     info,
-                    burn,
+                    mode,
                     target,
                     track: 0,
                     notes: String::new(),
@@ -879,7 +949,11 @@ impl App {
         job.language = settings.language.clone();
         job.format = settings.format;
         job.out_dir = settings.out_dir.clone();
-        job.burn = s.burn;
+        job.burn = s.mode == OutputMode::Burn;
+        #[cfg(feature = "dub")]
+        if s.mode == OutputMode::Dub {
+            job.dub = Some(self.dub_options());
+        }
         job.translation = (!keep && settings.translator != verbacue::translate::Backend::None)
             .then(|| Translation {
                 backend: settings.translator,
@@ -892,6 +966,26 @@ impl App {
                 film_notes: settings.film_notes,
             });
         Some(job)
+    }
+
+    /// The dub options from the settings.
+    #[cfg(feature = "dub")]
+    fn dub_options(&self) -> verbacue::dub::Options {
+        use verbacue::dub::{Original, VoiceChoice};
+        let s = &self.settings;
+        verbacue::dub::Options {
+            voice: if s.dub_voice == "clone" {
+                VoiceChoice::Clone
+            } else {
+                VoiceChoice::Studio(s.dub_voice.clone())
+            },
+            original: match s.dub_original {
+                settings::DubOriginal::Remove => Original::Remove,
+                settings::DubOriginal::Lower => Original::Lower,
+            },
+            speed_limit: s.dub_speed_limit.clamp(1.0, 1.5),
+            model: s.dub_model.clone(),
+        }
     }
 
     /// Opens the Converting screen and runs `job` on the pipeline thread.
@@ -926,12 +1020,16 @@ impl App {
         } else {
             verbacue::translate::language_name(&s.target).to_string()
         };
-        let mode = if s.burn { "burned in" } else { "subtitle file" };
+        let mode = match s.mode {
+            OutputMode::Burn => "burned in",
+            OutputMode::Srt => "subtitle file",
+            OutputMode::Dub => "dubbed voice",
+        };
         format!("{name} · {language} · {mode}")
     }
 
     /// Reads the facts of `path` on the blocking thread pool.
-    fn check(&mut self, path: PathBuf, options: Option<(String, bool)>) -> Task<Message> {
+    fn check(&mut self, path: PathBuf, options: Option<(String, OutputMode)>) -> Task<Message> {
         self.pick.hovering = false;
         self.pick.error = None;
         self.pick.checking = Some(path.clone());
@@ -1089,7 +1187,7 @@ mod tests {
     use crate::{
         screens::{choose::OutputMode, settings::SettingChange},
         settings::Recent,
-        worker::{Failure, Update, friendly},
+        worker::{Failure, Reply, Update, friendly},
     };
     use std::path::PathBuf;
     use std::sync::atomic::Ordering;
@@ -1170,13 +1268,14 @@ mod tests {
             path: path.clone(),
             target: "hu".into(),
             burn: true,
+            dub: false,
         });
         let _ = a.update(Message::OpenRecent(0));
         assert_eq!(a.pick.checking, Some(path.clone()));
         let _ = a.update(Message::MediaChecked(Ok((path, info()))));
         let selection = a.selection().unwrap();
         assert_eq!(selection.target, "hu");
-        assert!(selection.burn);
+        assert_eq!(selection.mode, OutputMode::Burn);
     }
 
     fn chosen(dir: &str) -> App {
@@ -1534,9 +1633,9 @@ mod tests {
         let _ = a.update(Message::Target("de".into()));
         let _ = a.update(Message::Select(0));
         assert_eq!(a.selection().unwrap().target, "hu");
-        assert!(a.selection().unwrap().burn);
+        assert_eq!(a.selection().unwrap().mode, OutputMode::Burn);
         assert_eq!(a.queue[1].selection.target, "de");
-        assert!(!a.queue[1].selection.burn);
+        assert_eq!(a.queue[1].selection.mode, OutputMode::Srt);
     }
 
     #[test]
@@ -1548,7 +1647,7 @@ mod tests {
         assert!(
             a.queue
                 .iter()
-                .all(|i| i.selection.target == "hu" && !i.selection.burn)
+                .all(|i| i.selection.target == "hu" && i.selection.mode == OutputMode::Srt)
         );
     }
 
@@ -1658,7 +1757,87 @@ mod tests {
         ));
         let _ = a.update(Message::ReviewDone);
         assert!(a.convert.review.is_none());
-        assert!(replies.try_recv().unwrap().contains("sister"));
+        assert!(
+            matches!(replies.try_recv().unwrap(), Reply::Notes(text) if text.contains("sister"))
+        );
+    }
+
+    #[test]
+    fn the_licence_dialog_sends_the_answer() {
+        let mut a = converting("licence");
+        update(
+            &mut a,
+            Update::Licence {
+                model: "xtts-v2".into(),
+                text: "CPML".into(),
+            },
+        );
+        assert_eq!(a.convert.licence, Some(("xtts-v2".into(), "CPML".into())));
+        let (reply, replies) = std::sync::mpsc::channel();
+        a.convert.reply = Some(reply);
+        let _ = a.update(Message::Licence(true));
+        assert!(a.convert.licence.is_none());
+        assert_eq!(replies.try_recv().unwrap(), Reply::Licence(true));
+        assert!(!a.convert.stopping);
+    }
+
+    #[test]
+    fn declining_the_licence_stops_the_job() {
+        let mut a = converting("decline");
+        update(
+            &mut a,
+            Update::Licence {
+                model: "xtts-v2".into(),
+                text: "CPML".into(),
+            },
+        );
+        let (reply, replies) = std::sync::mpsc::channel();
+        a.convert.reply = Some(reply);
+        let _ = a.update(Message::Licence(false));
+        assert_eq!(replies.try_recv().unwrap(), Reply::Licence(false));
+        assert!(a.convert.stopping);
+        update(
+            &mut a,
+            Update::Finished(Err(Failure::new(ErrorKind::InvalidInput, "not accepted"))),
+        );
+        assert_eq!(a.screen, Screen::Choose);
+        assert!(a.convert.error.is_none());
+    }
+
+    #[test]
+    fn dub_card_is_blocked_without_a_dub_language() {
+        assert!(screens::choose::dub_blocked(KEEP).is_some());
+        if cfg!(feature = "dub") {
+            assert!(screens::choose::dub_blocked("th").is_some());
+            assert!(screens::choose::dub_blocked("hu").is_none());
+        }
+        let mut a = chosen("dub-blocked");
+        let _ = a.update(Message::Target("th".into()));
+        let _ = a.update(Message::Mode(OutputMode::Dub));
+        if cfg!(feature = "dub") {
+            assert_ne!(a.selection().unwrap().mode, OutputMode::Dub);
+        }
+    }
+
+    #[cfg(feature = "dub")]
+    #[test]
+    fn dub_card_builds_a_dub_job_from_the_settings() {
+        let mut a = chosen("dub");
+        a.settings.dub_voice = "Ana Florence".into();
+        a.settings.dub_original = settings::DubOriginal::Lower;
+        let _ = a.update(Message::Mode(OutputMode::Dub));
+        let job = a.job().unwrap();
+        let dub = job.dub.unwrap();
+        assert_eq!(
+            dub.voice,
+            verbacue::dub::VoiceChoice::Studio("Ana Florence".into())
+        );
+        assert_eq!(dub.original, verbacue::dub::Original::Lower);
+        assert!(!job.burn && job.translation.is_some());
+        // A language that the voice model cannot speak turns dubbing off.
+        let _ = a.update(Message::Target("th".into()));
+        assert_eq!(a.selection().unwrap().mode, OutputMode::Srt);
+        assert!(a.job().unwrap().dub.is_none());
     }
 
     #[test]

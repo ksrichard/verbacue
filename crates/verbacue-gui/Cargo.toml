@@ -8,6 +8,8 @@ repository.workspace = true
 homepage.workspace = true
 
 [features]
+# Dubbing: the "Dubbed voice" output and its settings.
+dub = ["verbacue/dub"]
 # GPU support on Linux and Windows. NVIDIA only; needs the CUDA toolkit.
 cuda = ["verbacue/cuda"]
 # GPU support on Linux and Windows for any GPU with a Vulkan driver.

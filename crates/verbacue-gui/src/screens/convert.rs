@@ -71,8 +71,10 @@ pub struct Convert {
     pub note: Option<String>,
     /// The film notes, while the user checks them.
     pub review: Option<text_editor::Content>,
-    /// Sends the checked notes back to the pipeline.
-    pub reply: Option<std::sync::mpsc::Sender<String>>,
+    /// Sends the answers of the user back to the pipeline.
+    pub reply: Option<std::sync::mpsc::Sender<crate::worker::Reply>>,
+    /// A model and its licence, while the user decides.
+    pub licence: Option<(String, String)>,
 }
 
 impl Convert {
@@ -88,11 +90,7 @@ impl Convert {
             }
             steps.push(view(Step::Translate, "Translate"));
         }
-        steps.push(if job.burn {
-            view(Step::Burn, "Burn in")
-        } else {
-            view(Step::Save, "Save")
-        });
+        steps.extend(output_steps(job));
         Self {
             steps,
             current: None,
@@ -110,7 +108,20 @@ impl Convert {
             note: None,
             review: None,
             reply: None,
+            licence: None,
         }
+    }
+
+    /// The name of the running step, with the line number while it speaks.
+    pub fn step_name(&self) -> String {
+        let Some(step) = self.current.and_then(|i| self.steps.get(i)) else {
+            return "Getting ready".to_string();
+        };
+        if step.step == Step::Speak && self.total > 0 {
+            let line = (self.done + 1).min(self.total);
+            return format!("Speaking line {line} of {}", self.total);
+        }
+        step.label.clone()
     }
 
     /// The part of the current step that is done, 0 to 1.
@@ -156,7 +167,7 @@ impl Convert {
                 }
             }
             Update::Note(note) => self.note = Some(note),
-            Update::Review(_) | Update::Finished(_) => {}
+            Update::Review(_) | Update::Licence { .. } | Update::Finished(_) => {}
         }
     }
 
@@ -180,6 +191,28 @@ impl Convert {
     }
 }
 
+/// The steps after the translation: burning, saving, or the dub steps.
+fn output_steps(job: &Job) -> Vec<StepView> {
+    #[cfg(feature = "dub")]
+    if let Some(options) = &job.dub {
+        let mut steps = Vec::new();
+        if options.original == verbacue::dub::Original::Remove {
+            steps.push(view(Step::Separate, "Separate voices"));
+        }
+        if options.voice == verbacue::dub::VoiceChoice::Clone {
+            steps.push(view(Step::Speakers, "Find speakers"));
+        }
+        steps.push(view(Step::Speak, "Speak"));
+        steps.push(view(Step::Mix, "Mix"));
+        return steps;
+    }
+    vec![if job.burn {
+        view(Step::Burn, "Burn in")
+    } else {
+        view(Step::Save, "Save")
+    }]
+}
+
 fn view(step: Step, label: &str) -> StepView {
     StepView {
         step,
@@ -201,6 +234,9 @@ pub fn view_screen(app: &App) -> Element<'_, Message> {
     }
     if let Some(content) = &c.review {
         return review_card(c, content);
+    }
+    if let Some((model, licence)) = &c.licence {
+        return licence_card(c, model, licence);
     }
 
     // The quip changes every 3.2 s and fades over 0.4 s at both ends.
@@ -235,10 +271,7 @@ pub fn view_screen(app: &App) -> Element<'_, Message> {
     .width(Length::Fixed(560.0))
     .height(Length::Fixed(250.0));
 
-    let step_name = c
-        .current
-        .and_then(|i| c.steps.get(i))
-        .map_or("Getting ready", |s| s.label.as_str());
+    let step_name = c.step_name();
     let percent = (c.progress() * 100.0).round() as u32;
     let bar = canvas(Bar {
         t,
@@ -459,6 +492,48 @@ fn review_card<'a>(c: &'a Convert, content: &'a text_editor::Content) -> Element
                 .padding([12, 22])
                 .style(theme::ghost)
                 .on_press(Message::Cancel),
+        ]
+        .spacing(12),
+    ]
+    .spacing(14);
+    container(
+        container(card)
+            .padding(28)
+            .max_width(720)
+            .style(theme::card(22.0)),
+    )
+    .padding([60, 56])
+    .center_x(Length::Fill)
+    .into()
+}
+
+/// The licence of a voice model; the download waits until the user decides.
+fn licence_card<'a>(c: &'a Convert, model: &'a str, licence: &'a str) -> Element<'a, Message> {
+    let card = column![
+        text(format!("Accept the {model} licence?"))
+            .font(theme::HEADING)
+            .size(30)
+            .color(theme::TEXT),
+        text(&c.summary).color(theme::MUTED),
+        text(
+            "Dubbing needs this voice model. Its licence allows non-commercial use only. \
+             verbacue downloads the model after you accept."
+        )
+        .size(14)
+        .color(theme::TEXT_SOFT),
+        container(text(licence).size(13).color(theme::MUTED))
+            .padding(14)
+            .width(Length::Fill)
+            .style(theme::card(12.0)),
+        row![
+            button(text("Accept and download").font(theme::BODY_BOLD))
+                .padding([12, 22])
+                .style(theme::primary)
+                .on_press(Message::Licence(true)),
+            button(text("Cancel"))
+                .padding([12, 22])
+                .style(theme::ghost)
+                .on_press(Message::Licence(false)),
         ]
         .spacing(12),
     ]

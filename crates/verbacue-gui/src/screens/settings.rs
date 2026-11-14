@@ -1,10 +1,11 @@
-//! Settings: speech to text, translation, output, and the models on this computer.
+//! Settings: speech to text, translation, output, dubbing, and the models on this
+//! computer.
 
 use std::path::PathBuf;
 
 use iced::{
     Alignment, Element, Length,
-    widget::{button, column, container, pick_list, row, scrollable, text, text_input},
+    widget::{button, column, container, pick_list, row, scrollable, slider, text, text_input},
 };
 use verbacue::{
     models::{self, Kind},
@@ -14,7 +15,7 @@ use verbacue::{
 
 use crate::{
     app::{App, Message},
-    settings::Settings,
+    settings::{DubOriginal, Settings},
     theme,
     widgets::switch,
 };
@@ -35,6 +36,10 @@ pub enum SettingChange {
     ReviewNotes(bool),
     Format(Format),
     OutDir(Option<PathBuf>),
+    DubVoice(String),
+    DubOriginal(DubOriginal),
+    DubSpeedLimit(f32),
+    DubModel(String),
 }
 
 impl SettingChange {
@@ -53,6 +58,10 @@ impl SettingChange {
             Self::ReviewNotes(v) => s.review_notes = v,
             Self::Format(v) => s.format = v,
             Self::OutDir(v) => s.out_dir = v,
+            Self::DubVoice(v) => s.dub_voice = v,
+            Self::DubOriginal(v) => s.dub_original = v,
+            Self::DubSpeedLimit(v) => s.dub_speed_limit = v.clamp(1.0, 1.5),
+            Self::DubModel(v) => s.dub_model = v,
         }
     }
 }
@@ -436,6 +445,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
         ],
     );
 
+    let dubbing = dubbing_card(s, &app.studio_voices);
+
     let model_rows = models::known()
         .iter()
         .map(|m| {
@@ -498,6 +509,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 speech,
                 translation,
                 output,
+                dubbing,
                 models_card,
             ]
             .spacing(20)
@@ -506,4 +518,88 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .padding([40, 56]),
     )
     .into()
+}
+
+/// The dub settings. Empty in a build without dubbing.
+fn dubbing_card<'a>(s: &'a Settings, studio_voices: &'a [String]) -> Element<'a, Message> {
+    if !cfg!(feature = "dub") {
+        return column![].into();
+    }
+    let mut voices = vec![Choice {
+        value: "clone".to_string(),
+        label: "Clone the actors".to_string(),
+    }];
+    voices.extend(studio_voices.iter().map(|v| Choice {
+        value: v.clone(),
+        label: v.clone(),
+    }));
+    if !voices.iter().any(|c| c.value == s.dub_voice) {
+        voices.push(Choice {
+            value: s.dub_voice.clone(),
+            label: s.dub_voice.clone(),
+        });
+    }
+    let voice_hint = if studio_voices.is_empty() {
+        "Each actor keeps a similar voice. The studio voices show after the download."
+    } else {
+        "Each actor keeps a similar voice, or one studio voice speaks all lines."
+    };
+    let models: Vec<Choice<String>> = models::bundles()
+        .iter()
+        .filter(|b| b.kind == Kind::Voice)
+        .map(|b| Choice {
+            value: b.name.to_string(),
+            label: format!("{} ({})", b.name, models::human_size(b.size())),
+        })
+        .collect();
+    let speed = row![
+        slider(1.0_f32..=1.5, s.dub_speed_limit, |v| {
+            Message::Setting(SettingChange::DubSpeedLimit((v * 20.0).round() / 20.0))
+        })
+        .step(0.05_f32)
+        .width(200),
+        text(format!("{:.2}×", s.dub_speed_limit))
+            .size(13)
+            .color(theme::TEXT),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
+    card(
+        "Dubbing",
+        vec![
+            setting_row(
+                "Voice",
+                voice_hint,
+                list(voices, &s.dub_voice, SettingChange::DubVoice),
+            ),
+            setting_row(
+                "Original speech",
+                "Take the voices out and keep music and effects, or make them quieter (faster).",
+                list(
+                    vec![
+                        Choice {
+                            value: DubOriginal::Remove,
+                            label: "Take them out".into(),
+                        },
+                        Choice {
+                            value: DubOriginal::Lower,
+                            label: "Make them quieter".into(),
+                        },
+                    ],
+                    &s.dub_original,
+                    SettingChange::DubOriginal,
+                ),
+            ),
+            setting_row(
+                "Speed limit",
+                "A long line plays faster, up to this speed.",
+                speed,
+            ),
+            setting_row(
+                "Voice model",
+                "The int8 model is smaller and faster on a CPU. Non-commercial use only.",
+                list(models, &s.dub_model, SettingChange::DubModel),
+            ),
+        ],
+    )
 }
