@@ -140,13 +140,17 @@ jobs:
             "ffmpeg[core,avcodec,avdevice,avfilter,avformat,swresample,swscale]:x64-windows-static"
           echo "VCPKG_ROOT=$VCPKG_INSTALLATION_ROOT" >> "$GITHUB_ENV"
       # GPU builds skip the tests, because the runner has no GPU.
+      # No dubbing on Windows yet: ONNX Runtime is not proven to link with the static
+      # C runtime.
       - name: Test
         if: matrix.gpu == 'cpu'
-        run: cargo test --workspace --release --locked
+        run: |
+          cargo test --workspace --exclude verbacue-dub --exclude verbacue-app --release --locked
+          cargo test -p verbacue-app --no-default-features --features gui --release --locked
       - name: Build
         run: |
-          features=""
-          if [ "${{ matrix.gpu }}" != cpu ]; then features="--features ${{ matrix.gpu }}"; fi
+          features="--no-default-features --features gui"
+          if [ "${{ matrix.gpu }}" != cpu ]; then features="$features,${{ matrix.gpu }}"; fi
           cargo build --release --locked $features
           mkdir dist && cp /c/t/release/verbacue.exe dist/
       # cuBLAS has no static library on Windows, so the CUDA build ships its DLLs.

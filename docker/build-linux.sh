@@ -60,9 +60,13 @@ case ${FEATURES:-} in
         ;;
 esac
 
-# The static CPU build has no desktop app; all other builds include it.
+# The static CPU build has no desktop app; all other builds include it. Only the
+# Vulkan build has dubbing: the prebuilt ONNX Runtime needs the C++ library of GCC 13,
+# which Ubuntu 22.04 (the base of the other builds) does not have.
 case ${FEATURES:-} in
-    *cuda* | *vulkan* | *gui*) features="--features $FEATURES" ;;
+    *vulkan*) features="--features $FEATURES" ;;
+    *cuda*) features="--no-default-features --features gui,$FEATURES" ;;
+    *gui*) features="--no-default-features --features gui" ;;
     *) features="--no-default-features" ;;
 esac
 # The static CPU build runs the tests. GPU builds skip them, because the build has no
@@ -71,7 +75,7 @@ case ${FEATURES:-} in
     *cuda* | *vulkan* | *gui*) ;;
     *)
         cargo test --workspace --exclude verbacue-gui --exclude verbacue-app \
-            --release --locked --target $target
+            --exclude verbacue-dub --release --locked --target $target
         cargo test -p verbacue-app --no-default-features --release --locked --target $target
         ;;
 esac
