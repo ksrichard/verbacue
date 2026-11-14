@@ -439,7 +439,7 @@ mod download {
     use reqwest::{StatusCode, header};
     use sha2::{Digest, Sha256};
 
-    use super::{ModelSpec, human_size};
+    use super::{Kind, ModelSpec, human_size};
     use crate::{
         Progress, check_cancel,
         error::{Context as _, Result, bail},
@@ -469,6 +469,14 @@ mod download {
         let status = response.status();
         let append =
             status == StatusCode::PARTIAL_CONTENT || status == StatusCode::RANGE_NOT_SATISFIABLE;
+        // The voice models are not on Hugging Face yet, and a missing repository gives 401.
+        if spec.kind == Kind::Voice
+            && (status == StatusCode::NOT_FOUND || status == StatusCode::UNAUTHORIZED)
+        {
+            bail!(Network;
+                "the voice model is not published yet (HTTP {status}); choose a local model \
+                 folder in Settings, or use --dub-model <folder>");
+        }
         if !append && !status.is_success() {
             bail!(Network; "download of {} failed: HTTP {status}", spec.url);
         }

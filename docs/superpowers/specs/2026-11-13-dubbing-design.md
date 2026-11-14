@@ -155,7 +155,7 @@ The command line and the desktop app have the same settings for dubbing.
 | Voice | `clone`, or a studio voice name | `clone` | `--dub-voice` | Settings, "Voice" list |
 | Original speech | `remove` (separation), `lower` (lower the volume only, faster) | `remove` | `--dub-original remove\|lower` | Settings, "Original speech" switch |
 | Speed limit | 1.0 to 1.5 | 1.3 | `--dub-speed-limit` | Settings, "Speed limit" slider |
-| Voice model | `xtts-v2`, `xtts-v2-int8`, or a path | `xtts-v2` in a CUDA build, else `xtts-v2-int8` | `--dub-model` | Settings, "Voice model" list |
+| Voice model | `xtts-v2`, `xtts-v2-int8`, or a path | `xtts-v2` in a CUDA build, else `xtts-v2-int8` | `--dub-model` | Settings, "Voice model" list and "Choose a folder…" |
 
 ### Command line
 

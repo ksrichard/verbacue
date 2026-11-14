@@ -142,6 +142,14 @@ fn card<'a>(title: &'a str, rows: Vec<Element<'a, Message>>) -> Element<'a, Mess
     .into()
 }
 
+/// The list label of a local voice model: "Folder: <name>".
+fn folder_label(path: &str) -> String {
+    let name = std::path::Path::new(path)
+        .file_name()
+        .map_or_else(|| path.to_string(), |n| n.to_string_lossy().into_owned());
+    format!("Folder: {name}")
+}
+
 fn list<'a, T: Clone + PartialEq + 'a>(
     choices: Vec<Choice<T>>,
     current: &T,
@@ -544,7 +552,7 @@ fn dubbing_card<'a>(s: &'a Settings, studio_voices: &'a [String]) -> Element<'a,
     } else {
         "Each actor keeps a similar voice, or one studio voice speaks all lines."
     };
-    let models: Vec<Choice<String>> = models::bundles()
+    let mut models: Vec<Choice<String>> = models::bundles()
         .iter()
         .filter(|b| b.kind == Kind::Voice)
         .map(|b| Choice {
@@ -552,6 +560,21 @@ fn dubbing_card<'a>(s: &'a Settings, studio_voices: &'a [String]) -> Element<'a,
             label: format!("{} ({})", b.name, models::human_size(b.size())),
         })
         .collect();
+    if !models.iter().any(|m| m.value == s.dub_model) {
+        models.push(Choice {
+            value: s.dub_model.clone(),
+            label: folder_label(&s.dub_model),
+        });
+    }
+    let model_row = row![
+        list(models, &s.dub_model, SettingChange::DubModel),
+        button(text("Choose a folder…").size(13))
+            .padding([9, 14])
+            .style(theme::ghost)
+            .on_press(Message::ChooseDubModel),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
     let speed = row![
         slider(1.0_f32..=1.5, s.dub_speed_limit, |v| {
             Message::Setting(SettingChange::DubSpeedLimit((v * 20.0).round() / 20.0))
@@ -597,8 +620,9 @@ fn dubbing_card<'a>(s: &'a Settings, studio_voices: &'a [String]) -> Element<'a,
             ),
             setting_row(
                 "Voice model",
-                "The int8 model is smaller and faster on a CPU. Non-commercial use only.",
-                list(models, &s.dub_model, SettingChange::DubModel),
+                "The int8 model is smaller and faster on a CPU. A folder holds an exported \
+                 model. Non-commercial use only.",
+                model_row,
             ),
         ],
     )

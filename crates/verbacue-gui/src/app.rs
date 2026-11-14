@@ -116,6 +116,8 @@ pub enum Message {
     Again,
     Setting(SettingChange),
     ChooseGlossary,
+    /// Picks a folder with an exported voice model.
+    ChooseDubModel,
     ChooseOutDir,
     OpenConfigFolder,
     DownloadModel(&'static str),
@@ -701,6 +703,17 @@ impl App {
                 Task::done(Message::Setting(SettingChange::Glossary(Some(
                     f.path().to_path_buf(),
                 ))))
+            }),
+            Message::ChooseDubModel => Task::future(async {
+                rfd::AsyncFileDialog::new()
+                    .set_title("Choose a voice model folder")
+                    .pick_folder()
+                    .await
+            })
+            .and_then(|f| {
+                Task::done(Message::Setting(SettingChange::DubModel(
+                    f.path().display().to_string(),
+                )))
             }),
             Message::ChooseOutDir => Task::future(async {
                 rfd::AsyncFileDialog::new()
