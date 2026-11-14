@@ -42,7 +42,7 @@ case $(uname -m) in
 esac
 
 # The amd64 CPU build links glibc statically. On arm64, the static libc.a of glibc 2.35
-# uses the small GOT model, and with ONNX Runtime the program has too many GOT entries
+# uses the small GOT model. With ONNX Runtime, the program has too many GOT entries
 # for it. lld links it, but glibc then stops at start. So the arm64 CPU build links
 # glibc dynamically, like the GPU builds.
 static=no

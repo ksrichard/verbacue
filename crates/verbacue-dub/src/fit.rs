@@ -1,8 +1,8 @@
 //! Fits each spoken line into the time of its subtitle cue.
 //!
 //! A line plays from the start of its cue. When the speech is longer than the cue,
-//! the line speeds up, first to fit the cue, then to fit the silence before the next
-//! cue. A line never plays over the next line.
+//! the line speeds up to fit the cue. If that is too fast, it also uses the silence
+//! before the next cue. A line never plays over the next line.
 
 use verbacue_core::subtitle::Cue;
 

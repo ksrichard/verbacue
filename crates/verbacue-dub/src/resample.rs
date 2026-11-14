@@ -1,8 +1,8 @@
 //! Changes the sample rate of audio, as `torchaudio.functional.resample` does with
 //! its defaults. XTTS-v2 was trained on audio resampled this way.
 //!
-//! The method is a windowed sinc filter: a Hann window, 6 zero crossings on each
-//! side, and a cut-off at 99 % of the lower Nyquist frequency.
+//! The method is a windowed sinc filter with a Hann window and 6 zero crossings on
+//! each side. The cut-off is at 99 % of the lower Nyquist frequency.
 
 use std::f64::consts::PI;
 

@@ -1,7 +1,7 @@
 //! Reads the F32 tensors of a `.safetensors` file.
 //!
-//! The format is an 8-byte little-endian header length, a JSON header with the
-//! dtype, shape and byte offsets of each tensor, and then the raw data.
+//! The file starts with the header length (8 bytes, little-endian). Then comes a JSON
+//! header with the dtype, shape and byte offsets of each tensor, then the raw data.
 
 use std::{collections::HashMap, path::Path};
 

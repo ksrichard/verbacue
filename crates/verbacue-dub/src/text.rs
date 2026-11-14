@@ -48,9 +48,9 @@ pub fn char_limit(lang: &str) -> usize {
     }
 }
 
-/// Makes a subtitle line ready for the voice model: lower case, numbers as words (in
-/// `hu` and `en`), symbols as words, and one space between words. Returns `None` for
-/// a line with nothing to speak.
+/// Makes a subtitle line ready for the voice model. The line gets lower case, words
+/// for symbols, and one space between words. In `hu` and `en`, numbers become words.
+/// Returns `None` for a line with nothing to speak.
 pub fn clean(text: &str, lang: &str) -> Option<String> {
     let lang = xtts_code(lang).unwrap_or(lang);
     let text = remove_non_speech(text);
@@ -290,7 +290,7 @@ fn expand_symbols(text: &str, lang: &str) -> String {
 }
 
 /// Splits a clean text into parts that are each at most [`char_limit`] characters.
-/// It splits after `.`, `!`, `?` and `…` first, then between words, and cuts a word
+/// It splits after `.`, `!`, `?` and `…` first, then between words. It cuts a word
 /// only if the word alone is longer than the limit.
 pub fn split(text: &str, lang: &str) -> Vec<String> {
     let limit = char_limit(lang);

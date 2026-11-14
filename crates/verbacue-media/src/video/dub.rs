@@ -43,9 +43,9 @@ pub(super) fn write_dubbed(
         .with_context(|| format!("cannot create {}", output.display()))?;
     let mut map = StreamMap::new(&ictx);
 
-    // Video, then the new audio, then the input audio. MKV with `default_mode=infer`
-    // marks the first audio track as the default, and the copied streams have no
-    // default flag, so the new track is the only default one.
+    // Video, then the new audio, then the input audio. With `default_mode=infer`, MKV
+    // marks the first audio track as the default. The copied streams have no default
+    // flag, so the new track is the only default one.
     for ist in ictx.streams() {
         if ist.parameters().medium() == media::Type::Video {
             map.copy_stream(&ist, &mut octx)?;

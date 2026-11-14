@@ -37,8 +37,8 @@ const KO_FINALS: [&str; 28] = [
     "b", "bs", "s", "ss", "ng", "j", "ch", "k", "t", "p", "h",
 ];
 
-/// The (final, initial) letter groups that a reader can split in more than one way,
-/// such as "kk" = "k" + "k" or "kk" + "". A hyphen goes between such syllables.
+/// The (final, initial) letter groups that a reader can split in more than one way.
+/// An example is "kk": "k" + "k", or "kk" + "". A hyphen goes between such syllables.
 fn ko_ambiguous(joined: &str) -> bool {
     let splits = (0..joined.len())
         .filter(|&i| joined.is_char_boundary(i))
