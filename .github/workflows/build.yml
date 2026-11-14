@@ -245,6 +245,21 @@ jobs:
           fi
           echo "RUSTFLAGS=$flags" >> "$GITHUB_ENV"
           echo "RUSTFLAGS=$flags"
+      # There is no prebuilt ONNX Runtime for Intel Macs, so build it from source. The
+      # build takes about an hour; the cache keeps the result for later runs.
+      - name: Cache ONNX Runtime (Intel)
+        if: matrix.arch == 'x86_64'
+        id: ort-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/onnxruntime/lib
+          key: onnxruntime-macos-x86_64-${{ env.MACOSX_DEPLOYMENT_TARGET }}-${{ hashFiles('tools/build-onnxruntime.sh') }}
+      - name: Build ONNX Runtime (Intel)
+        if: matrix.arch == 'x86_64' && steps.ort-cache.outputs.cache-hit != 'true'
+        run: tools/build-onnxruntime.sh "$RUNNER_TEMP/onnxruntime"
+      - name: Use the ONNX Runtime build (Intel)
+        if: matrix.arch == 'x86_64'
+        run: echo "ORT_LIB_LOCATION=$RUNNER_TEMP/onnxruntime/lib" >> "$GITHUB_ENV"
       - name: Test
         run: cargo test --workspace --release --locked
       - name: Build

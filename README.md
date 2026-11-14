@@ -126,6 +126,8 @@ and each build job checks what the binary links:
   no static build for Windows. Keep them in the same folder.
 - macOS does not allow fully static programs. The binary links only system
   frameworks. It is universal: one file with code for Apple Silicon and for Intel.
+  ONNX Runtime has no prebuilt library for Intel Macs, so CI builds it from source
+  with `tools/build-onnxruntime.sh`.
 
 The binaries contain the Mozilla root certificates, so model downloads also work on
 systems without a certificate store. The x86_64 binaries and the Intel code of the macOS binary need a CPU with
