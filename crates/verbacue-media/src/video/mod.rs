@@ -9,7 +9,9 @@
 //! FFmpeg's own MPEG-4 encoder elsewhere. Audio is copied if MP4 can hold its codec, and
 //! is encoded to AAC otherwise.
 
+mod aac;
 mod burn;
+mod dub;
 mod embed;
 mod fonts;
 mod overlay;
@@ -52,6 +54,28 @@ pub fn embed(
 ) -> Result<()> {
     crate::audio::init()?;
     remove_on_error(output, write_embedded(input, output, tracks, progress))
+}
+
+/// Copies `input` to `output` (MKV), adds `audio` as a new AAC track, and adds
+/// `tracks` as subtitle tracks, as [`embed`] does. The new track gets the `language`
+/// and `title` tags, and it is the only default audio track.
+///
+/// # Errors
+/// Returns an error if a file cannot be read or written. Then `output` is deleted.
+pub fn dub(
+    input: &Path,
+    output: &Path,
+    audio: &crate::audio::RawAudio,
+    language: &str,
+    title: &str,
+    tracks: &[SubtitleTrack],
+    progress: &dyn Progress,
+) -> Result<()> {
+    crate::audio::init()?;
+    remove_on_error(
+        output,
+        dub::write_dubbed(input, output, audio, language, title, tracks, progress),
+    )
 }
 
 /// Re-encodes the main video stream of `input` with `cues` drawn into the picture, and
@@ -245,6 +269,73 @@ mod tests {
         let err = burn(&input, &output, &cues, &Stopped).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::Cancelled);
         assert!(!output.exists());
+    }
+
+    #[test]
+    fn decode_to_file_writes_stereo() {
+        let Some(input) = test_video("verbacue-dub-decode-in.mkv", 2, "160x120", true) else {
+            return;
+        };
+        let raw = std::env::temp_dir().join("verbacue-dub-decode.f32");
+        let frames = crate::audio::decode_to_file(&input, 0, 48_000, &raw, &()).unwrap();
+        assert_eq!(std::fs::metadata(&raw).unwrap().len(), frames * 2 * 4);
+        assert!((95_000..=97_000).contains(&frames), "{frames} frames");
+    }
+
+    #[test]
+    fn dub_adds_default_track() {
+        let Some(input) = test_video("verbacue-dub-in.mkv", 2, "160x120", true) else {
+            return;
+        };
+        let raw = std::env::temp_dir().join("verbacue-dub-track.f32");
+        crate::audio::decode_to_file(&input, 0, 48_000, &raw, &()).unwrap();
+        let audio = crate::audio::RawAudio {
+            path: raw,
+            rate: 48_000,
+            channels: 2,
+        };
+        let output = std::env::temp_dir().join("verbacue-dub-out.mkv");
+        let cues = [Cue::new(0, 1500, "szia")];
+        let tracks = [SubtitleTrack {
+            language: "hu",
+            cues: &cues,
+        }];
+        dub(
+            &input,
+            &output,
+            &audio,
+            "hu",
+            "Hungarian (AI voice)",
+            &tracks,
+            &(),
+        )
+        .unwrap();
+
+        let probe = std::process::Command::new("ffprobe")
+            .args(["-v", "error", "-show_entries"])
+            .arg("stream=codec_type,codec_name:stream_disposition=default:stream_tags=language,title")
+            .args(["-of", "compact=p=0:nk=0"])
+            .arg(&output)
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&probe.stdout);
+        let audio: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains("codec_type=audio"))
+            .collect();
+        assert_eq!(audio.len(), 2, "{text}");
+        assert!(audio[0].contains("codec_name=aac"), "{text}");
+        assert!(audio[0].contains("disposition:default=1"), "{text}");
+        assert!(audio[0].contains("tag:language=hun"), "{text}");
+        assert!(
+            audio[0].contains("tag:title=Hungarian (AI voice)"),
+            "{text}"
+        );
+        assert!(audio[1].contains("disposition:default=0"), "{text}");
+        assert!(
+            text.lines().any(|l| l.contains("codec_type=subtitle")),
+            "{text}"
+        );
     }
 
     #[test]

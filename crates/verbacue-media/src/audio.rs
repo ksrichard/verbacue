@@ -2,9 +2,14 @@
 //!
 //! The decoder reads any container and codec that FFmpeg knows (MKV, MP4, AVI, WebM with
 //! AC3, E-AC3, DTS, AAC, Opus, ...). The resampler converts the selected track to the
-//! format that Whisper needs: 16 kHz, mono, f32.
+//! format that Whisper needs (16 kHz, mono, f32), or to stereo for the dub mix.
 
-use std::{borrow::Cow, path::Path};
+use std::{
+    borrow::Cow,
+    fs::File,
+    io::{BufWriter, Write as _},
+    path::{Path, PathBuf},
+};
 
 use ffmpeg_next::{
     self as ffmpeg, ChannelLayout, codec,
@@ -76,6 +81,14 @@ pub fn list_tracks(path: &Path) -> Result<Vec<AudioTrack>> {
     Ok(tracks)
 }
 
+/// Audio in a raw file: interleaved f32 little-endian samples.
+#[derive(Debug, Clone)]
+pub struct RawAudio {
+    pub path: PathBuf,
+    pub rate: u32,
+    pub channels: u16,
+}
+
 /// Decodes one audio track to 16 kHz mono f32 samples.
 ///
 /// `track` is the position among audio streams (see [`AudioTrack::index`]).
@@ -84,6 +97,84 @@ pub fn list_tracks(path: &Path) -> Result<Vec<AudioTrack>> {
 /// # Errors
 /// Returns an error if the file has no such track, or decoding or resampling fails.
 pub fn decode_pcm(path: &Path, track: usize, progress: &dyn Progress) -> Result<Vec<f32>> {
+    let mut pcm = Vec::new();
+    decode(
+        path,
+        track,
+        ChannelLayout::MONO,
+        SAMPLE_RATE,
+        progress,
+        &mut |s| {
+            pcm.extend_from_slice(s);
+            Ok(())
+        },
+    )?;
+    if pcm.is_empty() {
+        bail!(
+            "audio track {track} of {} decoded to no samples",
+            path.display()
+        );
+    }
+    Ok(pcm)
+}
+
+/// Decodes one audio track to a raw stereo file at `rate` (see [`RawAudio`]). The
+/// FFmpeg resampler mixes audio with more channels down to stereo. Returns the number
+/// of stereo frames.
+///
+/// # Errors
+/// Returns an error if the file has no such track, decoding fails, or `out` cannot be
+/// written. Then `out` is deleted.
+pub fn decode_to_file(
+    path: &Path,
+    track: usize,
+    rate: u32,
+    out: &Path,
+    progress: &dyn Progress,
+) -> Result<u64> {
+    let result = (|| {
+        let file = File::create(out)
+            .with_kind(ErrorKind::Other)
+            .with_context(|| format!("cannot create {}", out.display()))?;
+        let mut writer = BufWriter::new(file);
+        let mut samples = 0u64;
+        decode(
+            path,
+            track,
+            ChannelLayout::STEREO,
+            rate,
+            progress,
+            &mut |s| {
+                for v in s {
+                    writer
+                        .write_all(&v.to_le_bytes())
+                        .with_kind(ErrorKind::Other)?;
+                }
+                samples += s.len() as u64;
+                Ok(())
+            },
+        )?;
+        writer
+            .flush()
+            .with_kind(ErrorKind::Other)
+            .with_context(|| format!("cannot write {}", out.display()))?;
+        Ok(samples / 2)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(out);
+    }
+    result
+}
+
+/// Decodes one audio track and gives the resampled, interleaved samples to `sink`.
+fn decode(
+    path: &Path,
+    track: usize,
+    layout: ChannelLayout,
+    rate: u32,
+    progress: &dyn Progress,
+    sink: &mut dyn FnMut(&[f32]) -> Result<()>,
+) -> Result<()> {
     init()?;
     let mut input = ffmpeg::format::input(path)
         .with_kind(ErrorKind::Other)
@@ -106,7 +197,7 @@ pub fn decode_pcm(path: &Path, track: usize, progress: &dyn Progress) -> Result<
     // The container duration is in AV_TIME_BASE units (microseconds).
     let total_secs = input.duration() as f64 / f64::from(ffmpeg::ffi::AV_TIME_BASE);
 
-    let mut pcm = Vec::new();
+    let target = Target { layout, rate };
     let mut resampler: Option<Resampler> = None;
     let mut decoded = frame::Audio::empty();
 
@@ -117,7 +208,7 @@ pub fn decode_pcm(path: &Path, track: usize, progress: &dyn Progress) -> Result<
         }
         decoder.send_packet(&packet).with_kind(ErrorKind::Other)?;
         while decoder.receive_frame(&mut decoded).is_ok() {
-            resample_frame(&mut resampler, &decoded, &mut pcm)?;
+            resample_frame(&mut resampler, target, &decoded, sink)?;
         }
         if total_secs > 0.0
             && let Some(pts) = packet.pts()
@@ -129,25 +220,26 @@ pub fn decode_pcm(path: &Path, track: usize, progress: &dyn Progress) -> Result<
 
     decoder.send_eof().with_kind(ErrorKind::Other)?;
     while decoder.receive_frame(&mut decoded).is_ok() {
-        resample_frame(&mut resampler, &decoded, &mut pcm)?;
+        resample_frame(&mut resampler, target, &decoded, sink)?;
     }
     if let Some(r) = resampler.as_mut() {
-        r.flush(&mut pcm)?;
+        r.flush(sink)?;
     }
     progress.update(100, 100);
+    Ok(())
+}
 
-    if pcm.is_empty() {
-        bail!(
-            "audio track {track} of {} decoded to no samples",
-            path.display()
-        );
-    }
-    Ok(pcm)
+/// The output format of the resampler.
+#[derive(Clone, Copy)]
+struct Target {
+    layout: ChannelLayout,
+    rate: u32,
 }
 
 /// A resampler plus the input format it was built for.
 struct Resampler {
     ctx: resampling::Context,
+    target: Target,
     format: Sample,
     layout_bits: u64,
     channels: u16,
@@ -155,20 +247,21 @@ struct Resampler {
 }
 
 impl Resampler {
-    fn new(frame: &frame::Audio) -> Result<Self> {
+    fn new(frame: &frame::Audio, target: Target) -> Result<Self> {
         let layout = input_layout(frame);
         let ctx = resampling::Context::get(
             frame.format(),
             layout,
             frame.rate(),
-            Sample::F32(SampleType::Packed),
-            ChannelLayout::MONO,
-            SAMPLE_RATE,
+            Sample::F32(SampleType::Planar),
+            target.layout,
+            target.rate,
         )
         .with_kind(ErrorKind::Other)
         .context("cannot create the audio resampler")?;
         Ok(Self {
             ctx,
+            target,
             format: frame.format(),
             layout_bits: layout.bits(),
             channels: frame.channels(),
@@ -183,27 +276,31 @@ impl Resampler {
             && self.rate == frame.rate()
     }
 
-    fn run(&mut self, frame: &frame::Audio, out: &mut Vec<f32>) -> Result<()> {
+    fn run(
+        &mut self,
+        frame: &frame::Audio,
+        sink: &mut dyn FnMut(&[f32]) -> Result<()>,
+    ) -> Result<()> {
         // Room for the resampled input plus samples that the resampler still holds.
-        let capacity = frame.samples() * SAMPLE_RATE as usize / self.rate.max(1) as usize + 256;
-        let mut converted = output_frame(capacity);
+        let capacity =
+            frame.samples() * self.target.rate as usize / self.rate.max(1) as usize + 256;
+        let mut converted = output_frame(capacity, self.target);
         self.ctx
             .run(frame, &mut converted)
             .with_kind(ErrorKind::Other)
             .context("resampling failed")?;
-        append_samples(&converted, out);
-        Ok(())
+        send_samples(&converted, sink)
     }
 
-    fn flush(&mut self, out: &mut Vec<f32>) -> Result<()> {
+    fn flush(&mut self, sink: &mut dyn FnMut(&[f32]) -> Result<()>) -> Result<()> {
         loop {
-            let mut converted = output_frame(4096);
+            let mut converted = output_frame(4096, self.target);
             let more = self
                 .ctx
                 .flush(&mut converted)
                 .with_kind(ErrorKind::Other)
                 .context("resampler flush failed")?;
-            append_samples(&converted, out);
+            send_samples(&converted, sink)?;
             if more.is_none() || converted.samples() == 0 {
                 return Ok(());
             }
@@ -212,13 +309,9 @@ impl Resampler {
 }
 
 /// An allocated output frame in the resampler's output format.
-fn output_frame(capacity: usize) -> frame::Audio {
-    let mut frame = frame::Audio::new(
-        Sample::F32(SampleType::Packed),
-        capacity,
-        ChannelLayout::MONO,
-    );
-    frame.set_rate(SAMPLE_RATE);
+fn output_frame(capacity: usize, target: Target) -> frame::Audio {
+    let mut frame = frame::Audio::new(Sample::F32(SampleType::Planar), capacity, target.layout);
+    frame.set_rate(target.rate);
     frame
 }
 
@@ -226,8 +319,9 @@ fn output_frame(capacity: usize) -> frame::Audio {
 /// a DTS or AC3 track that switches channel count), so the resampler is rebuilt then.
 fn resample_frame(
     resampler: &mut Option<Resampler>,
+    target: Target,
     frame: &frame::Audio,
-    out: &mut Vec<f32>,
+    sink: &mut dyn FnMut(&[f32]) -> Result<()>,
 ) -> Result<()> {
     if frame.samples() == 0 {
         return Ok(());
@@ -236,11 +330,11 @@ fn resample_frame(
     let frame = frame.as_ref();
     if resampler.as_ref().is_none_or(|r| !r.matches(frame)) {
         if let Some(old) = resampler.as_mut() {
-            old.flush(out)?;
+            old.flush(sink)?;
         }
-        *resampler = Some(Resampler::new(frame)?);
+        *resampler = Some(Resampler::new(frame, target)?);
     }
-    resampler.as_mut().map_or(Ok(()), |r| r.run(frame, out))
+    resampler.as_mut().map_or(Ok(()), |r| r.run(frame, sink))
 }
 
 /// Some decoders (for example raw PCM in AIFF or WAV) give frames with an "unspecified"
@@ -260,10 +354,22 @@ fn input_layout(frame: &frame::Audio) -> ChannelLayout {
     frame.channel_layout()
 }
 
-fn append_samples(frame: &frame::Audio, out: &mut Vec<f32>) {
-    if frame.samples() > 0 {
-        out.extend_from_slice(&frame.plane::<f32>(0)[..frame.samples()]);
+/// Gives the samples of a planar frame to `sink`, interleaved.
+fn send_samples(frame: &frame::Audio, sink: &mut dyn FnMut(&[f32]) -> Result<()>) -> Result<()> {
+    let n = frame.samples();
+    if n == 0 {
+        return Ok(());
     }
+    let channels = usize::from(frame.channels()).max(1);
+    if channels == 1 {
+        return sink(&frame.plane::<f32>(0)[..n]);
+    }
+    let planes: Vec<&[f32]> = (0..channels).map(|c| &frame.plane::<f32>(c)[..n]).collect();
+    let mut interleaved = Vec::with_capacity(n * channels);
+    for i in 0..n {
+        interleaved.extend(planes.iter().map(|p| p[i]));
+    }
+    sink(&interleaved)
 }
 
 #[cfg(test)]
