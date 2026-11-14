@@ -116,6 +116,16 @@ fn model_dir(model: &str, accept: bool) -> Result<PathBuf> {
     ensure_bundle(bundle)
 }
 
+/// The separation model: next to a local voice model, else the downloaded bundle.
+fn separation_model(voice_dir: &Path) -> Result<PathBuf> {
+    let local = voice_dir.join("htdemucs_vocals.onnx");
+    if local.is_file() {
+        return Ok(local);
+    }
+    let bundle = models::bundle("htdemucs-vocals").context("the separation model is unknown")?;
+    Ok(ensure_bundle(bundle)?.join("htdemucs_vocals.onnx"))
+}
+
 /// `verbacue dub`: dubs a video with an existing subtitle file.
 pub fn dub_file(
     video: &Path,
@@ -153,6 +163,11 @@ pub fn dub_file(
         .with_context(|| format!("cannot parse {}", subtitles.display()))?;
     let options = args.options();
     let dir = model_dir(&options.model, args.accept_model_licence)?;
+    let separation = if options.original == Original::Remove {
+        Some(separation_model(&dir)?)
+    } else {
+        None
+    };
     let sink = BarSink::new(video);
     let result = dub::dub(
         dub::DubJob {
@@ -161,6 +176,7 @@ pub fn dub_file(
             cues: &cues,
             lang: &lang,
             models_dir: &dir,
+            separation_model: separation.as_deref(),
             options,
             temp_dir: &models::cache_dir()?.join("dub-tmp"),
             output: &out,

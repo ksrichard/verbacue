@@ -182,13 +182,11 @@ impl Xtts {
         }
 
         let gpt = if int8 { "gpt_int8.onnx" } else { "gpt.onnx" };
-        // XTTS-v2 runs on the CPU on macOS. CoreML gives `inf` in the conditioning
-        // encoder, refuses the KV cache of the GPT, and is slower for the vocoder.
         let xtts = Xtts {
-            conditioning: session::open(&dir.join("conditioning.onnx"), false)?,
-            speaker: session::open(&dir.join("speaker.onnx"), false)?,
-            gpt: session::open(&dir.join(gpt), false)?,
-            vocoder: session::open(&dir.join("vocoder.onnx"), false)?,
+            conditioning: session::open(&dir.join("conditioning.onnx"))?,
+            speaker: session::open(&dir.join("speaker.onnx"))?,
+            gpt: session::open(&dir.join(gpt))?,
+            vocoder: session::open(&dir.join("vocoder.onnx"))?,
             text_emb,
             text_pos,
             mel_emb,

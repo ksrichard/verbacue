@@ -127,9 +127,10 @@ pilot's account, with the CPML licence attached.
 `ort` 2.0 links ONNX Runtime statically. The app uses CUDA in the CUDA builds. The CPU
 is the fallback.
 
-XTTS-v2 runs on the CPU on macOS. CoreML gives `inf` in the conditioning encoder, refuses
-the growing KV cache of the GPT, and is slower than the CPU for the vocoder. On an Apple
-Silicon CPU, one short line takes about 2 seconds.
+Both models run on the CPU on macOS. CoreML gives `inf` in the XTTS-v2 conditioning
+encoder, refuses the growing KV cache of the GPT, and cannot compile HTDemucs. On an
+Apple Silicon CPU, one short line takes about 2 seconds, and HTDemucs needs about
+0.55 s for each second of audio.
 
 ### Language
 
@@ -216,7 +217,7 @@ dubbing settings in step 6.
 - All release targets get the feature: macOS, Windows and Linux. The fully static
   Linux CPU binaries get it too, if `ort` links statically there. Otherwise those
   binaries leave the feature out with a cargo feature.
-- If CoreML or CUDA cannot run a part of the model, that part runs on the CPU.
+- If CUDA cannot run a part of the model, that part runs on the CPU.
 - The target speed on an Apple M-series Mac: a 90-minute film in less than 90 minutes.
 
 ## Left to the builder

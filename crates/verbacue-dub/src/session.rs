@@ -22,23 +22,16 @@ pub(crate) fn model_error<R>(e: ort::Error<R>) -> Error {
     Error::new(ErrorKind::Model, e.to_string())
 }
 
-/// Opens an ONNX graph. It uses CUDA in a `cuda` build, and CoreML on macOS when
-/// `coreml` is true. ONNX Runtime runs a node on the CPU when the GPU cannot run it.
+/// Opens an ONNX graph. It uses CUDA in a `cuda` build, else the CPU. ONNX Runtime
+/// runs a node on the CPU when CUDA cannot run it.
+///
+/// CoreML is not used: it gives `inf` in the XTTS-v2 conditioning encoder, refuses
+/// the growing KV cache of the GPT, and cannot compile HTDemucs.
 ///
 /// # Errors
 /// Returns an error if the file is not a valid ONNX graph.
-pub fn open(path: &Path, coreml: bool) -> Result<Session> {
+pub fn open(path: &Path) -> Result<Session> {
     let builder = Session::builder(environment()?).map_err(model_error)?;
-    #[cfg(target_os = "macos")]
-    let builder = if coreml {
-        builder
-            .with_execution_providers([ort::ep::CoreML::default().build()])
-            .map_err(model_error)?
-    } else {
-        builder
-    };
-    #[cfg(not(target_os = "macos"))]
-    let _ = coreml;
     #[cfg(feature = "cuda")]
     let builder = builder
         .with_execution_providers([ort::ep::CUDA::default().build()])
@@ -60,7 +53,7 @@ mod tests {
     fn open_rejects_a_file_that_is_not_onnx() {
         let path = std::env::temp_dir().join("verbacue-not-onnx.onnx");
         std::fs::write(&path, b"not onnx").unwrap();
-        let err = open(&path, false).unwrap_err();
+        let err = open(&path).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::Model);
     }
 }

@@ -26,9 +26,5 @@ tracing = { version = "0.1.44" }
 verbacue-core = { path = "../verbacue-core", version = "0.1.0" }
 verbacue-media = { path = "../verbacue-media", version = "0.1.0" }
 
-# On macOS: CoreML, which uses only system frameworks.
-[target.'cfg(target_os = "macos")'.dependencies]
-ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "ndarray", "download-binaries", "tls-rustls", "coreml"] }
-
 [lints]
 workspace = true

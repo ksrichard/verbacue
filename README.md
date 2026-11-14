@@ -496,9 +496,10 @@ verbacue voices                         # list the studio voices
   terminal, add `--accept-model-licence`.
 - It speaks en, es, fr, de, it, pt, pl, tr, ru, nl, cs, ar, zh, ja, hu, ko and hi.
   For another `--to`, verbacue stops before it transcribes.
-- `--dub-original lower` keeps the original audio and makes it quieter while a new
-  line plays. `remove` takes the original voices out; it comes in a later version,
-  and until then it works as `lower`.
+- `--dub-original remove` (default) takes the original voices out with the HTDemucs
+  vocals model (316 MB download) and keeps the music and effects. It needs about
+  0.55 s per second of audio on an Apple Silicon CPU. `lower` keeps the original
+  audio and makes it quieter while a new line plays; it is much faster.
 - `--dub-voice` is `clone` (the voice of each speaker; also a later version, until
   then the default studio voice) or a studio voice name.
 - A line that is longer than its cue plays faster, up to `--dub-speed-limit`

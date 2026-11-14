@@ -13,6 +13,7 @@ pub mod romanize;
 pub mod run;
 pub mod safetensors;
 pub mod sampling;
+pub mod separate;
 pub mod session;
 pub mod text;
 pub mod wav;

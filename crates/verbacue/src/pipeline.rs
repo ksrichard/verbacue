@@ -292,9 +292,11 @@ impl Pipeline {
             None
         };
         #[cfg(feature = "dub")]
-        let dub_dir = dub_model.map(|m| m.dir(sink)).transpose()?;
+        let dub_dirs = dub_model.map(|m| m.download(sink)).transpose()?;
+        #[cfg(feature = "dub")]
+        let dub_dirs = dub_dirs.as_ref();
         #[cfg(not(feature = "dub"))]
-        let dub_dir: Option<PathBuf> = None;
+        let dub_dirs: Option<&DubDirs> = None;
 
         sink.event(Event::Step(Step::Decode));
         let pcm = audio::decode_pcm(&job.video, job.audio_track, &report)?;
@@ -355,7 +357,7 @@ impl Pipeline {
             &source_lang,
             &source_cues,
             target_cues.as_deref(),
-            dub_dir.as_deref(),
+            dub_dirs,
             sink,
             &mut files,
         )?;
@@ -511,7 +513,7 @@ impl Pipeline {
         source_lang: &str,
         source_cues: &[Cue],
         target_cues: Option<&[Cue]>,
-        dub_dir: Option<&Path>,
+        dub_dirs: Option<&DubDirs>,
         sink: &dyn Sink,
         files: &mut Vec<PathBuf>,
     ) -> Result<()> {
@@ -543,7 +545,7 @@ impl Pipeline {
             files.push(out);
         }
         #[cfg(feature = "dub")]
-        if let (Some(options), Some(dir)) = (&job.dub, dub_dir) {
+        if let (Some(options), Some(dirs)) = (&job.dub, dub_dirs) {
             let cues = match target_cues {
                 Some(cues) => cues,
                 None if source_lang == job.target => source_cues,
@@ -557,7 +559,8 @@ impl Pipeline {
                     track: job.audio_track,
                     cues,
                     lang: &job.target,
-                    models_dir: dir,
+                    models_dir: &dirs.voice,
+                    separation_model: dirs.separation.as_deref(),
                     options: options.clone(),
                     temp_dir: &temp,
                     output: &out,
@@ -569,7 +572,7 @@ impl Pipeline {
             files.push(out);
         }
         #[cfg(not(feature = "dub"))]
-        let _ = dub_dir;
+        let _ = dub_dirs;
         Ok(())
     }
 
@@ -580,13 +583,19 @@ impl Pipeline {
         _source_lang: &str,
         _source_cues: &[Cue],
         _target_cues: Option<&[Cue]>,
-        _dub_dir: Option<&Path>,
+        _dub_dirs: Option<&DubDirs>,
         _sink: &dyn Sink,
         _files: &mut Vec<PathBuf>,
     ) -> Result<()> {
         Ok(())
     }
 }
+
+/// The model folders of a dub job.
+#[cfg(feature = "dub")]
+type DubDirs = dub::Dirs;
+#[cfg(not(feature = "dub"))]
+type DubDirs = ();
 
 /// The checks and the model of a dub job.
 #[cfg(feature = "dub")]
@@ -598,7 +607,7 @@ mod dub {
     use super::{Event, Job, Sink, Step, ensure};
     use crate::{audio, dub};
 
-    /// The voice model of a dub job.
+    /// A model of a dub job: a local folder or a known bundle.
     pub(super) enum Model {
         Dir(PathBuf),
         Bundle(&'static models::Bundle),
@@ -607,7 +616,7 @@ mod dub {
     impl Model {
         /// The folder with the model files. It downloads a missing bundle, one step
         /// for each file.
-        pub(super) fn dir(self, sink: &dyn Sink) -> Result<PathBuf> {
+        fn dir(self, sink: &dyn Sink) -> Result<PathBuf> {
             match self {
                 Model::Dir(dir) => Ok(dir),
                 Model::Bundle(bundle) => {
@@ -623,9 +632,36 @@ mod dub {
         }
     }
 
+    /// The models of a dub job.
+    pub(super) struct Models {
+        voice: Model,
+        /// For `Original::Remove` only.
+        separation: Option<Model>,
+    }
+
+    /// The model folders of a dub job, after the downloads.
+    pub(super) struct Dirs {
+        pub(super) voice: PathBuf,
+        pub(super) separation: Option<PathBuf>,
+    }
+
+    impl Models {
+        pub(super) fn download(self, sink: &dyn Sink) -> Result<Dirs> {
+            let voice = self.voice.dir(sink)?;
+            let separation = match self.separation {
+                Some(m) => Some(m.dir(sink)?.join(SEPARATION_FILE)),
+                None => None,
+            };
+            Ok(Dirs { voice, separation })
+        }
+    }
+
+    const SEPARATION_BUNDLE: &str = "htdemucs-vocals";
+    const SEPARATION_FILE: &str = "htdemucs_vocals.onnx";
+
     /// Checks a dub job before the slow steps: the language, the audio track and the
     /// licence. It downloads nothing.
-    pub(super) fn check(job: &Job, sink: &dyn Sink) -> Result<Option<Model>> {
+    pub(super) fn check(job: &Job, sink: &dyn Sink) -> Result<Option<Models>> {
         let Some(options) = &job.dub else {
             return Ok(None);
         };
@@ -653,8 +689,16 @@ mod dub {
             };
             return Err(Error::new(ErrorKind::InvalidInput, message));
         }
+        let separation = if options.original == dub::Original::Remove {
+            Some(separation_model(&options.model)?)
+        } else {
+            None
+        };
         if Path::new(&options.model).is_dir() {
-            return Ok(Some(Model::Dir(PathBuf::from(&options.model))));
+            return Ok(Some(Models {
+                voice: Model::Dir(PathBuf::from(&options.model)),
+                separation,
+            }));
         }
         let bundle = models::bundle(&options.model)
             .filter(|b| b.kind == models::Kind::Voice)
@@ -673,7 +717,21 @@ mod dub {
                 format!("the licence of {} was not accepted", bundle.name),
             ));
         }
-        Ok(Some(Model::Bundle(bundle)))
+        Ok(Some(Models {
+            voice: Model::Bundle(bundle),
+            separation,
+        }))
+    }
+
+    /// The separation model: next to a local voice model folder, else the bundle.
+    fn separation_model(voice_model: &str) -> Result<Model> {
+        let dir = Path::new(voice_model);
+        if dir.join(SEPARATION_FILE).is_file() {
+            return Ok(Model::Dir(dir.to_path_buf()));
+        }
+        models::bundle(SEPARATION_BUNDLE)
+            .map(Model::Bundle)
+            .context("the separation model is unknown")
     }
 
     /// Shows the dub events as pipeline events.

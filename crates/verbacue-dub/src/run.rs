@@ -13,6 +13,7 @@ use verbacue_media::{
 use crate::{
     fit,
     mix::{self, Mixer},
+    separate,
     xtts::{DEFAULT_STUDIO_VOICE, Latents, SAMPLE_RATE, Voice, Xtts},
 };
 
@@ -109,6 +110,8 @@ pub struct DubJob<'a> {
     pub lang: &'a str,
     /// The folder with the files of `options.model`.
     pub models_dir: &'a Path,
+    /// `htdemucs_vocals.onnx`. [`Original::Remove`] needs it.
+    pub separation_model: Option<&'a Path>,
     pub options: Options,
     /// The folder for the temporary audio files.
     pub temp_dir: &'a Path,
@@ -143,11 +146,29 @@ pub fn dub(job: DubJob<'_>, sink: &dyn Events) -> Result<()> {
         rate: MIX_RATE,
         channels: 2,
     };
-    if job.options.original == Original::Remove {
-        sink.note(
-            "removing the original speech is not available yet; the original audio is lowered",
-        );
-    }
+    // With `Remove`, the lines mix into the background stem, and the speech stem is the
+    // loudness reference. With `Lower`, the original audio is both.
+    let (background, reference) = match job.options.original {
+        Original::Lower => (original.clone(), original),
+        Original::Remove => {
+            let model = job.separation_model.ok_or_else(|| {
+                Error::new(
+                    ErrorKind::InvalidInput,
+                    "removing the original speech needs the htdemucs-vocals model",
+                )
+            })?;
+            let (speech, background) = separate::separate(
+                &original,
+                &mut separate::Htdemucs::open(model)?,
+                &temp.add(job.temp_dir.join(format!("{stem}.speech.f32"))),
+                &temp.add(job.temp_dir.join(format!("{stem}.background.f32"))),
+                sink,
+            )?;
+            // The decoded original is not needed any more.
+            let _ = std::fs::remove_file(&original.path);
+            (background, speech)
+        }
+    };
 
     // A folder without `gpt.onnx` holds only the INT8 model.
     let int8 = job.options.model.ends_with("int8") || !job.models_dir.join("gpt.onnx").is_file();
@@ -170,7 +191,7 @@ pub fn dub(job: DubJob<'_>, sink: &dyn Events) -> Result<()> {
 
     sink.step(DubStep::Speak);
     let slots = fit::slots(job.cues);
-    let mut mixer = Mixer::new(original.clone());
+    let mut mixer = Mixer::new(background);
     for (n, slot) in slots.iter().enumerate() {
         check_cancel(&progress)?;
         sink.progress(n as u64, slots.len() as u64);
@@ -203,10 +224,12 @@ pub fn dub(job: DubJob<'_>, sink: &dyn Events) -> Result<()> {
             &voice
         };
         let audio = xtts.vocode(&latents.latents.stretch(1.0 / f.factor), speech_voice)?;
-        let reference = mix::read_mono(&original, slot.start_ms, slot.end_ms)?;
-        let gain = mix::match_gain(&reference, &audio);
+        let original_speech = mix::read_mono(&reference, slot.start_ms, slot.end_ms)?;
+        let gain = mix::match_gain(&original_speech, &audio);
         let audio_ms = audio.len() as u64 * 1000 / u64::from(SAMPLE_RATE);
-        mixer.duck(slot.start_ms, slot.end_ms.max(slot.start_ms + audio_ms));
+        if job.options.original == Original::Lower {
+            mixer.duck(slot.start_ms, slot.end_ms.max(slot.start_ms + audio_ms));
+        }
         mixer.add(
             slot.start_ms,
             &audio,
@@ -370,6 +393,7 @@ mod tests {
             cues,
             lang: "hu",
             models_dir: models,
+            separation_model: None,
             options: Options {
                 voice: VoiceChoice::Studio(DEFAULT_STUDIO_VOICE.into()),
                 original: Original::Lower,
