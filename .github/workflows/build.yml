@@ -118,7 +118,8 @@ jobs:
         with:
           cuda: ${{ env.CUDA_VERSION }}
           method: network
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
+          # CUDA 13 ships the crt headers and libNVVM as their own packages.
+          sub-packages: '["nvcc", "crt", "nvvm", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
       - name: Install the Vulkan SDK
         if: matrix.gpu == 'vulkan'
         run: |
