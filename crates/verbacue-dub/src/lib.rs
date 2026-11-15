@@ -20,6 +20,7 @@ pub mod separate;
 pub mod session;
 pub mod speakers;
 pub mod text;
+pub mod tone;
 pub mod wav;
 pub mod xtts;
 

@@ -28,6 +28,7 @@ const BIT_RATE: usize = 192_000;
 /// The frames read from the raw file at once.
 const CHUNK_FRAMES: usize = 4096;
 
+#[expect(clippy::too_many_arguments, reason = "the parts of one output file")]
 pub(super) fn write_dubbed(
     input: &Path,
     output: &Path,
@@ -35,6 +36,7 @@ pub(super) fn write_dubbed(
     language: &str,
     title: &str,
     tracks: &[SubtitleTrack],
+    show_subtitles: bool,
     progress: &dyn Progress,
 ) -> Result<()> {
     let mut ictx = open_input(input)?;
@@ -68,7 +70,7 @@ pub(super) fn write_dubbed(
         }
     }
 
-    write_header(&mut octx)?;
+    write_header(&mut octx, show_subtitles)?;
     let out_tb: Vec<Rational> = (0..octx.nb_streams() as usize)
         .map(|i| {
             octx.stream(i)

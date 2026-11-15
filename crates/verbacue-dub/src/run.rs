@@ -13,7 +13,7 @@ use verbacue_media::{
 use crate::{
     fit,
     mix::{self, Mixer},
-    separate, speakers,
+    separate, speakers, tone,
     xtts::{DEFAULT_STUDIO_VOICE, Latents, SAMPLE_RATE, Voice, Xtts},
 };
 
@@ -131,6 +131,9 @@ pub struct DubJob<'a> {
     pub temp_dir: &'a Path,
     pub output: &'a Path,
     pub subtitle_tracks: &'a [SubtitleTrack<'a>],
+    /// Players show the first subtitle track on their own. Off unless the user wants
+    /// subtitles in the picture (burned in).
+    pub show_subtitles: bool,
 }
 
 /// Dubs one video. The temporary files are deleted at the end, also on an error or a
@@ -258,7 +261,22 @@ pub fn dub(job: DubJob<'_>, sink: &dyn Events) -> Result<()> {
             continue;
         };
         let natural_ms = frames_ms(&latents.latents);
-        let f = fit::fit(natural_ms, slot, job.options.speed_limit);
+        let original_speech = mix::read_mono(&reference, slot.start_ms, slot.end_ms)?;
+        // The separated speech shows where the actor speaks in the cue: the line starts
+        // there and aims to end with the actor. The original audio of `Lower` also has
+        // music, so it is no guide for this or for the tone.
+        let clean = job.options.original == Original::Remove;
+        let span = clean
+            .then(|| fit::speech_span(&original_speech, reference.rate))
+            .flatten();
+        let start_ms = slot.start_ms + span.map_or(0, |(from, _)| from);
+        let line_slot = fit::Slot { start_ms, ..*slot };
+        let f = fit::fit(
+            natural_ms,
+            &line_slot,
+            job.options.speed_limit,
+            span.map(|(from, to)| to - from),
+        );
         if f.warn {
             sink.note(&format!(
                 "line {line}: the speech is {:.2} times faster than normal",
@@ -271,14 +289,21 @@ pub fn dub(job: DubJob<'_>, sink: &dyn Events) -> Result<()> {
             &voice
         };
         let audio = xtts.vocode(&latents.latents.stretch(1.0 / f.factor), speech_voice)?;
-        let original_speech = mix::read_mono(&reference, slot.start_ms, slot.end_ms)?;
+        let audio = if clean {
+            let original_24k =
+                crate::resample::resample(&original_speech, reference.rate, SAMPLE_RATE);
+            tone::match_tone(&original_24k, &audio)
+        } else {
+            audio
+        };
+        let audio = tone::room(&audio);
         let gain = mix::match_gain(&original_speech, &audio);
         let audio_ms = audio.len() as u64 * 1000 / u64::from(SAMPLE_RATE);
         if job.options.original == Original::Lower {
             mixer.duck(slot.start_ms, slot.end_ms.max(slot.start_ms + audio_ms));
         }
         mixer.add(
-            slot.start_ms,
+            start_ms,
             &audio,
             gain,
             if f.warn { slot.next_start_ms } else { None },
@@ -298,6 +323,7 @@ pub fn dub(job: DubJob<'_>, sink: &dyn Events) -> Result<()> {
         job.lang,
         &title,
         job.subtitle_tracks,
+        job.show_subtitles,
         &progress,
     )
 }
@@ -572,6 +598,7 @@ mod tests {
             temp_dir: temp,
             output,
             subtitle_tracks: &[],
+            show_subtitles: false,
         }
     }
 

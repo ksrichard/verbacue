@@ -62,6 +62,7 @@ pub fn embed(
 ///
 /// # Errors
 /// Returns an error if a file cannot be read or written. Then `output` is deleted.
+#[expect(clippy::too_many_arguments, reason = "the parts of one output file")]
 pub fn dub(
     input: &Path,
     output: &Path,
@@ -69,12 +70,22 @@ pub fn dub(
     language: &str,
     title: &str,
     tracks: &[SubtitleTrack],
+    show_subtitles: bool,
     progress: &dyn Progress,
 ) -> Result<()> {
     crate::audio::init()?;
     remove_on_error(
         output,
-        dub::write_dubbed(input, output, audio, language, title, tracks, progress),
+        dub::write_dubbed(
+            input,
+            output,
+            audio,
+            language,
+            title,
+            tracks,
+            show_subtitles,
+            progress,
+        ),
     )
 }
 
@@ -148,10 +159,23 @@ pub(super) fn open_input(path: &Path) -> Result<format::context::Input> {
 /// Writes the header. `strict=experimental` lets MKV accept codec tags from other
 /// containers (for example `avc1` from MP4); MKV does not use those tags anyway.
 /// `default_mode=infer` marks the first subtitle track as the default one.
-pub(super) fn write_header(octx: &mut format::context::Output) -> Result<()> {
+/// Writes the header. MKV marks the first track of each type as the default one; with
+/// `subtitles_default` false, no subtitle track is a default, so players do not show
+/// one on their own.
+pub(super) fn write_header(
+    octx: &mut format::context::Output,
+    subtitles_default: bool,
+) -> Result<()> {
     let mut options = Dictionary::new();
     options.set("strict", "experimental");
-    options.set("default_mode", "infer");
+    options.set(
+        "default_mode",
+        if subtitles_default {
+            "infer"
+        } else {
+            "infer_no_subs"
+        },
+    );
     octx.write_header_with(options)
         .with_kind(ErrorKind::Other)
         .context("cannot write the output header")?;
@@ -307,6 +331,7 @@ mod tests {
             "hu",
             "Hungarian (AI voice)",
             &tracks,
+            false,
             &(),
         )
         .unwrap();
@@ -332,10 +357,12 @@ mod tests {
             "{text}"
         );
         assert!(audio[1].contains("disposition:default=0"), "{text}");
-        assert!(
-            text.lines().any(|l| l.contains("codec_type=subtitle")),
-            "{text}"
-        );
+        // Without burned-in subtitles, the player shows none on its own.
+        let subtitle = text
+            .lines()
+            .find(|l| l.contains("codec_type=subtitle"))
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(subtitle.contains("disposition:default=0"), "{text}");
     }
 
     #[test]

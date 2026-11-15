@@ -1,8 +1,10 @@
 //! Fits each spoken line into the time of its subtitle cue.
 //!
-//! A line plays from the start of its cue. When the speech is longer than the cue,
-//! the line speeds up to fit the cue. If that is too fast, it also uses the silence
-//! before the next cue. A line never plays over the next line.
+//! A line plays from the start of its cue, or from where the actor starts to speak in
+//! the cue. When the speech is longer than the cue, the line speeds up to fit the cue.
+//! If that is too fast, it also uses the silence before the next cue. When the speech
+//! is shorter than the actor's speech, the line slows down a little, so that it ends
+//! with the actor. A line never plays over the next line.
 
 use verbacue_core::subtitle::Cue;
 
@@ -12,6 +14,11 @@ const MIN_SLOT_MS: u64 = 200;
 const GAP_MS: u64 = 100;
 /// The highest speed. Above it, the mixer cuts the line at the next line.
 pub const MAX_FACTOR: f32 = 1.5;
+/// The lowest speed: a line slows down by at most 15 % to end with the actor.
+pub const MIN_FACTOR: f32 = 0.85;
+/// The frames of the actor's speech, and their level against the loudest frame.
+const FRAME_MS: u64 = 20;
+const SPEECH_DB: f32 = -30.0;
 
 /// The time of one cue for its speech.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,8 +74,9 @@ pub struct Fit {
 }
 
 /// The speed for speech of `natural_ms` in `slot`. `limit` is the highest speed
-/// without a warning (`--dub-speed-limit`).
-pub fn fit(natural_ms: u64, slot: &Slot, limit: f32) -> Fit {
+/// without a warning (`--dub-speed-limit`). `actor_ms` is how long the actor speaks,
+/// if known: a shorter line slows down towards it.
+pub fn fit(natural_ms: u64, slot: &Slot, limit: f32, actor_ms: Option<u64>) -> Fit {
     let limit = limit.clamp(1.0, MAX_FACTOR);
     let slot_ms = slot.end_ms - slot.start_ms;
     // The time up to shortly before the next line, but never less than the slot.
@@ -79,8 +87,15 @@ pub fn fit(natural_ms: u64, slot: &Slot, limit: f32) -> Fit {
     let need = |room: u64| natural_ms as f32 / room.max(1) as f32;
 
     if natural_ms <= slot_ms {
+        let target = actor_ms.unwrap_or(0).min(slot_ms);
+        #[expect(clippy::cast_precision_loss, reason = "durations in ms")]
+        let factor = if natural_ms > 0 && natural_ms < target {
+            (natural_ms as f32 / target as f32).max(MIN_FACTOR)
+        } else {
+            1.0
+        };
         return Fit {
-            factor: 1.0,
+            factor,
             warn: false,
         };
     }
@@ -103,6 +118,25 @@ pub fn fit(natural_ms: u64, slot: &Slot, limit: f32) -> Fit {
     }
 }
 
+/// Where the actor speaks in `audio` (clean speech of one cue, mono at `rate`), as
+/// (start, end) in ms from the start of `audio`: the first and the last 20 ms frame
+/// within 30 dB of the loudest one. `None` for silence.
+pub fn speech_span(audio: &[f32], rate: u32) -> Option<(u64, u64)> {
+    let frame = (rate as usize * FRAME_MS as usize / 1000).max(1);
+    let levels: Vec<f32> = audio
+        .chunks(frame)
+        .map(|c| c.iter().map(|v| v * v).sum::<f32>() / c.len() as f32)
+        .collect();
+    let peak = levels.iter().copied().fold(0.0f32, f32::max);
+    if peak <= 1e-8 {
+        return None;
+    }
+    let floor = peak * 10.0f32.powf(SPEECH_DB / 10.0);
+    let first = levels.iter().position(|&l| l >= floor)?;
+    let last = levels.iter().rposition(|&l| l >= floor)?;
+    Some((first as u64 * FRAME_MS, (last as u64 + 1) * FRAME_MS))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,9 +151,29 @@ mod tests {
     }
 
     #[test]
+    fn a_short_line_slows_down_towards_the_actor() {
+        let f = fit(1800, &slot(3000, None), 1.3, Some(2000));
+        assert!((f.factor - 0.9).abs() < 1e-3, "{f:?}");
+        // At most 15 % slower.
+        assert!((fit(1000, &slot(3000, None), 1.3, Some(2000)).factor - MIN_FACTOR).abs() < 1e-3);
+        // Longer than the actor, but inside the cue: natural speed.
+        assert!((fit(2500, &slot(3000, None), 1.3, Some(2000)).factor - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_speech_span_skips_the_silence() {
+        // 1 kHz: 300 ms silence, 500 ms speech, 200 ms of very quiet noise.
+        let mut audio = vec![0.0f32; 300];
+        audio.extend(std::iter::repeat_n(0.5, 500));
+        audio.extend(std::iter::repeat_n(0.001, 200));
+        assert_eq!(speech_span(&audio, 1000), Some((300, 800)));
+        assert_eq!(speech_span(&[0.0; 100], 1000), None);
+    }
+
+    #[test]
     fn fits_without_change() {
         assert_eq!(
-            fit(1000, &slot(1500, None), 1.3),
+            fit(1000, &slot(1500, None), 1.3, None),
             Fit {
                 factor: 1.0,
                 warn: false
@@ -129,14 +183,14 @@ mod tests {
 
     #[test]
     fn speeds_up_to_limit() {
-        let f = fit(1300, &slot(1000, Some(1000)), 1.3);
+        let f = fit(1300, &slot(1000, Some(1000)), 1.3, None);
         assert!((f.factor - 1.3).abs() < 1e-6 && !f.warn, "{f:?}");
     }
 
     #[test]
     fn uses_the_gap() {
         assert_eq!(
-            fit(2000, &slot(1000, Some(3000)), 1.3),
+            fit(2000, &slot(1000, Some(3000)), 1.3, None),
             Fit {
                 factor: 1.0,
                 warn: false
@@ -144,35 +198,35 @@ mod tests {
         );
         // 2600 ms in the 2900 ms up to the next line, at natural speed.
         assert_eq!(
-            fit(2600, &slot(1000, Some(3000)), 1.3),
+            fit(2600, &slot(1000, Some(3000)), 1.3, None),
             Fit {
                 factor: 1.0,
                 warn: false
             }
         );
         // 3480 ms needs 1.2 to fit the gap.
-        let f = fit(3480, &slot(1000, Some(3000)), 1.3);
+        let f = fit(3480, &slot(1000, Some(3000)), 1.3, None);
         assert!((f.factor - 1.2).abs() < 1e-6 && !f.warn, "{f:?}");
     }
 
     #[test]
     fn warns_above_limit() {
         assert_eq!(
-            fit(2000, &slot(1000, Some(1100)), 1.3),
+            fit(2000, &slot(1000, Some(1100)), 1.3, None),
             Fit {
                 factor: 1.5,
                 warn: true
             }
         );
         // 1.4 is above the limit 1.3 and below 1.5.
-        let f = fit(1400, &slot(1000, Some(1100)), 1.3);
+        let f = fit(1400, &slot(1000, Some(1100)), 1.3, None);
         assert!((f.factor - 1.4).abs() < 1e-6 && f.warn, "{f:?}");
     }
 
     #[test]
     fn the_last_line_has_all_the_time_it_needs() {
         assert_eq!(
-            fit(9000, &slot(1000, None), 1.3),
+            fit(9000, &slot(1000, None), 1.3, None),
             Fit {
                 factor: 1.0,
                 warn: false

@@ -501,7 +501,13 @@ Whisper is unloaded before the translation model loads, so the peak is about 9 G
 
 `--dub` writes `movie.<to>.dub.mkv`. It has all original streams, a new audio track
 that speaks the translation, and the subtitles as soft tracks. The new track is the
-default audio track, with the title "<Language> (AI voice)".
+default audio track, with the title "<Language> (AI voice)". The subtitles show on
+their own only with `--burn`; else they are off until you turn them on in the player.
+
+Each new line starts where the actor starts to speak. A short line plays up to 15 %
+slower, so that it ends with the actor. With `--dub-original remove`, each line also
+gets the sound colour of the actor's line and a short room echo, so that it sounds
+like part of the scene.
 
 ```sh
 verbacue movie.mkv --to hu --dub --dub-original lower --dub-voice "Ana Florence"

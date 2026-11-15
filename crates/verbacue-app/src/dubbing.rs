@@ -204,6 +204,7 @@ pub fn dub_file(
                 language: &lang,
                 cues: &cues,
             }],
+            show_subtitles: false,
         },
         &sink,
     );

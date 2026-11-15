@@ -653,6 +653,7 @@ impl Pipeline {
                     temp_dir: &temp,
                     output: &out,
                     subtitle_tracks: &tracks,
+                    show_subtitles: job.burn,
                 },
                 &dub::Events(sink),
             )?;
