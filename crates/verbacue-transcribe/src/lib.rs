@@ -681,7 +681,7 @@ mod tests {
             vad_model: None,
             language: None,
         };
-        let Err(err) = transcribe(&[0.0; 16_000], &opts, &Stopped) else {
+        let Err(err) = transcribe(&vec![0.0; 16_000], &opts, &Stopped) else {
             panic!("transcribe did not stop");
         };
         assert_eq!(err.kind(), ErrorKind::Cancelled);

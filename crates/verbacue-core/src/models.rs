@@ -551,10 +551,12 @@ mod download {
             }
             hasher.update(&buf[..n]);
         }
+        const HEX: &[u8; 16] = b"0123456789abcdef";
         Ok(hasher
             .finalize()
             .iter()
-            .map(|b| format!("{b:02x}"))
+            .flat_map(|b| [HEX[usize::from(b >> 4)], HEX[usize::from(b & 15)]])
+            .map(char::from)
             .collect())
     }
 }

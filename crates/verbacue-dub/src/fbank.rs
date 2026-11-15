@@ -91,7 +91,7 @@ mod tests {
     fn short_audio_has_no_frames() {
         assert_eq!(fbank(&[0.0; 399]).0, 0);
         assert_eq!(fbank(&[0.0; 400]).0, 1);
-        assert_eq!(fbank(&[0.0; 16_000]).0, 98);
+        assert_eq!(fbank(&vec![0.0; 16_000]).0, 98);
     }
 
     #[test]

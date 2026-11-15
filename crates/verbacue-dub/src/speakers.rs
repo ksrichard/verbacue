@@ -128,9 +128,8 @@ fn windows_of(len: u64) -> Vec<(u64, u64)> {
     if len <= WINDOW_MS {
         return vec![(0, len)];
     }
-    let mut out: Vec<(u64, u64)> = (0..)
-        .map(|k| k * HOP_MS)
-        .take_while(|&s| s + WINDOW_MS <= len)
+    let mut out: Vec<(u64, u64)> = (0..=len - WINDOW_MS)
+        .step_by(HOP_MS as usize)
         .map(|s| (s, s + WINDOW_MS))
         .collect();
     if out.last().is_some_and(|&(_, e)| len - e > HOP_MS / 2) {

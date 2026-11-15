@@ -809,7 +809,11 @@ mod tests {
     impl ScriptedModel {
         fn new(answers: &[&str]) -> Self {
             Self {
-                answers: answers.iter().rev().map(|a| a.to_string()).collect(),
+                answers: answers
+                    .iter()
+                    .rev()
+                    .map(std::string::ToString::to_string)
+                    .collect(),
                 prompts: vec![],
             }
         }
@@ -1146,7 +1150,7 @@ mod tests {
             "Good night, Paris.",
         ]
         .iter()
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
         assert_eq!(proper_names(&text), ["Ayşe", "Kerem"]);
     }

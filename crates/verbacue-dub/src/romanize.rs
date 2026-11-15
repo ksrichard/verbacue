@@ -155,7 +155,11 @@ fn japanese(text: &str) -> String {
     let words: Vec<Word> = tokens
         .into_iter()
         .map(|mut t| {
-            let d: Vec<String> = t.details().iter().map(|s| s.to_string()).collect();
+            let d: Vec<String> = t
+                .details()
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect();
             let field = |i: usize| d.get(i).filter(|s| *s != "*").cloned().unwrap_or_default();
             Word {
                 surface: t.surface.to_string(),

@@ -305,8 +305,7 @@ impl SubtitleStyle {
     fn size(self) -> f32 {
         match self {
             Self::Classic | Self::Yellow | Self::Box => 0.055,
-            Self::Large => 0.075,
-            Self::Bold | Self::Highlight => 0.075,
+            Self::Large | Self::Bold | Self::Highlight => 0.075,
             Self::Neon => 0.07,
         }
     }
@@ -554,12 +553,12 @@ impl Overlay {
             let stride = frame.stride(plane);
             let chroma = frame.data_mut(plane);
             for row in (0..self.height).step_by(2) {
-                let y = (self.y + row) / 2;
+                let y = usize::midpoint(self.y, row);
                 if y >= fh.div_ceil(2) {
                     break;
                 }
                 for col in (0..self.width).step_by(2) {
-                    let x = (self.x + col) / 2;
+                    let x = usize::midpoint(self.x, col);
                     if x >= fw.div_ceil(2) {
                         break;
                     }

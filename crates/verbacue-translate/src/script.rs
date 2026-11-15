@@ -4,6 +4,7 @@
 //! example Czech words in Hindi, or a Hindi word inside Arabic. Such a word has the
 //! wrong script for the target, or is a Latin word that the source line does not have.
 
+use std::fmt::Write as _;
 use unicode_script::{Script, UnicodeScript};
 
 /// The scripts that text in the language `code` normally uses. `None` means that the
@@ -112,7 +113,7 @@ pub fn grammar_class(target: &str) -> Option<String> {
     let mut class = String::from("[");
     let own = scripts.iter().flat_map(|s| ranges(*s).iter());
     for (start, end) in SHARED_RANGES.iter().chain(own) {
-        class.push_str(&format!("\\u{start:04X}-\\u{end:04X}"));
+        let _ = write!(class, "\\u{start:04X}-\\u{end:04X}");
     }
     class.push(']');
     Some(class)

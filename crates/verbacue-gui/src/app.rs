@@ -1,5 +1,6 @@
 //! The app state, its messages, and the screen it shows.
 
+use std::fmt::Write as _;
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -315,7 +316,7 @@ impl App {
                 );
                 let (position, total) = self.run_position();
                 if total > 1 {
-                    title.push_str(&format!(" ({position}/{total})"));
+                    let _ = write!(title, " ({position}/{total})");
                 }
                 title
             }
@@ -1119,7 +1120,7 @@ impl App {
         let language = if s.target == KEEP {
             "original language".to_string()
         } else {
-            verbacue::translate::language_name(&s.target).to_string()
+            verbacue::translate::language_name(&s.target).clone()
         };
         let mode = s.outputs.label();
         format!("{name} · {language} · {mode}")
@@ -1774,7 +1775,11 @@ mod tests {
             let _ = a.update(Message::MediaChecked(Ok((path.clone(), info()))));
         }
         // New videos start with the default of the settings.
-        assert!(a.queue.iter().all(|i| i.selection.look.style == BurnStyle::Neon));
+        assert!(
+            a.queue
+                .iter()
+                .all(|i| i.selection.look.style == BurnStyle::Neon)
+        );
         let _ = a.update(Message::BurnStyle(BurnStyle::Highlight));
         let _ = a.update(Message::BurnAnimation(BurnAnimation::Words));
         assert_eq!(a.queue[1].selection.look.style, BurnStyle::Neon);

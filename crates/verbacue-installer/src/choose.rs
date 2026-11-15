@@ -36,8 +36,7 @@ impl Build {
     fn tag(self) -> &'static str {
         match self {
             Self::Mac => "universal",
-            Self::Cpu => "cpu",
-            Self::CpuCommandLine => "cpu",
+            Self::Cpu | Self::CpuCommandLine => "cpu",
             Self::Cuda => "cuda",
             Self::Vulkan => "vulkan",
         }

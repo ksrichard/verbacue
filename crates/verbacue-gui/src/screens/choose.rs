@@ -210,7 +210,7 @@ fn track(t: &AudioTrack) -> Track {
 fn language_label(tag: &str) -> String {
     let name = verbacue::translate::language_name(tag);
     if name != tag {
-        return name.to_string();
+        return name.clone();
     }
     // Three-letter tags: match the English name's start, for example "tur" → Turkish.
     verbacue::translate::languages()
