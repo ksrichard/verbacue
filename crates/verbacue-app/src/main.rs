@@ -940,6 +940,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_command_line_is_valid() {
+        // clap checks for clashing flags only when it builds the parser.
+        Cli::command().debug_assert();
+    }
+
+    #[test]
     fn splits_language_suffix() {
         assert_eq!(
             split_lang_suffix(Path::new("/x/movie.en.srt")),

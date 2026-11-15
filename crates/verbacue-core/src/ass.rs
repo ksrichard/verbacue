@@ -190,10 +190,12 @@ fn bounce() -> String {
     )
 }
 
-/// Text for a dialogue line. Braces start tags in ASS, so they become brackets.
+/// Text for a dialogue line. Braces start tags and a backslash starts an escape such
+/// as `\N` in ASS, so they become brackets and a fullwidth backslash.
 fn escape(text: &str) -> String {
     text.replace('{', "(")
         .replace('}', ")")
+        .replace('\\', "\u{ff3c}")
         .replace('\n', "\\N")
 }
 
@@ -262,7 +264,7 @@ mod tests {
     fn writes_and_reads_back_the_cues() {
         let cues = vec![
             Cue::new(1000, 2500, "Hello there\nfriend"),
-            Cue::new(3000, 4000, "{odd} text"),
+            Cue::new(3000, 4000, "{odd} text \\x"),
         ];
         let text = write(&cues, "en", SubtitleLook::default());
         assert!(is_ass(&text));
@@ -270,7 +272,7 @@ mod tests {
             text.contains("Dialogue: 0,0:00:01.00,0:00:02.50,Default,,0,0,0,,Hello there\\Nfriend")
         );
         // Braces would start tags, so the dialogue line has brackets.
-        assert!(text.contains(",,(odd) text"));
+        assert!(text.contains(",,(odd) text \u{ff3c}x"));
         assert_eq!(parse(&text).unwrap(), cues);
     }
 

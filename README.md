@@ -259,6 +259,8 @@ verbacue movie.mkv --translator none --burn --burn-style box --burn-animation ka
 
 # A styled subtitle file that VLC and mpv play with the same style and animation
 verbacue movie.mkv --to hu --format ass --burn-style highlight --burn-animation words
+# To correct the text of an ASS file by hand, edit its `Comment:` lines, then run
+# again: verbacue rewrites the styled lines from them.
 
 # WebVTT output, and a chosen output file
 verbacue movie.mkv --to hu --format vtt -o subtitles.vtt
