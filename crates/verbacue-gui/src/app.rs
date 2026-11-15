@@ -15,7 +15,7 @@ use iced::{
 };
 use verbacue::{
     ErrorKind, models,
-    pipeline::{self, Job, Outcome, Translation},
+    pipeline::{self, Job, Outcome, Redo, Translation},
     video::{MediaInfo, PreviewFrame},
 };
 
@@ -109,7 +109,8 @@ pub enum Message {
     Notes(String),
     PlayVideo,
     Start,
-    ConfirmReplace(bool),
+    /// The answer of the replace dialog. `Redo::Nothing` keeps the old files.
+    ConfirmReplace(Redo),
     Pipeline(Update),
     /// An edit in the film notes editor.
     ReviewEdit(iced::widget::text_editor::Action),
@@ -157,8 +158,8 @@ pub struct App {
     running: Option<(u64, Job)>,
     /// The ids of the items that the current run started, for the end screen.
     run: Vec<u64>,
-    /// Overwrite existing outputs in the current run.
-    force: bool,
+    /// What the current run makes again when outputs exist.
+    redo: Redo,
     next_id: u64,
     /// The options of recent entries, for the files being checked.
     recent_options: HashMap<PathBuf, (String, Outputs)>,
@@ -261,7 +262,7 @@ impl App {
             current: 0,
             running: None,
             run: Vec::new(),
-            force: false,
+            redo: Redo::Nothing,
             next_id: 0,
             recent_options: HashMap::new(),
             chosen: HashMap::new(),
@@ -541,7 +542,7 @@ impl App {
                     && let Some(replace) = self.autostart.take()
                 {
                     let start = if replace {
-                        self.begin(true)
+                        self.begin(Redo::Everything)
                     } else {
                         self.update(Message::Start)
                     };
@@ -658,14 +659,14 @@ impl App {
                     self.show(Screen::Choose);
                     return Task::none();
                 }
-                self.begin(false)
+                self.begin(Redo::Nothing)
             }
-            Message::ConfirmReplace(replace) => {
+            Message::ConfirmReplace(redo) => {
                 self.choose.confirm_replace = false;
-                if replace {
-                    self.begin(true)
-                } else {
+                if redo == Redo::Nothing {
                     Task::none()
+                } else {
+                    self.begin(redo)
                 }
             }
             Message::Pipeline(Update::Finished(result)) => self.finished(result),
@@ -936,8 +937,8 @@ impl App {
     }
 
     /// Starts the queue: every waiting video, one after another.
-    fn begin(&mut self, force: bool) -> Task<Message> {
-        self.force = force;
+    fn begin(&mut self, redo: Redo) -> Task<Message> {
+        self.redo = redo;
         self.run.clear();
         self.run_next()
     }
@@ -952,7 +953,7 @@ impl App {
         let Some(mut job) = self.job_for(index) else {
             return Task::none();
         };
-        job.force = self.force;
+        job.redo = self.redo;
         let item = &mut self.queue[index];
         item.status = Status::Running;
         self.run.push(item.id);
@@ -1446,14 +1447,16 @@ mod tests {
     }
 
     #[test]
-    fn confirm_replace_starts_with_force() {
-        let mut a = chosen("force");
-        let out = verbacue::pipeline::final_output(&a.job().unwrap()).unwrap();
-        std::fs::write(&out, "").unwrap();
-        let _ = a.update(Message::Start);
-        let _ = a.update(Message::ConfirmReplace(true));
-        assert_eq!(a.screen, Screen::Convert);
-        assert!(a.running_job().unwrap().force);
+    fn confirm_replace_starts_with_the_chosen_redo() {
+        for redo in [Redo::Videos, Redo::Everything] {
+            let mut a = chosen("force");
+            let out = verbacue::pipeline::final_output(&a.job().unwrap()).unwrap();
+            std::fs::write(&out, "").unwrap();
+            let _ = a.update(Message::Start);
+            let _ = a.update(Message::ConfirmReplace(redo));
+            assert_eq!(a.screen, Screen::Convert);
+            assert_eq!(a.running_job().unwrap().redo, redo);
+        }
     }
 
     fn converting(dir: &str) -> App {
@@ -2022,7 +2025,7 @@ mod tests {
         assert_eq!(a.screen, Screen::Choose, "waits for the second check");
         let _ = a.update(Message::MediaChecked(Ok((a2, info()))));
         assert_eq!(a.screen, Screen::Convert);
-        assert!(a.running_job().unwrap().force);
+        assert_eq!(a.running_job().unwrap().redo, Redo::Everything);
         assert_eq!(a.queue.len(), 2);
     }
 }

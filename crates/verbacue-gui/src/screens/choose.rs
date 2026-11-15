@@ -12,7 +12,7 @@ use iced::{
         column, container, image, pick_list, row, stack, svg, text, text_input,
     },
 };
-use verbacue::audio::AudioTrack;
+use verbacue::{audio::AudioTrack, pipeline::Redo};
 
 use crate::{
     anim::{cycle, wave},
@@ -775,21 +775,32 @@ fn replace_dialog(selection: &crate::app::Selection) -> Element<'_, Message> {
     let _ = selection;
     container(
         column![
-            text("Replace it?").font(theme::HEADING).size(22).color(theme::TEXT),
-            text("This video already has subtitles from an earlier run. verbacue makes them again and overwrites the files.")
-                .size(14)
-                .color(theme::MUTED),
+            text("Replace it?")
+                .font(theme::HEADING)
+                .size(22)
+                .color(theme::TEXT),
+            text(
+                "This video already has outputs from an earlier run. If you corrected the \
+                 subtitle file by hand, remake only the videos from it."
+            )
+            .size(14)
+            .color(theme::MUTED),
             row![
-                button(text("Replace").font(theme::BODY_BOLD))
+                button(text("Use my subtitle file").font(theme::BODY_BOLD))
                     .padding([12, 22])
                     .style(theme::primary)
-                    .on_press(Message::ConfirmReplace(true)),
+                    .on_press(Message::ConfirmReplace(Redo::Videos)),
+                button(text("Start over"))
+                    .padding([12, 22])
+                    .style(theme::ghost)
+                    .on_press(Message::ConfirmReplace(Redo::Everything)),
                 button(text("Keep the old files"))
                     .padding([12, 22])
                     .style(theme::ghost)
-                    .on_press(Message::ConfirmReplace(false)),
+                    .on_press(Message::ConfirmReplace(Redo::Nothing)),
             ]
-            .spacing(12),
+            .spacing(12)
+            .wrap(),
         ]
         .spacing(12),
     )
