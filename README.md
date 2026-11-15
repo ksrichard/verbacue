@@ -317,8 +317,8 @@ Night's Watch = Éjjeli Őrség
 | `--list-tracks` | | List the audio tracks and stop (the same as `verbacue tracks`) |
 | `--format` | `srt` | `srt`, `vtt` or `ass` (keeps the style and the animation of `--burn-style` and `--burn-animation`, for players such as VLC and mpv) |
 | `-o`, `--output` | | Output file for the translation (one input only) |
-| `--embed` | | Also write `movie.<to>.mkv` with soft subtitle tracks |
-| `--burn` | | Also write `movie.<to>.mp4` with burned-in subtitles |
+| `--embed` | | Also write `movie.<to>.mkv` with soft subtitle tracks. Without a translation, the spoken language names the file: `movie.<lang>.mkv` |
+| `--burn` | | Also write `movie.<to>.mp4` with burned-in subtitles. Without a translation, the spoken language names the file: `movie.<lang>.mp4` |
 | `--burn-style` | `classic` | For burned-in subtitles and ASS files:  `classic` (white, outline), `yellow` (yellow, outline), `box` (white on a dark box), `large`, `bold` (large capitals, thick outline, shadow), `highlight` (bold, the spoken word on a green box) or `neon` (pink glow) |
 | `--burn-animation` | `none` | For burned-in subtitles and ASS files:  `none`, `fade` (in and out), `pop` (grows in), `typewriter` (letter by letter), `karaoke` (the words light up as they are spoken), `bounce` (grows past its size and settles) or `words` (up to three words at a time, in time with the speech, as in short videos) |
 | `--no-vad` | | Do not skip silence with voice activity detection |

@@ -246,18 +246,28 @@ pub fn output_path(job: &Job, lang: &str) -> PathBuf {
     )
 }
 
-fn video_output(job: &Job, extension: &str) -> PathBuf {
-    place(
-        job,
-        job.video
-            .with_extension(format!("{}.{extension}", job.target)),
-    )
+/// A video output: `movie.<lang>.<extension>`.
+fn video_output(job: &Job, lang: &str, extension: &str) -> PathBuf {
+    place(job, job.video.with_extension(format!("{lang}.{extension}")))
+}
+
+/// The language that names the burned-in and MKV videos: the target of a translation,
+/// else the spoken language. Without a translation, the spoken language is known
+/// before the run only when it is given or an earlier transcript exists.
+fn video_language(job: &Job) -> Option<String> {
+    if job.translation.is_some() {
+        Some(job.target.clone())
+    } else {
+        job.language
+            .clone()
+            .or_else(|| earlier_transcript(job).map(|(lang, _, _)| lang))
+    }
 }
 
 /// The dubbed video: `movie.<lang>.dub.mkv`.
 #[cfg(feature = "dub")]
 pub fn dub_output(job: &Job) -> PathBuf {
-    video_output(job, "dub.mkv")
+    video_output(job, &job.target, "dub.mkv")
 }
 
 /// The cues of a subtitle file from an earlier run, if it exists, reads well and the
@@ -318,9 +328,9 @@ pub fn final_output(job: &Job) -> Option<PathBuf> {
         return Some(dub_output(job));
     }
     if job.burn {
-        Some(video_output(job, "mp4"))
+        Some(video_output(job, &video_language(job)?, "mp4"))
     } else if job.embed {
-        Some(video_output(job, "mkv"))
+        Some(video_output(job, &video_language(job)?, "mkv"))
     } else if job.translation.is_some() && job.subtitles {
         Some(output_path(job, &job.target))
     } else {
@@ -659,6 +669,11 @@ fn video_outputs(
     files: &mut Vec<PathBuf>,
 ) -> Result<()> {
     use crate::video;
+    let video_lang = if job.translation.is_some() {
+        job.target.as_str()
+    } else {
+        source_lang
+    };
     // The translated track comes first, so it becomes the default one.
     let mut tracks = Vec::new();
     if let Some(cues) = target_cues {
@@ -673,14 +688,14 @@ fn video_outputs(
     });
     if job.embed {
         sink.event(Event::Step(Step::Embed));
-        let out = video_output(job, "mkv");
+        let out = video_output(job, video_lang, "mkv");
         video::embed(&job.video, &out, &tracks, &Report(sink))?;
         sink.event(Event::Wrote(&out));
         files.push(out);
     }
     if job.burn {
         sink.event(Event::Step(Step::Burn));
-        let out = video_output(job, "mp4");
+        let out = video_output(job, video_lang, "mp4");
         video::burn(
             &job.video,
             &out,
@@ -968,8 +983,19 @@ mod tests {
         let mut j = job("/x/movie.mkv", "hu");
         j.out_dir = Some(PathBuf::from("/out"));
         j.burn = true;
+        j.translation = Some(Translation::default());
         assert_eq!(output_path(&j, "tr"), PathBuf::from("/out/movie.tr.srt"));
         assert_eq!(final_output(&j), Some(PathBuf::from("/out/movie.hu.mp4")));
+    }
+
+    #[test]
+    fn videos_without_translation_take_the_spoken_language() {
+        let mut j = job("/x/movie.mkv", "en");
+        j.burn = true;
+        // The spoken language is not known before the run.
+        assert_eq!(final_output(&j), None);
+        j.language = Some("tr".into());
+        assert_eq!(final_output(&j), Some(PathBuf::from("/x/movie.tr.mp4")));
     }
 
     #[test]

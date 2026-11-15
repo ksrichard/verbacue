@@ -836,13 +836,24 @@ fn has_audio(path: &Path) -> bool {
     audio::list_tracks(path).is_ok_and(|t| !t.is_empty())
 }
 
+/// True for a file that an earlier run wrote: a subtitle file, a dubbed video, or a
+/// video named after the target or a spoken language (`movie.tr.mp4` without a
+/// translation).
 fn is_own_output(path: &Path, target: &str) -> bool {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or_default();
-    matches!(ext, "srt" | "vtt")
-        || (matches!(ext, "mkv" | "mp4") && split_lang_suffix(path).1.as_deref() == Some(target))
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy())
+        .unwrap_or_default();
+    matches!(ext, "srt" | "vtt" | "ass")
+        || (matches!(ext, "mkv" | "mp4")
+            && (stem.ends_with(".dub")
+                || split_lang_suffix(path).1.is_some_and(|lang| {
+                    lang == target || verbacue::translate::language_name(&lang) != lang
+                })))
 }
 
 fn check_output_flag(args: &TranslateArgs, inputs: usize) -> Result<()> {
@@ -952,6 +963,14 @@ fn print_models() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn own_outputs_are_not_inputs() {
+        let own = |p: &str| is_own_output(Path::new(p), "hu");
+        assert!(own("/x/movie.hu.mp4") && own("/x/movie.tr.mp4") && own("/x/movie.hu.ass"));
+        assert!(own("/x/movie.hu.dub.mkv"));
+        assert!(!own("/x/movie.mkv") && !own("/x/movie.s01.mkv"));
+    }
 
     #[test]
     fn the_command_line_is_valid() {
