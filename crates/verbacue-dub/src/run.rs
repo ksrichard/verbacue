@@ -11,7 +11,7 @@ use verbacue_media::{
 };
 
 use crate::{
-    fit, lipsync,
+    fit,
     mix::{self, Mixer},
     separate, speakers, tone,
     xtts::{DEFAULT_STUDIO_VOICE, Latents, SAMPLE_RATE, Voice, Xtts},
@@ -58,8 +58,6 @@ pub struct Options {
     pub original: Original,
     /// The highest speed-up without a warning, from 1.0 to 1.5.
     pub speed_limit: f32,
-    /// The speaking actor's mouth follows the new line. The video is encoded again.
-    pub lipsync: bool,
     /// `xtts-v2` or `xtts-v2-int8`.
     pub model: String,
 }
@@ -70,7 +68,6 @@ impl Default for Options {
             voice: VoiceChoice::Cast,
             original: Original::Remove,
             speed_limit: 1.3,
-            lipsync: true,
             model: default_model().to_string(),
         }
     }
@@ -93,8 +90,6 @@ pub enum DubStep {
     Speakers,
     Speak,
     Mix,
-    /// Finding the speaking faces, then the new mouths while the video is encoded.
-    LipSync,
 }
 
 /// Receives the progress of a dub run.
@@ -131,9 +126,6 @@ pub struct DubJob<'a> {
     pub separation_model: Option<&'a Path>,
     /// `campplus.onnx`, the speaker model. [`VoiceChoice::Clone`] needs it.
     pub speaker_model: Option<&'a Path>,
-    /// The folder with the lip sync graphs ([`lipsync::FILES`]). `Options::lipsync`
-    /// needs it.
-    pub lipsync_models: Option<&'a Path>,
     pub options: Options,
     /// The folder for the temporary audio files.
     pub temp_dir: &'a Path,
@@ -243,8 +235,6 @@ pub fn dub(job: DubJob<'_>, sink: &dyn Events) -> Result<()> {
 
     sink.step(DubStep::Speak);
     let mut mixer = Mixer::new(background);
-    // The new speech of each line, for the mouth movements of lip sync.
-    let mut lip_lines: Vec<lipsync::Line> = Vec::new();
     for (n, slot) in slots.iter().enumerate() {
         check_cancel(&progress)?;
         sink.progress(n as u64, slots.len() as u64);
@@ -299,12 +289,6 @@ pub fn dub(job: DubJob<'_>, sink: &dyn Events) -> Result<()> {
             &voice
         };
         let audio = xtts.vocode(&latents.latents.stretch(1.0 / f.factor), speech_voice)?;
-        if job.options.lipsync {
-            lip_lines.push(lipsync::Line {
-                start_ms,
-                audio_16k: crate::resample::resample(&audio, SAMPLE_RATE, 16_000),
-            });
-        }
         let audio = if clean {
             let original_24k =
                 crate::resample::resample(&original_speech, reference.rate, SAMPLE_RATE);
@@ -332,35 +316,6 @@ pub fn dub(job: DubJob<'_>, sink: &dyn Events) -> Result<()> {
     let mixed_path = temp.add(job.temp_dir.join(format!("{stem}.mix.f32")));
     let mixed = mixer.finish(&mixed_path)?;
     let title = format!("{} (AI voice)", language_name(job.lang));
-    if !job.options.lipsync || lip_lines.is_empty() {
-        return video::dub(
-            job.video,
-            job.output,
-            &mixed,
-            job.lang,
-            &title,
-            job.subtitle_tracks,
-            job.show_subtitles,
-            None,
-            &progress,
-        );
-    }
-
-    sink.step(DubStep::LipSync);
-    lip_lines.sort_by_key(|l| l.start_ms);
-    let dir = job
-        .lipsync_models
-        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "lip sync needs the lipsync models"))?;
-    let mut models = lipsync::Models::open(dir)?;
-    let plan = lipsync::plan(
-        &mut models,
-        &lip_lines,
-        &mut |wants, f| video::scan(job.video, lipsync::SCAN_WIDTH, wants, f, &CancelOnly(sink)),
-        sink,
-    )?;
-    tracing::info!("lip sync changes {} frames", plan.len());
-    let mut editor = lipsync::LipSync::new(&mut models, plan, &lip_lines, sink);
-    // The editor reports the frames it changes; the encoder only checks for a cancel.
     video::dub(
         job.video,
         job.output,
@@ -369,8 +324,7 @@ pub fn dub(job: DubJob<'_>, sink: &dyn Events) -> Result<()> {
         &title,
         job.subtitle_tracks,
         job.show_subtitles,
-        Some(&mut editor),
-        &CancelOnly(sink),
+        &progress,
     )
 }
 
@@ -553,17 +507,6 @@ fn frames_ms(latents: &Latents) -> u64 {
 /// Shows the events as a [`Progress`] for the media functions.
 struct EventProgress<'a>(&'a dyn Events);
 
-/// A progress that only passes on a cancel, for a step that reports its own progress.
-struct CancelOnly<'a>(&'a dyn Events);
-
-impl Progress for CancelOnly<'_> {
-    fn update(&self, _: u64, _: u64) {}
-
-    fn cancelled(&self) -> bool {
-        self.0.cancelled()
-    }
-}
-
 impl Progress for EventProgress<'_> {
     fn update(&self, done: u64, total: u64) {
         self.0.progress(done, total);
@@ -646,12 +589,10 @@ mod tests {
             models_dir: models,
             separation_model: None,
             speaker_model: None,
-            lipsync_models: None,
             options: Options {
                 voice: VoiceChoice::Studio(DEFAULT_STUDIO_VOICE.into()),
                 original: Original::Lower,
                 speed_limit: 1.3,
-                lipsync: false,
                 model: "xtts-v2-int8".into(),
             },
             temp_dir: temp,

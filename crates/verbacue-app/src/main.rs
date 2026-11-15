@@ -548,9 +548,6 @@ impl Sink for BarSink<'_> {
                         "{msg:>12} [{bar:30}] {pos}/{len} lines eta {eta}",
                     ),
                     Step::Mix => percent_bar("mixing"),
-                    Step::LipSync => {
-                        Bar::new("lips", "{msg:>12} [{bar:30}] {pos}/{len} frames eta {eta}")
-                    }
                     Step::Save => return,
                 };
                 if let Ok(mut current) = self.bar.lock() {
@@ -600,7 +597,6 @@ impl verbacue::dub::Events for BarSink<'_> {
             DubStep::Speakers => Step::Speakers,
             DubStep::Speak => Step::Speak,
             DubStep::Mix => Step::Mix,
-            DubStep::LipSync => Step::LipSync,
         }));
     }
 

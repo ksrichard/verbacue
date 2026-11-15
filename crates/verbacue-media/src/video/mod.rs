@@ -14,7 +14,6 @@ mod burn;
 mod dub;
 mod embed;
 mod fonts;
-mod frames;
 mod overlay;
 mod preview;
 
@@ -34,7 +33,6 @@ use verbacue_core::{
 
 use burn::{open_video_decoder, write_burned};
 use embed::write_embedded;
-pub use frames::{FrameEditor, Rgb, Yuv, scan};
 pub use preview::{MediaInfo, PreviewFrame, media_info, preview_frames};
 
 pub struct SubtitleTrack<'a> {
@@ -73,7 +71,6 @@ pub fn dub(
     title: &str,
     tracks: &[SubtitleTrack],
     show_subtitles: bool,
-    editor: Option<&mut dyn FrameEditor>,
     progress: &dyn Progress,
 ) -> Result<()> {
     crate::audio::init()?;
@@ -87,7 +84,6 @@ pub fn dub(
             title,
             tracks,
             show_subtitles,
-            editor,
             progress,
         ),
     )
@@ -336,7 +332,6 @@ mod tests {
             "Hungarian (AI voice)",
             &tracks,
             false,
-            None,
             &(),
         )
         .unwrap();

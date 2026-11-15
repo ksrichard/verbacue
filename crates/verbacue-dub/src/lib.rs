@@ -8,7 +8,6 @@ pub mod fbank;
 pub mod fit;
 #[cfg(old_glibc)]
 mod glibc;
-pub mod lipsync;
 pub mod mel;
 pub mod mix;
 pub mod numbers;

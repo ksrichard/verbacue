@@ -15,11 +15,9 @@ use verbacue_core::{
 };
 
 use super::{
-    FrameEditor, StreamMap, SubtitleTrack,
+    StreamMap, SubtitleTrack,
     aac::AacEncoder,
-    audio_start_ms,
-    burn::VideoTranscoder,
-    duration_secs,
+    audio_start_ms, duration_secs,
     embed::{MKV_SUBTITLE_CODECS, SubtitleQueue, add_subtitle_streams, iso639_2},
     open_input, report, rescale_ms, write_header,
 };
@@ -39,7 +37,6 @@ pub(super) fn write_dubbed(
     title: &str,
     tracks: &[SubtitleTrack],
     show_subtitles: bool,
-    editor: Option<&mut dyn FrameEditor>,
     progress: &dyn Progress,
 ) -> Result<()> {
     let mut ictx = open_input(input)?;
@@ -51,29 +48,8 @@ pub(super) fn write_dubbed(
     // Video, then the new audio, then the input audio. With `default_mode=infer`, MKV
     // marks the first audio track as the default. The copied streams have no default
     // flag, so the new track is the only default one.
-    // With an editor, the main video is encoded again with the changed frames; the
-    // other video streams (cover pictures) are copied.
-    let global_header = octx.format().flags().contains(format::Flags::GLOBAL_HEADER);
-    let offset_ms = audio_start_ms(&ictx);
-    let main_video = ictx.streams().best(media::Type::Video).map(|s| s.index());
-    let mut transcoder = None;
-    let mut editor = editor;
     for ist in ictx.streams() {
-        if ist.parameters().medium() != media::Type::Video {
-            continue;
-        }
-        if Some(ist.index()) == main_video
-            && let Some(editor) = editor.take()
-        {
-            transcoder = Some(VideoTranscoder::new(
-                &ist,
-                &mut octx,
-                &[],
-                offset_ms,
-                global_header,
-                Some(editor),
-            )?);
-        } else {
+        if ist.parameters().medium() == media::Type::Video {
             map.copy_stream(&ist, &mut octx)?;
         }
     }
@@ -101,6 +77,7 @@ pub(super) fn write_dubbed(
                 .map_or(Rational::new(1, 1000), |s| s.time_base())
         })
         .collect();
+    let offset_ms = audio_start_ms(&ictx);
     let mut subs = SubtitleQueue::new(&octx, tracks, &sub_streams, offset_ms);
     // The dubbed audio starts where the transcript starts: at the first input audio.
     aac.next_pts = Some(offset_ms.max(0) * i64::from(audio.rate) / 1000);
@@ -109,18 +86,6 @@ pub(super) fn write_dubbed(
 
     for (ist, mut packet) in ictx.packets() {
         check_cancel(progress)?;
-        if let Some(t) = transcoder.as_mut()
-            && Some(ist.index()) == main_video
-        {
-            if let Some(ts) = packet.dts().or(packet.pts()) {
-                let ms = rescale_ms(ts, ist.time_base());
-                raw.feed_until(ms - offset_ms, &mut aac, &mut octx, &out_tb)?;
-                subs.write_until(ms, &mut octx)?;
-                report(progress, ms, total);
-            }
-            t.push(Some(&packet), &mut octx, &out_tb)?;
-            continue;
-        }
         let Some(oi) = map.output_index(ist.index()) else {
             continue;
         };
@@ -137,9 +102,6 @@ pub(super) fn write_dubbed(
         packet
             .write_interleaved(&mut octx)
             .with_kind(ErrorKind::Other)?;
-    }
-    if let Some(t) = transcoder.as_mut() {
-        t.push(None, &mut octx, &out_tb)?;
     }
     raw.feed_until(i64::MAX, &mut aac, &mut octx, &out_tb)?;
     aac.finish(&mut octx, &out_tb)?;

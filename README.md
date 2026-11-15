@@ -509,13 +509,6 @@ slower, so that it ends with the actor. With `--dub-original remove`, each line 
 gets the sound colour of the actor's line and a short room echo, so that it sounds
 like part of the scene.
 
-`--dub-lipsync true` (default) moves the speaking actor's mouth with the new line.
-verbacue finds the faces while each line plays, takes the face whose mouth moves most
-in the original as the speaker, and gives it a new mouth with MuseTalk 1.5. Faces
-smaller than 6 % of the picture height stay as they are. The video is encoded again,
-which takes about 0.3 s per changed frame on an Apple Silicon CPU: several hours for a
-film. `--dub-lipsync false` copies the video and is much faster.
-
 ```sh
 verbacue movie.mkv --to hu --dub --dub-original lower --dub-voice "Ana Florence"
 verbacue dub movie.mkv movie.hu.srt     # dub with an existing subtitle file
@@ -576,4 +569,4 @@ texts, also those of the Rust crates, and each release archive includes it. Run
 - DejaVu Sans Bold font (free license, see `crates/verbacue-media/assets/DejaVu-LICENSE.txt`)
 - Model weights have their own licenses: Whisper (MIT), Silero VAD (MIT), Gemma 3 and
   TranslateGemma (Gemma Terms of Use), Gemma 4 (Apache 2.0), CAM++ from 3D-Speaker
-  (Apache 2.0), MuseTalk 1.5, TAESD, Whisper-tiny and YuNet for lip sync (MIT)
+  (Apache 2.0)

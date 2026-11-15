@@ -49,8 +49,6 @@ pub struct Settings {
     pub dub_original: DubOriginal,
     /// The highest speed-up of a line, from 1.0 to 1.5.
     pub dub_speed_limit: f32,
-    /// The speaking actor's mouth follows the new line.
-    pub dub_lipsync: bool,
     /// The voice model for dubbing.
     pub dub_model: String,
     /// Newest first.
@@ -113,7 +111,6 @@ impl Default for Settings {
             dub_voice: "cast".to_string(),
             dub_original: DubOriginal::Remove,
             dub_speed_limit: 1.3,
-            dub_lipsync: true,
             dub_model: default_dub_model(),
             recent: Vec::new(),
         }
@@ -241,7 +238,6 @@ mod tests {
             dub_voice: "Ana Florence".into(),
             dub_original: DubOriginal::Lower,
             dub_speed_limit: 1.15,
-            dub_lipsync: false,
             dub_model: "/models/xtts".into(),
             recent: vec![Recent {
                 path: PathBuf::from("/v/Szép film.mkv"),
@@ -283,7 +279,6 @@ mod tests {
         assert_eq!(s.dub_voice, "cast");
         assert_eq!(s.dub_original, DubOriginal::Remove);
         assert!((s.dub_speed_limit - 1.3).abs() < f32::EPSILON);
-        assert!(s.dub_lipsync);
         assert_eq!(s.dub_model, default_dub_model());
         assert!(s.recent[0].subtitles && s.recent[0].burn && !s.recent[0].dub);
     }
