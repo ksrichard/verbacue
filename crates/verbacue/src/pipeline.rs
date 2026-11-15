@@ -365,7 +365,7 @@ impl Pipeline {
             }
             (lang, cues)
         } else {
-            let (lang, cues) = self.transcribe(job, sink)?;
+            let (lang, cues) = transcribe(job, sink)?;
             // Without a translation, `output` names the original transcript, since
             // nothing else is written.
             let source_out = match (&job.output, &job.translation) {
@@ -409,7 +409,7 @@ impl Pipeline {
             }
         };
 
-        self.video_outputs(
+        video_outputs(
             job,
             &source_lang,
             &source_cues,
@@ -423,39 +423,6 @@ impl Pipeline {
             files,
             skipped: false,
         })
-    }
-
-    /// Loads the speech models, decodes the audio and transcribes it. Returns the spoken
-    /// language and the cues.
-    fn transcribe(&mut self, job: &Job, sink: &dyn Sink) -> Result<(String, Vec<Cue>)> {
-        let report = Report(sink);
-        let whisper = resolve(&job.whisper_model, models::Kind::Whisper, sink)?;
-        let vad = if job.vad {
-            let spec = models::find(models::VAD).context("VAD model missing")?;
-            Some(ensure(spec, sink)?)
-        } else {
-            None
-        };
-        sink.event(Event::Step(Step::Decode));
-        let pcm = audio::decode_pcm(&job.video, job.audio_track, &report)?;
-        tracing::info!("decoded {}", audio_length(pcm.len()));
-        sink.event(Event::Step(Step::Transcribe));
-        let opts = transcribe::Options {
-            model: &whisper,
-            vad_model: vad.as_deref(),
-            language: job.language.as_deref(),
-        };
-        let transcript = transcribe::transcribe(&pcm, &opts, &report)?;
-        drop(pcm);
-        tracing::info!(
-            "transcribed {} cues, language {}",
-            transcript.cues.len(),
-            transcript.language
-        );
-        Ok((
-            transcript.language,
-            subtitle::layout_transcript(&transcript.cues),
-        ))
     }
 
     /// Translates `cues` and lays out the result. The translator loads on first use and
@@ -529,6 +496,39 @@ impl Pipeline {
 
 /// True when two settings use the same translator. The notes change per video and
 /// need no new translator.
+/// Loads the speech models, decodes the audio and transcribes it. Returns the spoken
+/// language and the cues.
+fn transcribe(job: &Job, sink: &dyn Sink) -> Result<(String, Vec<Cue>)> {
+    let report = Report(sink);
+    let whisper = resolve(&job.whisper_model, models::Kind::Whisper, sink)?;
+    let vad = if job.vad {
+        let spec = models::find(models::VAD).context("VAD model missing")?;
+        Some(ensure(spec, sink)?)
+    } else {
+        None
+    };
+    sink.event(Event::Step(Step::Decode));
+    let pcm = audio::decode_pcm(&job.video, job.audio_track, &report)?;
+    tracing::info!("decoded {}", audio_length(pcm.len()));
+    sink.event(Event::Step(Step::Transcribe));
+    let opts = transcribe::Options {
+        model: &whisper,
+        vad_model: vad.as_deref(),
+        language: job.language.as_deref(),
+    };
+    let transcript = transcribe::transcribe(&pcm, &opts, &report)?;
+    drop(pcm);
+    tracing::info!(
+        "transcribed {} cues, language {}",
+        transcript.cues.len(),
+        transcript.language
+    );
+    Ok((
+        transcript.language,
+        subtitle::layout_transcript(&transcript.cues),
+    ))
+}
+
 fn same_translator(a: &Translation, b: &Translation) -> bool {
     a.backend == b.backend
         && a.register == b.register
@@ -591,96 +591,88 @@ fn check_video_output(_job: &Job) -> Result<()> {
     ))
 }
 
-impl Pipeline {
-    #[cfg(feature = "video")]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the results of the earlier steps"
-    )]
-    fn video_outputs(
-        &mut self,
-        job: &Job,
-        source_lang: &str,
-        source_cues: &[Cue],
-        target_cues: Option<&[Cue]>,
-        dub_dirs: Option<&DubDirs>,
-        sink: &dyn Sink,
-        files: &mut Vec<PathBuf>,
-    ) -> Result<()> {
-        use crate::video;
-        // The translated track comes first, so it becomes the default one.
-        let mut tracks = Vec::new();
-        if let Some(cues) = target_cues {
-            tracks.push(video::SubtitleTrack {
-                language: &job.target,
-                cues,
-            });
-        }
+#[cfg(feature = "video")]
+fn video_outputs(
+    job: &Job,
+    source_lang: &str,
+    source_cues: &[Cue],
+    target_cues: Option<&[Cue]>,
+    dub_dirs: Option<&DubDirs>,
+    sink: &dyn Sink,
+    files: &mut Vec<PathBuf>,
+) -> Result<()> {
+    use crate::video;
+    // The translated track comes first, so it becomes the default one.
+    let mut tracks = Vec::new();
+    if let Some(cues) = target_cues {
         tracks.push(video::SubtitleTrack {
-            language: source_lang,
-            cues: source_cues,
+            language: &job.target,
+            cues,
         });
-        if job.embed {
-            sink.event(Event::Step(Step::Embed));
-            let out = video_output(job, "mkv");
-            video::embed(&job.video, &out, &tracks, &Report(sink))?;
-            sink.event(Event::Wrote(&out));
-            files.push(out);
-        }
-        if job.burn {
-            sink.event(Event::Step(Step::Burn));
-            let out = video_output(job, "mp4");
-            video::burn(&job.video, &out, tracks[0].cues, job.look, &Report(sink))?;
-            sink.event(Event::Wrote(&out));
-            files.push(out);
-        }
-        #[cfg(feature = "dub")]
-        if let (Some(options), Some(dirs)) = (&job.dub, dub_dirs) {
-            let cues = match target_cues {
-                Some(cues) => cues,
-                None if source_lang == job.target => source_cues,
-                None => bail!("dubbing needs a translation to {}", job.target),
-            };
-            let out = dub_output(job);
-            let temp = models::cache_dir()?.join("dub-tmp");
-            crate::dub::dub(
-                crate::dub::DubJob {
-                    video: &job.video,
-                    track: job.audio_track,
-                    cues,
-                    lang: &job.target,
-                    models_dir: &dirs.voice,
-                    separation_model: dirs.separation.as_deref(),
-                    speaker_model: dirs.speakers.as_deref(),
-                    options: options.clone(),
-                    temp_dir: &temp,
-                    output: &out,
-                    subtitle_tracks: &tracks,
-                    show_subtitles: job.burn,
-                },
-                &dub::Events(sink),
-            )?;
-            sink.event(Event::Wrote(&out));
-            files.push(out);
-        }
-        #[cfg(not(feature = "dub"))]
-        let _ = dub_dirs;
-        Ok(())
     }
+    tracks.push(video::SubtitleTrack {
+        language: source_lang,
+        cues: source_cues,
+    });
+    if job.embed {
+        sink.event(Event::Step(Step::Embed));
+        let out = video_output(job, "mkv");
+        video::embed(&job.video, &out, &tracks, &Report(sink))?;
+        sink.event(Event::Wrote(&out));
+        files.push(out);
+    }
+    if job.burn {
+        sink.event(Event::Step(Step::Burn));
+        let out = video_output(job, "mp4");
+        video::burn(&job.video, &out, tracks[0].cues, job.look, &Report(sink))?;
+        sink.event(Event::Wrote(&out));
+        files.push(out);
+    }
+    #[cfg(feature = "dub")]
+    if let (Some(options), Some(dirs)) = (&job.dub, dub_dirs) {
+        let cues = match target_cues {
+            Some(cues) => cues,
+            None if source_lang == job.target => source_cues,
+            None => bail!("dubbing needs a translation to {}", job.target),
+        };
+        let out = dub_output(job);
+        let temp = models::cache_dir()?.join("dub-tmp");
+        crate::dub::dub(
+            crate::dub::DubJob {
+                video: &job.video,
+                track: job.audio_track,
+                cues,
+                lang: &job.target,
+                models_dir: &dirs.voice,
+                separation_model: dirs.separation.as_deref(),
+                speaker_model: dirs.speakers.as_deref(),
+                options: options.clone(),
+                temp_dir: &temp,
+                output: &out,
+                subtitle_tracks: &tracks,
+                show_subtitles: job.burn,
+            },
+            &dub::Events(sink),
+        )?;
+        sink.event(Event::Wrote(&out));
+        files.push(out);
+    }
+    #[cfg(not(feature = "dub"))]
+    let _ = dub_dirs;
+    Ok(())
+}
 
-    #[cfg(not(feature = "video"))]
-    fn video_outputs(
-        &mut self,
-        _job: &Job,
-        _source_lang: &str,
-        _source_cues: &[Cue],
-        _target_cues: Option<&[Cue]>,
-        _dub_dirs: Option<&DubDirs>,
-        _sink: &dyn Sink,
-        _files: &mut Vec<PathBuf>,
-    ) -> Result<()> {
-        Ok(())
-    }
+#[cfg(not(feature = "video"))]
+fn video_outputs(
+    _job: &Job,
+    _source_lang: &str,
+    _source_cues: &[Cue],
+    _target_cues: Option<&[Cue]>,
+    _dub_dirs: Option<&DubDirs>,
+    _sink: &dyn Sink,
+    _files: &mut Vec<PathBuf>,
+) -> Result<()> {
+    Ok(())
 }
 
 /// The model folders of a dub job.

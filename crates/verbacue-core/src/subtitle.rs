@@ -4,6 +4,7 @@
 //! accented letters (for example in Hungarian) count as one.
 
 use crate::error::{Context as _, Result, bail};
+use std::fmt::Write as _;
 
 /// Longest cue that [`split_long`] keeps in one piece.
 pub const MAX_CUE_MS: u64 = 6_000;
@@ -101,12 +102,13 @@ pub fn parse_srt(text: &str) -> Result<Vec<Cue>> {
         // VTT-style cue settings can follow the end time; keep only the time.
         let end = end.split_whitespace().next().unwrap_or_default();
         let body: Vec<&str> = lines.collect();
-        cues.push(Cue::new(
-            parse_timestamp(start)?,
-            parse_timestamp(end)?,
-            body.join("\n"),
-        ));
+        let start = parse_timestamp(start)?;
+        // An edited file can end a cue before it starts. The later steps need
+        // `end_ms >= start_ms` and cues in time order.
+        let end = parse_timestamp(end)?.max(start);
+        cues.push(Cue::new(start, end, body.join("\n")));
     }
+    cues.sort_by_key(|c| c.start_ms);
     Ok(cues)
 }
 
@@ -119,7 +121,7 @@ pub fn write(cues: &[Cue], format: Format) -> String {
     for (i, cue) in cues.iter().enumerate() {
         let start = format_timestamp(cue.start_ms, format);
         let end = format_timestamp(cue.end_ms, format);
-        out.push_str(&format!("{}\n{start} --> {end}\n{}\n\n", i + 1, cue.text));
+        let _ = write!(out, "{}\n{start} --> {end}\n{}\n\n", i + 1, cue.text);
     }
     out
 }
@@ -344,6 +346,14 @@ fn layout(cues: &[Cue], max_ms: u64) -> Vec<Cue> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_fixes_reversed_and_unsorted_cues() {
+        let srt = "1\n00:00:05,000 --> 00:00:04,000\nB\n\n2\n00:00:01,000 --> 00:00:02,000\nA\n";
+        let cues = parse_srt(srt).unwrap();
+        assert_eq!(cues[0].text, "A");
+        assert_eq!((cues[1].start_ms, cues[1].end_ms), (5000, 5000));
+    }
 
     #[test]
     fn formats_timestamps() {

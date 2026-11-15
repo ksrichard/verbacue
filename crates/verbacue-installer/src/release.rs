@@ -1,6 +1,7 @@
 //! The latest verbacue release on GitHub: its files, the download, and the SHA256
 //! check against the SHA256SUMS file of the release.
 
+use std::fmt::Write as _;
 use std::{
     io::{Read as _, Write as _},
     path::{Path, PathBuf},
@@ -101,11 +102,10 @@ pub fn download(
         done += n as u64;
         progress(done, asset.size);
     }
-    let actual: String = hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    let actual: String = hasher.finalize().iter().fold(String::new(), |mut hex, b| {
+        let _ = write!(hex, "{b:02x}");
+        hex
+    });
     if actual != expected {
         let _ = std::fs::remove_file(&path);
         return Err(format!(

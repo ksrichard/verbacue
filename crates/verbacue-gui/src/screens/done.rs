@@ -116,7 +116,7 @@ fn language(app: &App, item: &Item) -> String {
     } else {
         item.selection.target.clone()
     };
-    verbacue::translate::language_name(&code).to_string()
+    verbacue::translate::language_name(&code).clone()
 }
 
 /// One video: its files and buttons, or its error.

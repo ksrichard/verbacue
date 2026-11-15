@@ -150,10 +150,12 @@ pub fn dub(job: DubJob<'_>, sink: &dyn Events) -> Result<()> {
             format!("cannot create {}: {e}", job.temp_dir.display()),
         )
     })?;
-    let stem = job
-        .output
-        .file_stem()
-        .map_or_else(|| "verbacue".into(), |s| s.to_string_lossy().into_owned());
+    // The process id keeps two runs (the app and the command line) apart when their
+    // videos have the same name.
+    let stem = job.output.file_stem().map_or_else(
+        || "verbacue".into(),
+        |s| format!("{}-{}", s.to_string_lossy(), std::process::id()),
+    );
 
     sink.step(DubStep::Separate);
     let original_path = temp.add(job.temp_dir.join(format!("{stem}.original.f32")));

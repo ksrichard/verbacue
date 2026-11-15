@@ -185,7 +185,7 @@ impl LocalModel {
                 .context("decoding failed")?;
         }
         let generated = pos as usize - tokens.len();
-        let answer_time = started.elapsed() - prompt_time;
+        let answer_time = started.elapsed().saturating_sub(prompt_time);
         tracing::debug!(
             "prompt: {} tokens in {:.1?}, answer: {generated} tokens in {:.1?}",
             tokens.len(),
@@ -208,8 +208,9 @@ fn sample(ctx: &LlamaContext<'_>, idx: i32, grammar: Option<&mut LlamaSampler>) 
         .iter()
         .enumerate()
         .max_by(|a, b| a.1.total_cmp(b.1))
-        .map(|(i, l)| (LlamaToken(i32::try_from(i).unwrap_or(0)), *l))
-        .unwrap_or((LlamaToken(0), 0.0));
+        .map_or((LlamaToken(0), 0.0), |(i, l)| {
+            (LlamaToken(i32::try_from(i).unwrap_or(0)), *l)
+        });
     let Some(grammar) = grammar else {
         return best;
     };

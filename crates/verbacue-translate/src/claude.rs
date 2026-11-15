@@ -285,19 +285,19 @@ mod tests {
                     "type": "stream_event",
                     "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": text}}
                 });
-                stream.push_str(&format!("{event}\n"));
+                stream.push_str(&event.to_string());
+                stream.push('\n');
             }
             let result = serde_json::json!({
                 "type": "result", "subtype": "success", "is_error": false, "result": answer
             });
-            stream.push_str(&format!("{result}\n"));
+            stream.push_str(&result.to_string());
+            stream.push('\n');
             fs::write(self.dir.join(format!("reply{n}")), stream).unwrap();
         }
 
         fn requests(&self) -> usize {
-            fs::read_to_string(self.dir.join("count"))
-                .map(|c| c.trim().parse().unwrap())
-                .unwrap_or(0)
+            fs::read_to_string(self.dir.join("count")).map_or(0, |c| c.trim().parse().unwrap())
         }
 
         fn read(&self, file: &str) -> String {

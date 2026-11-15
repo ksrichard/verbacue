@@ -28,12 +28,12 @@ pub enum Installed {
 pub fn install(file: &Path) -> Result<Installed, String> {
     let name = file
         .file_name()
-        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        .map_or_else(String::new, |n| n.to_string_lossy().to_lowercase());
     if name.ends_with(".dmg") {
         mac(file)
     } else if name.ends_with("-setup.exe") {
         windows(file)
-    } else if name.ends_with(".AppImage") {
+    } else if name.ends_with(".appimage") {
         app_image(file)
     } else if name.ends_with(".tar.gz") {
         command_line(file)

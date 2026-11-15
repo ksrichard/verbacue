@@ -116,7 +116,10 @@ fn has_vulkan(os: Os) -> bool {
 
 /// True for a Vulkan driver file of a real GPU, such as "radeon_icd.x86_64.json".
 pub fn is_gpu_driver(file: &str) -> bool {
-    file.ends_with(".json") && !file.starts_with("lvp_icd")
+    std::path::Path::new(file)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+        && !file.starts_with("lvp_icd")
 }
 
 #[cfg(test)]
