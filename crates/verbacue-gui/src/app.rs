@@ -984,6 +984,8 @@ impl App {
         verbacue::dub::Options {
             voice: if s.dub_voice == "clone" {
                 VoiceChoice::Clone
+            } else if s.dub_voice == "cast" {
+                VoiceChoice::Cast
             } else {
                 VoiceChoice::Studio(s.dub_voice.clone())
             },

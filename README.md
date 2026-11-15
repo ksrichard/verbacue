@@ -523,11 +523,16 @@ verbacue voices                         # list the studio voices
   0.55 s per second of audio on an Apple Silicon CPU. `lower` keeps the original
   audio and makes it quieter while a new line plays; it is much faster.
 - `--dub-voice clone` (default) finds the speakers and speaks each line in the voice
-  of its speaker. The CAM++ speaker model makes a voiceprint for each 1.5-second
-  window of each line, and verbacue groups the windows by voice. A group with less
-  than 8 seconds of speech joins the nearest speaker. Up to 30 seconds of the most
-  typical lines of each speaker become the voice sample. `--dub-voice <name>` uses one
-  studio voice for all lines.
+  of its speaker. The CAM++ speaker model makes a voiceprint for each 3-second window
+  of each line, and verbacue groups the windows by voice. The grouping adapts to the
+  length of the video, and small groups join the nearest speaker. Up to 30 seconds of
+  the most typical lines of each speaker become the voice sample.
+- `--dub-voice cast` finds the speakers in the same way, and gives each speaker their
+  own studio voice: the free one that sounds nearest to the speaker. The speaker keeps
+  this voice for the whole video.
+- With `--dub-original remove`, each new line also takes some of the delivery of the
+  original line, such as anger or a whisper. The sound of the voice stays the same.
+- `--dub-voice <name>` uses one studio voice for all lines.
 - A line that is longer than its cue plays faster, up to `--dub-speed-limit`
   (default 1.3). Then it may use the silence before the next line. Above that, it
   plays up to 1.5 times faster with a warning, and it never plays over the next line.

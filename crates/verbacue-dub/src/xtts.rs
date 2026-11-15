@@ -232,13 +232,7 @@ impl Xtts {
         let mut cond_latents = vec![0.0f32; COND_LEN * DIM];
         let pieces = cond_pieces(a22.len());
         for &(from, to) in &pieces {
-            let m = mel::cond_mel(&a22[from..to], &self.mel_stats);
-            let latents = run_one(
-                &mut self.conditioning,
-                "mel",
-                Tensor::from_array(([1, m.n_mels, m.frames], m.data)).map_err(model_error)?,
-                COND_LEN * DIM,
-            )?;
+            let latents = self.cond_latents_22k(&a22[from..to])?;
             cond_latents
                 .iter_mut()
                 .zip(latents)
@@ -252,6 +246,36 @@ impl Xtts {
             cond_latents,
             speaker_emb,
         })
+    }
+
+    /// The style of one line of speech at 24 kHz: the GPT conditioning of its first 6 s.
+    /// It carries the delivery of the line, such as anger or a whisper.
+    ///
+    /// # Errors
+    /// Returns an error if the line is shorter than 0.33 seconds or the model fails.
+    pub fn style(&mut self, audio_24k: &[f32]) -> Result<Vec<f32>> {
+        let a22 = resample::resample(
+            &audio_24k[..audio_24k.len().min(24_000 * 6)],
+            24_000,
+            22_050,
+        );
+        if a22.len() < 22_050 / 3 {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "the line is shorter than 0.33 s",
+            ));
+        }
+        self.cond_latents_22k(&a22)
+    }
+
+    fn cond_latents_22k(&mut self, a22: &[f32]) -> Result<Vec<f32>> {
+        let m = mel::cond_mel(a22, &self.mel_stats);
+        run_one(
+            &mut self.conditioning,
+            "mel",
+            Tensor::from_array(([1, m.n_mels, m.frames], m.data)).map_err(model_error)?,
+            COND_LEN * DIM,
+        )
     }
 
     /// The speaker embedding of speech at 24 kHz: 512 values, with length 1. Lines of

@@ -43,7 +43,8 @@ pub struct Settings {
     pub out_dir: Option<PathBuf>,
     /// The last target language.
     pub target: String,
-    /// "clone" for the voice of each speaker, or a studio voice.
+    /// "clone" for the voice of each speaker, "cast" for a studio voice for each speaker,
+    /// or one studio voice.
     pub dub_voice: String,
     pub dub_original: DubOriginal,
     /// The highest speed-up of a line, from 1.0 to 1.5.

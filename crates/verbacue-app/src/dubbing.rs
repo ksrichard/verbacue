@@ -27,8 +27,8 @@ pub enum DubOriginal {
 
 #[derive(Args, Clone, Debug)]
 pub struct DubArgs {
-    /// The voice: "clone" for the voice of each speaker, or a studio voice from
-    /// `verbacue voices`.
+    /// The voice: "clone" for the voice of each speaker, "cast" for a studio voice for
+    /// each speaker, or one studio voice from `verbacue voices` for all lines.
     #[arg(long, default_value = "clone")]
     pub dub_voice: String,
 
@@ -67,6 +67,8 @@ impl DubArgs {
         dub::Options {
             voice: if self.dub_voice == "clone" {
                 VoiceChoice::Clone
+            } else if self.dub_voice == "cast" {
+                VoiceChoice::Cast
             } else {
                 VoiceChoice::Studio(self.dub_voice.clone())
             },
@@ -173,7 +175,10 @@ pub fn dub_file(
     } else {
         None
     };
-    let speakers = if options.voice == dub::VoiceChoice::Clone {
+    let speakers = if matches!(
+        options.voice,
+        dub::VoiceChoice::Clone | dub::VoiceChoice::Cast
+    ) {
         Some(local_or_bundle(
             &dir,
             dub::speakers::MODEL_FILE,

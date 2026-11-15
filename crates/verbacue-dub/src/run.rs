@@ -21,6 +21,14 @@ use crate::{
 const MIX_RATE: u32 = 44_100;
 /// A speaker needs this much speech for a cloned voice.
 const MIN_SPEAKER_MS: u64 = 3000;
+/// A line of at least this length lends its delivery (anger, a whisper) to the new
+/// line.
+const MIN_STYLE_MS: u64 = 1000;
+/// The share of the original line's style in the new line. The rest is the
+/// speaker's normal style, so the voice stays the same from line to line.
+const STYLE_SHARE_CLONE: f32 = 0.5;
+/// A studio voice takes less of the original style, so it keeps its own character.
+const STYLE_SHARE_CAST: f32 = 0.3;
 /// The expected speech time for one character, for the length check.
 const MS_PER_CHAR: u64 = 70;
 
@@ -38,6 +46,8 @@ pub enum Original {
 pub enum VoiceChoice {
     /// The voice of each speaker in the video.
     Clone,
+    /// A studio voice for each speaker: the free one nearest to the speaker's voice.
+    Cast,
     /// One studio voice for all lines.
     Studio(String),
 }
@@ -192,24 +202,32 @@ pub fn dub(job: DubJob<'_>, sink: &dyn Events) -> Result<()> {
             })?;
             (vec![voice], vec![0; slots.len()])
         }
-        VoiceChoice::Clone => {
+        VoiceChoice::Clone | VoiceChoice::Cast => {
             sink.step(DubStep::Speakers);
             let model = job.speaker_model.ok_or_else(|| {
                 Error::new(
                     ErrorKind::InvalidInput,
-                    "cloning the voices needs the campplus speaker model",
+                    "finding the speakers needs the campplus speaker model",
                 )
             })?;
             let mut model = speakers::SpeakerModel::open(model)?;
-            clone_speakers(
+            voice_speakers(
                 &mut xtts,
                 &mut model,
                 &slots,
                 &reference,
                 &default_voice,
+                job.options.voice == VoiceChoice::Cast,
                 sink,
             )?
         }
+    };
+    // The original speech is clean only after separation, so only then does each line
+    // lend its style.
+    let style_share = match (&job.options.voice, job.options.original) {
+        (VoiceChoice::Clone, Original::Remove) => STYLE_SHARE_CLONE,
+        (VoiceChoice::Cast, Original::Remove) => STYLE_SHARE_CAST,
+        _ => 0.0,
     };
 
     sink.step(DubStep::Speak);
@@ -219,11 +237,18 @@ pub fn dub(job: DubJob<'_>, sink: &dyn Events) -> Result<()> {
         sink.progress(n as u64, slots.len() as u64);
         let cue = &job.cues[slot.cue];
         let line = slot.cue + 1;
+        let voice = line_voice(
+            &mut xtts,
+            &voices[voice_of[n]],
+            &reference,
+            slot,
+            style_share,
+        )?;
         let Some(latents) = speak_line(
             &mut xtts,
             cue,
             job.lang,
-            &voices[voice_of[n]],
+            &voice,
             &default_voice,
             n as u64,
             line,
@@ -243,7 +268,7 @@ pub fn dub(job: DubJob<'_>, sink: &dyn Events) -> Result<()> {
         let speech_voice = if latents.voice_is_default {
             &default_voice
         } else {
-            &voices[voice_of[n]]
+            &voice
         };
         let audio = xtts.vocode(&latents.latents.stretch(1.0 / f.factor), speech_voice)?;
         let original_speech = mix::read_mono(&reference, slot.start_ms, slot.end_ms)?;
@@ -277,46 +302,125 @@ pub fn dub(job: DubJob<'_>, sink: &dyn Events) -> Result<()> {
     )
 }
 
-/// Finds the speakers and clones a voice for each one. Returns the voices and the
-/// voice index of each slot. A speaker with less than 3 s of speech, and a slot with
-/// no speaker, get the default studio voice.
-fn clone_speakers(
+/// Finds the speakers and gives each one a voice: a clone of the speaker, or with
+/// `cast` the free studio voice nearest to the speaker. Returns the voices and the voice
+/// index of each slot. A slot with no speaker, and a cloned speaker with less than 3 s
+/// of speech, get the default studio voice.
+fn voice_speakers(
     xtts: &mut Xtts,
     model: &mut speakers::SpeakerModel,
     slots: &[fit::Slot],
     speech: &RawAudio,
     default_voice: &Voice,
+    cast: bool,
     sink: &dyn Events,
 ) -> Result<(Vec<Voice>, Vec<usize>)> {
     let found = speakers::find(model, slots, speech, sink)?;
     let (groups, count) = (&found.of_slot, found.count);
-    // Index 0 is the default voice; speaker g has index g + 1.
-    let mut voices = vec![default_voice.clone()];
-    for g in 0..count {
-        let lines: Vec<(u64, u64, f32)> = slots
+    let lines_of = |g: usize| -> Vec<(u64, u64, f32)> {
+        slots
             .iter()
             .zip(groups)
             .zip(&found.typical)
             .filter(|((_, group), _)| **group == Some(g))
             .map(|((s, _), &typical)| (s.start_ms, s.end_ms, typical))
-            .collect();
-        let speech_ms: u64 = lines.iter().map(|(a, b, _)| b - a).sum();
-        let voice = if speech_ms < MIN_SPEAKER_MS {
+            .collect()
+    };
+    let speech_ms = |g: usize| -> u64 { lines_of(g).iter().map(|(a, b, _)| b - a).sum() };
+    // Index 0 is the default voice; speaker g has index g + 1.
+    let mut voices = vec![default_voice.clone(); count + 1];
+    // The speakers with the most speech choose a studio voice first.
+    let mut order: Vec<usize> = (0..count).collect();
+    order.sort_by_key(|&g| std::cmp::Reverse(speech_ms(g)));
+    let mut free: Vec<String> = xtts
+        .studio_voices()
+        .iter()
+        .map(|v| (*v).to_string())
+        .collect();
+    for g in order {
+        let lines = lines_of(g);
+        let ms = speech_ms(g);
+        if cast {
+            let sample = speakers::sample(&lines, speech, speakers::SAMPLE_MS)?;
+            if sample.len() < SAMPLE_RATE as usize / 3 {
+                continue;
+            }
+            let own = xtts.speaker_embedding(&sample)?;
+            if free.is_empty() {
+                free = xtts
+                    .studio_voices()
+                    .iter()
+                    .map(|v| (*v).to_string())
+                    .collect();
+            }
+            let pick = nearest_studio_voice(xtts, &own, &free);
+            tracing::info!(
+                "speaker {} speaks with the studio voice {}",
+                g + 1,
+                free[pick]
+            );
+            let name = free.swap_remove(pick);
+            voices[g + 1] = xtts
+                .studio_voice(&name)
+                .unwrap_or_else(|| default_voice.clone());
+        } else if ms < MIN_SPEAKER_MS {
             sink.note(&format!(
                 "speaker {} has only {:.1} s of speech; the studio voice speaks their lines",
                 g + 1,
-                speech_ms as f32 / 1000.0
+                ms as f32 / 1000.0
             ));
-            default_voice.clone()
         } else {
             let sample = speakers::sample(&lines, speech, speakers::SAMPLE_MS)?;
-            xtts.clone_voice(&sample)?
-        };
-        voices.push(voice);
+            voices[g + 1] = xtts.clone_voice(&sample)?;
+        }
     }
     tracing::info!("found {count} speakers");
     let voice_of = groups.iter().map(|g| g.map_or(0, |g| g + 1)).collect();
     Ok((voices, voice_of))
+}
+
+/// The index in `names` of the studio voice whose speaker embedding is nearest to `own`.
+fn nearest_studio_voice(xtts: &Xtts, own: &[f32], names: &[String]) -> usize {
+    let similarity = |name: &String| {
+        xtts.studio_voice(name).map_or(f32::MIN, |v| {
+            v.speaker_emb
+                .iter()
+                .zip(own)
+                .map(|(a, b)| a * b)
+                .sum::<f32>()
+        })
+    };
+    (0..names.len())
+        .max_by(|&a, &b| similarity(&names[a]).total_cmp(&similarity(&names[b])))
+        .unwrap_or(0)
+}
+
+/// The voice for one line: the speaker's voice, with `share` of the style of the
+/// original line. The speaker embedding, which sets the sound of the voice, stays.
+fn line_voice(
+    xtts: &mut Xtts,
+    voice: &Voice,
+    speech: &RawAudio,
+    slot: &fit::Slot,
+    share: f32,
+) -> Result<Voice> {
+    if share <= 0.0 || slot.end_ms - slot.start_ms < MIN_STYLE_MS {
+        return Ok(voice.clone());
+    }
+    let original = mix::read_mono(speech, slot.start_ms, slot.end_ms)?;
+    let original = crate::resample::resample(&original, speech.rate, SAMPLE_RATE);
+    let Ok(style) = xtts.style(&original) else {
+        return Ok(voice.clone());
+    };
+    Ok(Voice {
+        cond_latents: voice
+            .cond_latents
+            .iter()
+            .zip(&style)
+            .map(|(v, s)| (1.0 - share) * v + share * s)
+            .collect(),
+        speaker_emb: voice.speaker_emb.clone(),
+    })
 }
 
 /// The latents of a line, and whether they use the default voice.

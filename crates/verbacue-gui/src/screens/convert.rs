@@ -203,7 +203,10 @@ fn output_steps(job: &Job) -> Vec<StepView> {
         if options.original == verbacue::dub::Original::Remove {
             steps.push(view(Step::Separate, "Separate voices"));
         }
-        if options.voice == verbacue::dub::VoiceChoice::Clone {
+        if matches!(
+            options.voice,
+            verbacue::dub::VoiceChoice::Clone | verbacue::dub::VoiceChoice::Cast
+        ) {
             steps.push(view(Step::Speakers, "Find speakers"));
         }
         steps.push(view(Step::Speak, "Speak"));

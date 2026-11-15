@@ -725,7 +725,7 @@ mod dub {
         voice: Model,
         /// For `Original::Remove` only.
         separation: Option<Model>,
-        /// For `VoiceChoice::Clone` only.
+        /// For `VoiceChoice::Clone` and `VoiceChoice::Cast` only.
         speakers: Option<Model>,
     }
 
@@ -794,7 +794,10 @@ mod dub {
         } else {
             None
         };
-        let speakers = if options.voice == dub::VoiceChoice::Clone {
+        let speakers = if matches!(
+            options.voice,
+            dub::VoiceChoice::Clone | dub::VoiceChoice::Cast
+        ) {
             Some(local_or_bundle(
                 &options.model,
                 dub::speakers::MODEL_FILE,

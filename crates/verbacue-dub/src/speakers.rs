@@ -1,10 +1,17 @@
 //! Finds the speakers of a film and a voice sample for each one.
 //!
-//! The CAM++ speaker model gives a voiceprint for each 1.5 s window of each line. One
+//! The CAM++ speaker model gives a voiceprint for each 3 s window of each line. One
 //! voiceprint per line is too noisy in a film: lines are short, emotional, and some
 //! have two speakers. Average-linkage clustering on the cosine distance groups the
-//! windows. Groups with little speech then join the nearest large group, and a few
-//! centroid passes settle the groups. Each line gets the speaker of most of its windows.
+//! windows. The limit of the clustering adapts to the film: it starts strict and gets
+//! looser until the large groups (the actors) hold most of the speech. A strict fixed
+//! limit splits the actors of a long film into many small groups; a loose one merges
+//! different actors in a short clip. Small groups then join the nearest actor, and a
+//! few centroid passes settle the groups. Each line gets the actor of most of its
+//! windows.
+//!
+//! The values come from a labelled test (8 studio voices over the background of a real
+//! episode: F1 0.97) and from the actor counts on a real 2 h 20 min episode.
 
 use std::path::Path;
 
@@ -17,14 +24,19 @@ use crate::{fbank, fit::Slot, mix, resample, run::Events, session, xtts::run_one
 /// The file of the CAM++ speaker model (3D-Speaker, VoxCeleb, Apache-2.0).
 pub const MODEL_FILE: &str = "campplus.onnx";
 const DIM: usize = 512;
-/// The cosine distance at which two groups are different speakers.
-pub const THRESHOLD: f32 = 0.7;
+/// The clustering limits that are tried, as cosine distances, in steps of 0.025.
+const LIMIT_FROM: f32 = 0.45;
+const LIMIT_STEPS: usize = 14;
+/// The actors must hold this share of the speech, in percent.
+const ACTOR_COVER: u64 = 70;
 /// Lines shorter than this give no voiceprint, and take the speaker of a neighbour.
 pub const MIN_LINE_MS: u64 = 400;
-const WINDOW_MS: u64 = 1500;
-const HOP_MS: u64 = 750;
-/// A group needs this much speech to be an actor. Smaller groups join the nearest actor.
+const WINDOW_MS: u64 = 3000;
+const HOP_MS: u64 = 1500;
+/// A group needs this much speech to be an actor, and also 2 % of all speech. Smaller
+/// groups join the nearest actor.
 pub const MIN_ACTOR_MS: u64 = 8000;
+const MIN_ACTOR_SHARE: u64 = 2;
 const PASSES: usize = 3;
 /// The longest voice sample.
 pub const SAMPLE_MS: u64 = 30_000;
@@ -106,7 +118,7 @@ pub fn find(
         }
     }
     let ms: Vec<u64> = windows.iter().map(|w| w.1).collect();
-    let labels = assign(&vectors, &ms, THRESHOLD);
+    let labels = assign(&vectors, &ms);
     Ok(by_slot(slots.len(), &windows, &vectors, &labels))
 }
 
@@ -129,18 +141,33 @@ fn windows_of(len: u64) -> Vec<(u64, u64)> {
 
 /// Groups the voiceprints. `ms` is the speech time of each one. Returns the actor of
 /// each voiceprint, numbered from 0.
-fn assign(vectors: &[Vec<f32>], ms: &[u64], threshold: f32) -> Vec<usize> {
+fn assign(vectors: &[Vec<f32>], ms: &[u64]) -> Vec<usize> {
     if vectors.is_empty() {
         return Vec::new();
     }
-    let clusters = cluster(vectors, threshold);
-    let mut speech = vec![0u64; vectors.len()];
-    for (&c, &m) in clusters.iter().zip(ms) {
-        speech[c] += m;
+    let total: u64 = ms.iter().sum();
+    let min_actor = MIN_ACTOR_MS.max(total * MIN_ACTOR_SHARE / 100);
+    let tree = merge_tree(vectors);
+    let mut clusters = Vec::new();
+    let mut speech = Vec::new();
+    let mut actors: Vec<usize> = Vec::new();
+    for step in 0..=LIMIT_STEPS {
+        #[expect(clippy::cast_precision_loss, reason = "a small step count")]
+        let limit = LIMIT_FROM + 0.025 * step as f32;
+        clusters = cut(vectors.len(), &tree, limit);
+        speech = vec![0u64; vectors.len()];
+        for (&c, &m) in clusters.iter().zip(ms) {
+            speech[c] += m;
+        }
+        actors = (0..vectors.len())
+            .filter(|&c| speech[c] >= min_actor)
+            .collect();
+        let covered: u64 = actors.iter().map(|&c| speech[c]).sum();
+        if covered * 100 >= total * ACTOR_COVER {
+            tracing::debug!("speaker limit {limit:.3}: {} actors", actors.len());
+            break;
+        }
     }
-    let mut actors: Vec<usize> = (0..vectors.len())
-        .filter(|&c| speech[c] >= MIN_ACTOR_MS)
-        .collect();
     if actors.is_empty() {
         actors = (0..vectors.len())
             .max_by_key(|&c| speech[c])
@@ -259,9 +286,10 @@ fn normalised(mut v: Vec<f32>) -> Vec<f32> {
     v
 }
 
-/// Average-linkage clustering with the nearest-neighbour chain. It merges only groups
-/// closer than `threshold`. Returns the group index of each vector.
-fn cluster(vectors: &[Vec<f32>], threshold: f32) -> Vec<usize> {
+/// Average-linkage clustering with the nearest-neighbour chain, to the end. Returns
+/// each merge as (kept group, merged group, distance); a group keeps the index of its
+/// first vector.
+fn merge_tree(vectors: &[Vec<f32>]) -> Vec<(usize, usize, f32)> {
     let n = vectors.len();
     let mut dist = vec![0.0f32; n * n];
     for i in 0..n {
@@ -273,14 +301,11 @@ fn cluster(vectors: &[Vec<f32>], threshold: f32) -> Vec<usize> {
     }
     let mut size = vec![1usize; n];
     let mut active = vec![true; n];
-    // A finished group is at least `threshold` from all others. Average linkage never
-    // brings two groups closer than their parts, so it stays finished.
-    let mut finished = vec![false; n];
-    let mut parent: Vec<usize> = (0..n).collect();
+    let mut merges = Vec::with_capacity(n.saturating_sub(1));
     let mut chain: Vec<usize> = Vec::new();
     loop {
         if chain.is_empty() {
-            match (0..n).find(|&i| active[i] && !finished[i]) {
+            match (0..n).find(|&i| active[i]) {
                 Some(i) => chain.push(i),
                 None => break,
             }
@@ -290,45 +315,51 @@ fn cluster(vectors: &[Vec<f32>], threshold: f32) -> Vec<usize> {
         // The nearest other group; the previous chain link wins a tie.
         let mut best: Option<(f32, usize)> = previous.map(|p| (dist[a * n + p], p));
         for k in 0..n {
-            if k != a && active[k] && !finished[k] && best.is_none_or(|(d, _)| dist[a * n + k] < d)
-            {
+            if k != a && active[k] && best.is_none_or(|(d, _)| dist[a * n + k] < d) {
                 best = Some((dist[a * n + k], k));
             }
         }
-        match best {
-            Some((d, b)) if d < threshold => {
-                if Some(b) == previous {
-                    chain.truncate(chain.len() - 2);
-                    // Merge b into a (Lance-Williams update for average linkage).
-                    let (sa, sb) = (size[a] as f32, size[b] as f32);
-                    for k in 0..n {
-                        if active[k] && k != a && k != b {
-                            let v = (sa * dist[a * n + k] + sb * dist[b * n + k]) / (sa + sb);
-                            dist[a * n + k] = v;
-                            dist[k * n + a] = v;
-                        }
-                    }
-                    size[a] += size[b];
-                    active[b] = false;
-                    parent[b] = a;
-                } else {
-                    chain.push(b);
+        // Without another group, the tree is complete.
+        let Some((d, b)) = best else { break };
+        if Some(b) == previous {
+            chain.truncate(chain.len() - 2);
+            // Merge b into a (Lance-Williams update for average linkage).
+            let (sa, sb) = (size[a] as f32, size[b] as f32);
+            for k in 0..n {
+                if active[k] && k != a && k != b {
+                    let v = (sa * dist[a * n + k] + sb * dist[b * n + k]) / (sa + sb);
+                    dist[a * n + k] = v;
+                    dist[k * n + a] = v;
                 }
             }
-            _ => {
-                finished[a] = true;
-                chain.pop();
-            }
+            size[a] += size[b];
+            active[b] = false;
+            merges.push((a, b, d));
+        } else {
+            chain.push(b);
         }
     }
-    (0..n)
-        .map(|mut i| {
-            while parent[i] != i {
-                i = parent[i];
-            }
-            i
-        })
-        .collect()
+    merges
+}
+
+/// The groups of `n` vectors when only the merges closer than `limit` happen. Average
+/// linkage never brings two groups closer than their parts, so this is the same as a
+/// clustering that stops at `limit`. Returns the group index of each vector.
+fn cut(n: usize, merges: &[(usize, usize, f32)], limit: f32) -> Vec<usize> {
+    let mut parent: Vec<usize> = (0..n).collect();
+    let root = |parent: &[usize], mut i: usize| {
+        while parent[i] != i {
+            i = parent[i];
+        }
+        i
+    };
+    for &(a, b, d) in merges {
+        if d < limit {
+            let (ra, rb) = (root(&parent, a), root(&parent, b));
+            parent[rb] = ra;
+        }
+    }
+    (0..n).map(|i| root(&parent, i)).collect()
 }
 
 /// A voice sample of one speaker from its `lines` (`(start_ms, end_ms, typical)`), as
@@ -380,10 +411,40 @@ mod tests {
     #[test]
     fn windows_cover_a_line() {
         assert_eq!(windows_of(900), [(0, 900)]);
-        assert_eq!(windows_of(1500), [(0, 1500)]);
-        assert_eq!(windows_of(3000), [(0, 1500), (750, 2250), (1500, 3000)]);
-        assert_eq!(windows_of(2700), [(0, 1500), (750, 2250), (1200, 2700)]);
-        assert_eq!(windows_of(2400), [(0, 1500), (750, 2250)]);
+        assert_eq!(windows_of(3000), [(0, 3000)]);
+        assert_eq!(windows_of(6000), [(0, 3000), (1500, 4500), (3000, 6000)]);
+        assert_eq!(windows_of(5400), [(0, 3000), (1500, 4500), (2400, 5400)]);
+        assert_eq!(windows_of(5000), [(0, 3000), (1500, 4500)]);
+    }
+
+    #[test]
+    fn a_cut_keeps_only_the_close_merges() {
+        let merges = [(0, 1, 0.1), (2, 3, 0.3), (0, 2, 0.6)];
+        assert_eq!(cut(4, &merges, 0.2), [0, 0, 2, 3]);
+        assert_eq!(cut(4, &merges, 0.5), [0, 0, 2, 2]);
+        assert_eq!(cut(4, &merges, 0.7), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn the_limit_loosens_until_actors_hold_most_speech() {
+        // Two actors whose windows are 0.5 apart inside each actor: a strict limit
+        // leaves only small groups, so the limit loosens and finds the two actors.
+        let spread = |axis: usize, k: usize| {
+            let mut v = vec![0.0; DIM];
+            v[axis] = 1.0;
+            v[10 + k] = 1.0;
+            normalised(v)
+        };
+        let v: Vec<Vec<f32>> = (0..4)
+            .map(|k| spread(0, k))
+            .chain((4..8).map(|k| spread(1, k)))
+            .collect();
+        let l = assign(&v, &[3000; 8]);
+        assert!(
+            l[..4].iter().all(|&x| x == l[0]) && l[4..].iter().all(|&x| x == l[4]),
+            "{l:?}"
+        );
+        assert_ne!(l[0], l[4]);
     }
 
     #[test]
@@ -394,7 +455,7 @@ mod tests {
             vector(0, 7, 0.2),
             vector(1, 8, 0.15),
         ];
-        let l = assign(&v, &[9000; 4], THRESHOLD);
+        let l = assign(&v, &[9000; 4]);
         assert!(l[0] == l[2] && l[1] == l[3] && l[0] != l[1], "{l:?}");
     }
 
@@ -409,7 +470,7 @@ mod tests {
             vector(2, 1, 0.9),
         ];
         let ms = [8000, 8000, 8000, 8000, 1500];
-        let l = assign(&v, &ms, THRESHOLD);
+        let l = assign(&v, &ms);
         assert!(l[0] == l[1] && l[2] == l[3] && l[0] != l[2], "{l:?}");
         assert_eq!(l[4], l[2]);
     }
@@ -417,7 +478,7 @@ mod tests {
     #[test]
     fn without_a_large_group_the_largest_is_the_actor() {
         let v = [vector(0, 5, 0.1), vector(1, 6, 0.1), vector(1, 7, 0.1)];
-        assert_eq!(assign(&v, &[1000; 3], THRESHOLD), [0, 0, 0]);
+        assert_eq!(assign(&v, &[1000; 3]), [0, 0, 0]);
     }
 
     #[test]

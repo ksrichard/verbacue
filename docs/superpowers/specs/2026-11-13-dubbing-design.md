@@ -66,16 +66,26 @@ and `ort`. `verbacue-media` does the audio decoding, encoding and the new track.
    splits the audio into a speech stem and a background stem. The ONNX graph covers
    only the network. Rust code does the STFT, the chunks and the overlap-add.
 3. **Find the speakers.** The CAM++ speaker model (3D-Speaker, Apache-2.0) makes a
-   512-value voiceprint for each 1.5 s window of each subtitle line. The app groups
-   the windows (cosine distance, average-linkage clustering, limit 0.7). A group with
-   less than 8 s of speech joins the nearest large group, and three centroid passes
-   settle the groups. Each line gets the speaker of most of its windows. The XTTS-v2
+   512-value voiceprint for each 3 s window of each subtitle line. The app groups the
+   windows (cosine distance, average-linkage clustering). The limit starts at 0.45 and
+   gets looser in steps of 0.025, up to 0.8, until the groups with at least 8 s and 2 %
+   of the speech (the actors) hold 70 % of the speech. Smaller groups join the nearest
+   actor, and three centroid passes settle the groups. On a labelled test (8 studio
+   voices over the background of a real episode) this gives F1 0.97 and 8 groups; a
+   fixed limit of 0.7 gave F1 0.74 and 5 groups. A real 2 h 20 min episode gives 10
+   actors. Each line gets the speaker of most of its windows. The XTTS-v2
    speaker encoder was tried first: on a soap opera episode it found 158 speakers in
    174 lines, because one voiceprint per short, emotional line is too noisy.
 4. **Collect a voice sample for each speaker.** The app takes the most typical lines
    of each speaker (nearest to the speaker mean, 1 s or longer) from the speech stem,
    up to 30 seconds. The XTTS-v2 conditioning encoder makes latents for each 6 s piece
-   of the sample, and the app averages them, as coqui does.
+   of the sample, and the app averages them, as coqui does. With `--dub-voice cast`,
+   each speaker instead gets the free studio voice whose XTTS speaker embedding is
+   nearest to the speaker's sample.
+   With `--dub-original remove`, a line of 1 s or more mixes the conditioning latents
+   of its original line into the speaker's latents (50 % for a clone, 30 % for a studio
+   voice). The latents carry the delivery of the line. The speaker embedding, which
+   sets the sound of the voice in the vocoder, does not change.
 5. **Speak each translated line.**
    - Normalise the text: numbers become words. The first version does this for
      Hungarian and English. Other languages keep the digits.
@@ -228,8 +238,8 @@ dubbing settings in step 6.
 ## Left to the builder
 
 - The exact ONNX input and output names.
-- The clustering limit (0.7) and the 8 s actor size. They come from one episode
-  without labels, so they need tuning on labelled films.
+- The grouping values and the style shares. They come from studio voices and one
+  episode without labels, so they need tuning on labelled films.
 - The chunk size and overlap for HTDemucs.
 - Number to word rules for Hungarian and English. They are our own code, with no new
   dependency.

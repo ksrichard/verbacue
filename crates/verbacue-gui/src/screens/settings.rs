@@ -534,10 +534,16 @@ fn dubbing_card<'a>(s: &'a Settings, studio_voices: &'a [String]) -> Element<'a,
     if !cfg!(feature = "dub") {
         return column![].into();
     }
-    let mut voices = vec![Choice {
-        value: "clone".to_string(),
-        label: "Clone the actors".to_string(),
-    }];
+    let mut voices = vec![
+        Choice {
+            value: "clone".to_string(),
+            label: "Clone the actors".to_string(),
+        },
+        Choice {
+            value: "cast".to_string(),
+            label: "A studio voice per actor".to_string(),
+        },
+    ];
     voices.extend(studio_voices.iter().map(|v| Choice {
         value: v.clone(),
         label: v.clone(),
@@ -551,7 +557,7 @@ fn dubbing_card<'a>(s: &'a Settings, studio_voices: &'a [String]) -> Element<'a,
     let voice_hint = if studio_voices.is_empty() {
         "Each actor keeps a similar voice. The studio voices show after the download."
     } else {
-        "Each actor keeps a similar voice, or one studio voice speaks all lines."
+        "Each actor keeps a similar voice or a studio voice, or one studio voice speaks all lines."
     };
     let mut models: Vec<Choice<String>> = models::bundles()
         .iter()
