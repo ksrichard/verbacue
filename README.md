@@ -68,7 +68,25 @@ the tap of an existing release.
 
 ### Installers
 
-Each release also has installers for the desktop app:
+The easiest way is the verbacue installer. Download the file for your system from the
+latest release and start it:
+
+| System | File |
+|---|---|
+| macOS | `verbacue-installer-macos` |
+| Windows | `verbacue-installer-windows-x64.exe` |
+| Linux | `verbacue-installer-linux-<amd64\|arm64>` (make it executable first) |
+
+The installer looks at the computer and picks the build that fits: CUDA for an NVIDIA
+GPU with driver 580 or newer, Vulkan for another GPU, else the CPU build. On Linux it
+also checks the glibc version. You can choose another build in the list. It downloads
+the latest release, checks the file against `SHA256SUMS` and installs it without admin
+rights: the app goes to Applications on macOS, the setup runs for the current user on
+Windows, and the AppImage goes to `~/Applications` with a menu entry on Linux. The
+installer is not signed either, so macOS and Windows warn at the first start.
+`crates/verbacue-installer` holds its code.
+
+Each release also has the installers of each build:
 
 | System | File | Notes |
 |---|---|---|

@@ -334,9 +334,97 @@ jobs:
             verbacue-macos-universal-metal.tar.gz
             verbacue-*-macos-universal.dmg
 
+  # The installer: a small app that finds the build for the computer and installs it.
+  # Linux builds it on Ubuntu 22.04, so it runs with glibc 2.35 or newer.
+  installer-linux:
+    name: installer-linux-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    container: ubuntu:22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Install tools
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config
+          curl --proto '=https' -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain "$RUST_VERSION"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Test and build
+        run: |
+          cargo test --release --locked -p verbacue-installer
+          cargo build --release --locked -p verbacue-installer
+          cp target/release/verbacue-installer verbacue-installer-linux-${{ matrix.arch }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verbacue-installer-linux-${{ matrix.arch }}
+          path: verbacue-installer-linux-${{ matrix.arch }}
+
+  # One universal installer for Apple Silicon and Intel Macs.
+  installer-macos:
+    name: installer-macos
+    runs-on: macos-15
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal \
+            --target aarch64-apple-darwin --target x86_64-apple-darwin
+          rustup default "$RUST_VERSION"
+      - name: Test and build
+        run: |
+          cargo test --release --locked -p verbacue-installer
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --locked -p verbacue-installer --target $target
+          done
+          lipo -create -output verbacue-installer-macos \
+            target/aarch64-apple-darwin/release/verbacue-installer \
+            target/x86_64-apple-darwin/release/verbacue-installer
+          codesign --force --sign - verbacue-installer-macos
+          lipo -archs verbacue-installer-macos
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verbacue-installer-macos
+          path: verbacue-installer-macos
+
+  installer-windows:
+    name: installer-windows-x64
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: bash
+    env:
+      # The static C runtime, so no Visual C++ redistributable is needed.
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust
+        run: rustup toolchain install "$RUST_VERSION" --profile minimal && rustup default "$RUST_VERSION"
+      - name: Test and build
+        run: |
+          cargo test --release --locked -p verbacue-installer
+          cargo build --release --locked -p verbacue-installer
+          cp target/release/verbacue-installer.exe verbacue-installer-windows-x64.exe
+      - name: Check the linked DLLs
+        run: docker/check-dlls.sh verbacue-installer-windows-x64.exe "/c/Program Files/LLVM/bin/llvm-objdump"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verbacue-installer-windows-x64
+          path: verbacue-installer-windows-x64.exe
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, windows, macos-universal]
+    needs: [linux, windows, macos-universal, installer-linux, installer-macos, installer-windows]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
