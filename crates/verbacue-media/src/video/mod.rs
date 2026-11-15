@@ -243,17 +243,8 @@ pub(super) fn report(progress: &dyn Progress, ms: i64, total_secs: f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use verbacue_core::Stopped;
     use verbacue_core::error::ErrorKind;
-
-    struct Stopped;
-
-    impl Progress for Stopped {
-        fn update(&self, _done: u64, _total: u64) {}
-
-        fn cancelled(&self) -> bool {
-            true
-        }
-    }
 
     /// Makes a test video with the ffmpeg command, or returns `None` when it is missing.
     pub(crate) fn test_video(

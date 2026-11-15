@@ -611,13 +611,7 @@ mod tests {
     #[cfg(feature = "download")]
     #[test]
     fn download_checks_cancel_before_the_request() {
-        struct Stopped;
-        impl Progress for Stopped {
-            fn update(&self, _done: u64, _total: u64) {}
-            fn cancelled(&self) -> bool {
-                true
-            }
-        }
+        use crate::Stopped;
         // Port 9 (discard) is closed on test machines, so a request fails fast.
         let spec = ModelSpec {
             name: "test",

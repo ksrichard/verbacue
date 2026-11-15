@@ -39,6 +39,17 @@ impl Progress for () {
     fn update(&self, _done: u64, _total: u64) {}
 }
 
+/// A progress that is always cancelled, for example to test that a step stops.
+pub struct Stopped;
+
+impl Progress for Stopped {
+    fn update(&self, _done: u64, _total: u64) {}
+
+    fn cancelled(&self) -> bool {
+        true
+    }
+}
+
 impl<F: Fn(u64, u64) + Sync> Progress for F {
     fn update(&self, done: u64, total: u64) {
         self(done, total);
@@ -49,16 +60,6 @@ impl<F: Fn(u64, u64) + Sync> Progress for F {
 mod tests {
     use super::*;
     use crate::ErrorKind;
-
-    struct Stopped;
-
-    impl Progress for Stopped {
-        fn update(&self, _done: u64, _total: u64) {}
-
-        fn cancelled(&self) -> bool {
-            true
-        }
-    }
 
     #[test]
     fn unit_and_closures_are_never_cancelled() {

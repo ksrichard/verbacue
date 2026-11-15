@@ -24,4 +24,4 @@ pub mod subtitle;
 
 pub use config::config_dir;
 pub use error::{Context, Error, ErrorKind, Result, WithKind};
-pub use progress::{Progress, check_cancel};
+pub use progress::{Progress, Stopped, check_cancel};
