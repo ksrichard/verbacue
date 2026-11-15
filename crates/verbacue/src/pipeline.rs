@@ -15,6 +15,19 @@ use verbacue_core::{
 
 use crate::{audio, transcribe, translate};
 
+/// What a job makes again when its outputs exist.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Redo {
+    /// Skip the job when its final output exists.
+    #[default]
+    Nothing,
+    /// Make the videos again from the subtitle files on disk, for example after the
+    /// user corrected them by hand.
+    Videos,
+    /// Transcribe and translate again, and overwrite every output.
+    Everything,
+}
+
 /// One video and what to make from it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Job {
@@ -46,8 +59,8 @@ pub struct Job {
     pub burn: bool,
     /// The style and animation of the burned-in subtitles.
     pub look: crate::video::SubtitleLook,
-    /// Run again even if the output exists.
-    pub force: bool,
+    /// What to make again when the outputs exist.
+    pub redo: Redo,
     /// Also write an MKV with a new audio track that speaks the translation.
     #[cfg(feature = "dub")]
     pub dub: Option<crate::dub::Options>,
@@ -71,7 +84,7 @@ impl Job {
             embed: false,
             burn: false,
             look: crate::video::SubtitleLook::default(),
-            force: false,
+            redo: Redo::Nothing,
             #[cfg(feature = "dub")]
             dub: None,
         }
@@ -249,7 +262,7 @@ pub fn dub_output(job: &Job) -> PathBuf {
 /// The cues of a subtitle file from an earlier run, if it exists, reads well and the
 /// job does not force a new run.
 fn earlier(path: &Path, job: &Job) -> Option<Vec<Cue>> {
-    if job.force || !path.is_file() {
+    if job.redo == Redo::Everything || !path.is_file() {
         return None;
     }
     let text = fs::read_to_string(path).ok()?;
@@ -328,7 +341,7 @@ impl Pipeline {
         check_cancel(&report)?;
         if let Some(done) = final_output(job)
             && done.exists()
-            && !job.force
+            && job.redo == Redo::Nothing
         {
             sink.event(Event::Skipped(&done));
             return Ok(Outcome {
@@ -1001,7 +1014,9 @@ mod tests {
         // A given spoken language picks its file.
         j.language = Some("de".into());
         assert_eq!(earlier_transcript(&j).map(|t| t.0).as_deref(), Some("de"));
-        j.force = true;
+        j.redo = Redo::Videos;
+        assert!(earlier_transcript(&j).is_some());
+        j.redo = Redo::Everything;
         assert!(earlier_transcript(&j).is_none());
     }
 
@@ -1057,6 +1072,37 @@ mod tests {
         assert!(events[0].starts_with("skipped"));
     }
 
+    #[cfg(feature = "video")]
+    #[test]
+    fn redo_videos_burns_from_the_files_on_disk() {
+        let dir = reuse_dir("redo-videos");
+        let Some(made) = one_track_video("verbacue-redo-videos.mp4") else {
+            return;
+        };
+        let video = dir.join("movie.mp4");
+        std::fs::rename(made, &video).unwrap();
+        std::fs::write(dir.join("movie.tr.srt"), SRT).unwrap();
+        // The user corrected the translation by hand.
+        std::fs::write(
+            dir.join("movie.hu.srt"),
+            "1\n00:00:00,100 --> 00:00:00,900\nJavított\n\n",
+        )
+        .unwrap();
+        let burned = dir.join("movie.hu.mp4");
+        std::fs::write(&burned, "").unwrap();
+        let mut j = Job::new(&video, "hu");
+        j.translation = Some(Translation::default());
+        j.burn = true;
+        j.redo = Redo::Videos;
+        let sink = Record::default();
+        let outcome = Pipeline::new().run(&j, &sink).unwrap();
+        assert!(!outcome.skipped);
+        let events = sink.events.lock().unwrap().join("\n");
+        assert!(events.contains("transcript") && events.contains("translation"));
+        assert!(!events.contains("step Transcribe"));
+        assert!(std::fs::metadata(&burned).unwrap().len() > 0);
+    }
+
     #[test]
     fn cancelled_sink_stops_before_decoding() {
         let j = job("/x/missing.mkv", "hu");
@@ -1100,7 +1146,7 @@ mod tests {
     }
 
     /// A test video with one audio track, made with the ffmpeg command.
-    #[cfg(feature = "dub")]
+    #[cfg(any(feature = "dub", feature = "video"))]
     fn one_track_video(name: &str) -> Option<PathBuf> {
         let path = std::env::temp_dir().join(name);
         let ok = std::process::Command::new("ffmpeg")

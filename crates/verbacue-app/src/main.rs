@@ -31,7 +31,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use tracing_subscriber::EnvFilter;
 use verbacue::{
     audio, models,
-    pipeline::{Event, Job, Pipeline, Sink, Step, Translation},
+    pipeline::{Event, Job, Pipeline, Redo, Sink, Step, Translation},
     subtitle::{self, Cue, Format},
     translate::{self, Backend, Register, Translator},
     video,
@@ -154,6 +154,11 @@ struct TranslateArgs {
     /// Overwrite outputs that already exist.
     #[arg(long)]
     force: bool,
+
+    /// Make the videos again from the subtitle files that exist, for example after
+    /// you corrected them by hand. Transcription and translation are skipped.
+    #[arg(long, conflicts_with = "force")]
+    redo_video: bool,
 }
 
 #[derive(Subcommand)]
@@ -501,7 +506,13 @@ fn job_for(video: &Path, cli: &Cli) -> Job {
         embed: cli.embed,
         burn: cli.burn,
         look: cli.translate.look.look(),
-        force: args.force,
+        redo: if args.force {
+            Redo::Everything
+        } else if args.redo_video {
+            Redo::Videos
+        } else {
+            Redo::Nothing
+        },
         #[cfg(feature = "dub")]
         dub: cli.dub.then(|| cli.dub_args.options()),
     }

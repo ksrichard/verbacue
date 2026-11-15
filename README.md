@@ -37,6 +37,10 @@ on the binary also opens it.
    preview in this style.
 3. Click "Start grilling", and watch the barbecue while verbacue works.
 
+To fix a subtitle by hand, edit `movie.<lang>.srt` and start the same video again.
+The app asks what to do with the old outputs. "Use my subtitle file" makes only the
+videos again from your file; "Start over" transcribes and translates again.
+
 All the options of the command line that make sense in the app are on the Settings
 page: the models, the spoken language, the translator, the form of address, the
 glossary, the subtitle format, the output folder, and the default subtitle style and
@@ -319,6 +323,7 @@ Night's Watch = Éjjeli Őrség
 | `--burn-animation` | `none` | For burned-in subtitles and ASS files:  `none`, `fade` (in and out), `pop` (grows in), `typewriter` (letter by letter), `karaoke` (the words light up as they are spoken), `bounce` (grows past its size and settles) or `words` (up to three words at a time, in time with the speech, as in short videos) |
 | `--no-vad` | | Do not skip silence with voice activity detection |
 | `--force` | | Process files that already have an output, and make the subtitle files of an earlier run again |
+| `--redo-video` | | Make the videos again from the subtitle files that exist, for example after you corrected them by hand. Transcription and translation are skipped |
 | `-v` | | Debug logs; `-vv` for more |
 
 ## Use as a Rust library
