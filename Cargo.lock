@@ -5829,7 +5829,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "verbacue"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "tracing",
  "verbacue-core",
@@ -5841,7 +5841,7 @@ dependencies = [
 
 [[package]]
 name = "verbacue-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -5855,7 +5855,7 @@ dependencies = [
 
 [[package]]
 name = "verbacue-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -5869,7 +5869,7 @@ dependencies = [
 
 [[package]]
 name = "verbacue-dub"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lindera",
  "ort",
@@ -5883,7 +5883,7 @@ dependencies = [
 
 [[package]]
 name = "verbacue-gui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "iced",
  "image",
@@ -5898,7 +5898,7 @@ dependencies = [
 
 [[package]]
 name = "verbacue-installer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "iced",
  "reqwest",
@@ -5910,7 +5910,7 @@ dependencies = [
 
 [[package]]
 name = "verbacue-media"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ab_glyph",
  "ffmpeg-next",
@@ -5923,7 +5923,7 @@ dependencies = [
 
 [[package]]
 name = "verbacue-transcribe"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "tracing",
  "verbacue-core",
@@ -5932,7 +5932,7 @@ dependencies = [
 
 [[package]]
 name = "verbacue-translate"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "llama-cpp-2",
