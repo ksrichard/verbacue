@@ -1,5 +1,6 @@
 //! Still frames and facts about a video, for a preview before the slow steps.
 
+use crate::error::Result;
 use std::path::Path;
 
 use ffmpeg_next::{
@@ -9,7 +10,7 @@ use ffmpeg_next::{
     software::scaling::{Context as Scaler, Flags},
 };
 
-use verbacue_core::error::{Context as _, ErrorKind, Result, WithKind as _, bail};
+use verbacue_core::error::{Context as _, ErrorKind, WithKind as _, bail};
 
 use super::{open_input, open_video_decoder, rescale_ms};
 use crate::audio::{AudioTrack, list_tracks};
@@ -113,12 +114,9 @@ pub fn preview_frames(input: &Path, count: usize, max_width: u32) -> Result<Vec<
             width,
             height,
             Flags::BILINEAR,
-        )
-        .with_kind(ErrorKind::Other)?;
+        )?;
         let mut rgba = frame::Video::empty();
-        scaler
-            .run(&decoded, &mut rgba)
-            .with_kind(ErrorKind::Other)?;
+        scaler.run(&decoded, &mut rgba)?;
         let at_ms = decoded
             .pts()
             .map_or(target_ms, |pts| rescale_ms(pts, time_base));
@@ -148,7 +146,7 @@ fn next_frame(
         if stream.index() != index {
             continue;
         }
-        decoder.send_packet(&packet).with_kind(ErrorKind::Other)?;
+        decoder.send_packet(&packet)?;
         while decoder.receive_frame(&mut decoded).is_ok() {
             let at = decoded
                 .pts()

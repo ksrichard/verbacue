@@ -6,9 +6,10 @@
 //! calls the FFmpeg C functions directly. It is the only module with unsafe code.
 #![allow(unsafe_code)]
 
+use crate::error::Result;
 use ffmpeg_next::{codec, ffi, frame};
 
-use verbacue_core::error::{Result, bail};
+use verbacue_core::error::bail;
 
 /// Codecs that FFmpeg can decode only with a hardware device.
 const HARDWARE_ONLY: &[codec::Id] = &[codec::Id::AV1];

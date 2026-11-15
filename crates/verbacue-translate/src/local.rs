@@ -107,7 +107,10 @@ impl ChatModel for LocalModel {
             Ok(answer) => answer,
             Err(e) if e.kind() == ErrorKind::Cancelled => return Err(e),
             Err(e) => {
-                tracing::warn!("translation model failed ({e:#}); trying again");
+                tracing::warn!(
+                    "translation model failed ({}); trying again",
+                    verbacue_core::error::report(&e)
+                );
                 self.generate(&tokens, grammar, progress)?
             }
         };

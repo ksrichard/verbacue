@@ -16,7 +16,7 @@ download = ["http", "dep:sha2"]
 http = ["dep:reqwest", "dep:webpki-root-certs"]
 
 [dependencies]
-anyhow = { version = "1.0.104" }
+thiserror = { version = "2.0.21" }
 clap = { version = "4.6.7", features = ["derive"], optional = true }
 dirs = { version = "7.0.0" }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "http2", "json", "rustls"], optional = true }

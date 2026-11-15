@@ -7,6 +7,7 @@
 
 mod choose;
 mod detect;
+mod error;
 mod install;
 mod release;
 
@@ -104,9 +105,14 @@ impl App {
         };
         let look = Task::perform(
             async {
-                tokio::task::spawn_blocking(|| (detect::facts(), release::latest()))
-                    .await
-                    .expect("the detection thread stopped")
+                tokio::task::spawn_blocking(|| {
+                    (
+                        detect::facts(),
+                        release::latest().map_err(|e| e.to_string()),
+                    )
+                })
+                .await
+                .expect("the detection thread stopped")
             },
             |found| Message::Found(Box::new(found)),
         );
@@ -394,7 +400,7 @@ fn run_install(release: Release, asset: release::Asset) -> impl Stream<Item = Me
             let _ = std::fs::remove_file(&file);
             installed
         });
-        let _ = sender.send(Message::Finished(result));
+        let _ = sender.send(Message::Finished(result.map_err(|e| e.to_string())));
     });
     stream::poll_fn(move |cx| receiver.poll_recv(cx))
 }

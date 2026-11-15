@@ -5857,12 +5857,12 @@ dependencies = [
 name = "verbacue-core"
 version = "0.2.0"
 dependencies = [
- "anyhow",
  "clap",
  "dirs",
  "reqwest",
  "serde_json",
  "sha2",
+ "thiserror 2.0.21",
  "tracing",
  "webpki-root-certs",
 ]
@@ -5876,6 +5876,7 @@ dependencies = [
  "pinyin",
  "rustfft",
  "serde_json",
+ "thiserror 2.0.21",
  "tracing",
  "verbacue-core",
  "verbacue-media",
@@ -5904,6 +5905,7 @@ dependencies = [
  "reqwest",
  "serde",
  "sha2",
+ "thiserror 2.0.21",
  "tokio",
  "verbacue-core",
 ]
@@ -5916,6 +5918,7 @@ dependencies = [
  "ffmpeg-next",
  "ffmpeg-sys-next",
  "rustybuzz",
+ "thiserror 2.0.21",
  "tracing",
  "unicode-bidi",
  "verbacue-core",

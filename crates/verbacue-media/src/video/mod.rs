@@ -18,6 +18,7 @@ mod overlay;
 mod preview;
 mod sample;
 
+use crate::error::Result;
 use std::path::Path;
 
 use ffmpeg_next::{
@@ -26,11 +27,7 @@ use ffmpeg_next::{
     frame, media,
 };
 
-use verbacue_core::{
-    Progress,
-    error::{Context as _, ErrorKind, Result, WithKind as _},
-    subtitle::Cue,
-};
+use verbacue_core::{Progress, error::Context as _, subtitle::Cue};
 
 use burn::{open_video_decoder, write_burned};
 use embed::write_embedded;
@@ -137,22 +134,13 @@ pub fn check_burn(input: &Path) -> Result<()> {
     let mut decoder = open_video_decoder(&ist).with_context(cannot)?;
     let mut frame = frame::Video::empty();
     for (_, packet) in ictx.packets().filter(|(s, _)| s.index() == index).take(500) {
-        decoder
-            .send_packet(&packet)
-            .with_kind(ErrorKind::Other)
-            .with_context(cannot)?;
+        decoder.send_packet(&packet).with_context(cannot)?;
         if decoder.receive_frame(&mut frame).is_ok() {
             return Ok(());
         }
     }
-    decoder
-        .send_eof()
-        .with_kind(ErrorKind::Other)
-        .with_context(cannot)?;
-    decoder
-        .receive_frame(&mut frame)
-        .with_kind(ErrorKind::Other)
-        .with_context(cannot)
+    decoder.send_eof().with_context(cannot)?;
+    Ok(decoder.receive_frame(&mut frame).with_context(cannot)?)
 }
 
 /// Deletes `output` if writing it failed, so no broken file stays behind.
@@ -164,9 +152,7 @@ pub(super) fn remove_on_error(output: &Path, result: Result<()>) -> Result<()> {
 }
 
 pub(super) fn open_input(path: &Path) -> Result<format::context::Input> {
-    format::input(path)
-        .with_kind(ErrorKind::Other)
-        .with_context(|| format!("cannot open {}", path.display()))
+    Ok(format::input(path).with_context(|| format!("cannot open {}", path.display()))?)
 }
 
 /// Writes the header. `strict=experimental` lets MKV accept codec tags from other
@@ -190,7 +176,6 @@ pub(super) fn write_header(
         },
     );
     octx.write_header_with(options)
-        .with_kind(ErrorKind::Other)
         .context("cannot write the output header")?;
     Ok(())
 }
@@ -208,9 +193,7 @@ impl StreamMap {
         ist: &format::stream::Stream,
         octx: &mut format::context::Output,
     ) -> Result<()> {
-        let mut ost = octx
-            .add_stream(encoder::find(codec::Id::None))
-            .with_kind(ErrorKind::Other)?;
+        let mut ost = octx.add_stream(encoder::find(codec::Id::None))?;
         ost.set_parameters(ist.parameters());
         ost.set_metadata(ist.metadata().to_owned());
         self.0[ist.index()] = Some(ost.index());
@@ -260,6 +243,7 @@ pub(super) fn report(progress: &dyn Progress, ms: i64, total_secs: f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use verbacue_core::error::ErrorKind;
 
     struct Stopped;
 

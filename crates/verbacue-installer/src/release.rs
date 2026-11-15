@@ -1,6 +1,7 @@
 //! The latest verbacue release on GitHub: its files, the download, and the SHA256
 //! check against the SHA256SUMS file of the release.
 
+use crate::error::{Error, Result};
 use std::fmt::Write as _;
 use std::{
     io::{Read as _, Write as _},
@@ -36,25 +37,25 @@ impl Release {
     }
 }
 
-fn client() -> Result<reqwest::blocking::Client, String> {
+fn client() -> Result<reqwest::blocking::Client> {
     verbacue_core::http::client_builder()
         // GitHub needs a user agent for its API.
         .user_agent(concat!("verbacue-installer/", env!("CARGO_PKG_VERSION")))
         .build()
-        .map_err(|e| e.to_string())
+        .map_err(Error::from)
 }
 
 /// Reads the latest release from GitHub.
 ///
 /// # Errors
 /// Returns an error without a network connection, or if GitHub refuses the request.
-pub fn latest() -> Result<Release, String> {
+pub fn latest() -> Result<Release> {
     client()?
         .get(LATEST)
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
         .and_then(reqwest::blocking::Response::json)
-        .map_err(|e| format!("cannot read the latest release: {e}"))
+        .map_err(|e| Error::context("cannot read the latest release", e))
 }
 
 /// Downloads `asset` into `dir`, checks it against the SHA256SUMS file of `release`,
@@ -67,7 +68,7 @@ pub fn download(
     asset: &Asset,
     dir: &Path,
     progress: &dyn Fn(u64, u64),
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf> {
     let client = client()?;
     let sums = release
         .asset("SHA256SUMS")
@@ -77,28 +78,28 @@ pub fn download(
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
         .and_then(reqwest::blocking::Response::text)
-        .map_err(|e| format!("cannot read SHA256SUMS: {e}"))?;
+        .map_err(|e| Error::context("cannot read SHA256SUMS", e))?;
     let expected = expected_sha256(&sums, &asset.name)
         .ok_or_else(|| format!("SHA256SUMS has no line for {}", asset.name))?;
 
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(dir)?;
     let path = dir.join(&asset.name);
     let mut response = client
         .get(&asset.browser_download_url)
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
         .map_err(|e| format!("cannot download {}: {e}", asset.name))?;
-    let mut file = std::fs::File::create(&path).map_err(|e| e.to_string())?;
+    let mut file = std::fs::File::create(&path)?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0; 1 << 16];
     let mut done = 0;
     loop {
-        let n = response.read(&mut buffer).map_err(|e| e.to_string())?;
+        let n = response.read(&mut buffer)?;
         if n == 0 {
             break;
         }
         hasher.update(&buffer[..n]);
-        file.write_all(&buffer[..n]).map_err(|e| e.to_string())?;
+        file.write_all(&buffer[..n])?;
         done += n as u64;
         progress(done, asset.size);
     }
@@ -108,10 +109,9 @@ pub fn download(
     });
     if actual != expected {
         let _ = std::fs::remove_file(&path);
-        return Err(format!(
-            "{} is damaged: its SHA256 does not match the release",
-            asset.name
-        ));
+        return Err(Error::Damaged {
+            file: asset.name.clone(),
+        });
     }
     Ok(path)
 }

@@ -1,5 +1,6 @@
 //! MP4 output: decodes the video, draws the subtitles into each frame, and encodes it again.
 
+use crate::error::Result;
 use std::path::Path;
 
 use ffmpeg_next::{
@@ -13,7 +14,7 @@ use ffmpeg_next::{
 use crate::hwdecode;
 use verbacue_core::{
     Progress, check_cancel,
-    error::{Context as _, ErrorKind, Result, WithKind as _, bail},
+    error::{Context as _, bail},
     subtitle::Cue,
 };
 
@@ -37,8 +38,7 @@ pub(super) const MP4_AUDIO_CODECS: &[codec::Id] = &[
 /// decoder (AV1) use the GPU. All other codecs decode in software on several threads.
 pub(super) fn open_video_decoder(ist: &format::stream::Stream) -> Result<ffmpeg::decoder::Video> {
     let id = ist.parameters().id();
-    let mut ctx =
-        codec::context::Context::from_parameters(ist.parameters()).with_kind(ErrorKind::Other)?;
+    let mut ctx = codec::context::Context::from_parameters(ist.parameters())?;
     #[cfg(any(target_os = "macos", windows))]
     let hardware = hwdecode::attach(&mut ctx, id);
     #[cfg(not(any(target_os = "macos", windows)))]
@@ -49,10 +49,10 @@ pub(super) fn open_video_decoder(ist: &format::stream::Stream) -> Result<ffmpeg:
             count: 0,
         });
     }
-    ctx.decoder()
+    Ok(ctx
+        .decoder()
         .video()
-        .with_kind(ErrorKind::Other)
-        .with_context(|| format!("this build cannot decode {} video", id.name()))
+        .with_context(|| format!("this build cannot decode {} video", id.name()))?)
 }
 
 pub(super) fn write_burned(
@@ -65,7 +65,6 @@ pub(super) fn write_burned(
 ) -> Result<()> {
     let mut ictx = open_input(input)?;
     let mut octx = format::output_as(output, "mp4")
-        .with_kind(ErrorKind::Other)
         .with_context(|| format!("cannot create {}", output.display()))?;
     let global_header = octx.format().flags().contains(format::Flags::GLOBAL_HEADER);
     let video_index = ictx
@@ -91,9 +90,7 @@ pub(super) fn write_burned(
         } else if params.medium() != media::Type::Audio {
             None
         } else if MP4_AUDIO_CODECS.contains(&params.id()) {
-            let mut ost = octx
-                .add_stream(encoder::find(codec::Id::None))
-                .with_kind(ErrorKind::Other)?;
+            let mut ost = octx.add_stream(encoder::find(codec::Id::None))?;
             ost.set_parameters(ist.parameters());
             ost.set_metadata(ist.metadata().to_owned());
             Some(Route::Copy(ost.index()))
@@ -114,7 +111,6 @@ pub(super) fn write_burned(
     options.set("movflags", "+faststart");
     options.set("strict", "experimental");
     octx.write_header_with(options)
-        .with_kind(ErrorKind::Other)
         .context("cannot write the output header")?;
     let out_tb: Vec<Rational> = (0..octx.nb_streams() as usize)
         .map(|i| {
@@ -133,9 +129,7 @@ pub(super) fn write_burned(
                 packet.rescale_ts(tb, out_tb[*oi]);
                 packet.set_position(-1);
                 packet.set_stream(*oi);
-                packet
-                    .write_interleaved(&mut octx)
-                    .with_kind(ErrorKind::Other)?;
+                packet.write_interleaved(&mut octx)?;
             }
             Some(Route::Video(t)) => {
                 if let Some(ts) = packet.pts() {
@@ -153,7 +147,7 @@ pub(super) fn write_burned(
             Route::Audio(t) => t.push(None, &mut octx, &out_tb)?,
         }
     }
-    octx.write_trailer().with_kind(ErrorKind::Other)?;
+    octx.write_trailer()?;
     Ok(())
 }
 
@@ -189,8 +183,7 @@ impl<'a> VideoTranscoder<'a> {
         let (codec, name) = video_encoder()?;
         let mut enc = codec::context::Context::new_with_codec(codec)
             .encoder()
-            .video()
-            .with_kind(ErrorKind::Other)?;
+            .video()?;
         enc.set_width(decoder.width());
         enc.set_height(decoder.height());
         enc.set_format(Pixel::YUV420P);
@@ -210,11 +203,10 @@ impl<'a> VideoTranscoder<'a> {
         }
         let encoder = enc
             .open_as(codec)
-            .with_kind(ErrorKind::Other)
             .with_context(|| format!("cannot open the {name} encoder"))?;
         tracing::info!("encoding video with {name}");
 
-        let mut ost = octx.add_stream(codec).with_kind(ErrorKind::Other)?;
+        let mut ost = octx.add_stream(codec)?;
         ost.set_parameters(&encoder);
         ost.set_time_base(time_base);
         let out_index = ost.index();
@@ -236,8 +228,8 @@ impl<'a> VideoTranscoder<'a> {
         out_tb: &[Rational],
     ) -> Result<()> {
         match packet {
-            Some(p) => self.decoder.send_packet(p).with_kind(ErrorKind::Other)?,
-            None => self.decoder.send_eof().with_kind(ErrorKind::Other)?,
+            Some(p) => self.decoder.send_packet(p)?,
+            None => self.decoder.send_eof()?,
         }
         let mut decoded = frame::Video::empty();
         while self.decoder.receive_frame(&mut decoded).is_ok() {
@@ -247,13 +239,11 @@ impl<'a> VideoTranscoder<'a> {
             let downloaded: Option<frame::Video> = None;
             let source = downloaded.as_ref().unwrap_or(&decoded);
             let frame = self.painter.paint(source, &mut self.scaler)?;
-            self.encoder
-                .send_frame(&frame)
-                .with_kind(ErrorKind::Other)?;
+            self.encoder.send_frame(&frame)?;
             self.drain(octx, out_tb)?;
         }
         if packet.is_none() {
-            self.encoder.send_eof().with_kind(ErrorKind::Other)?;
+            self.encoder.send_eof()?;
             self.drain(octx, out_tb)?;
         }
         Ok(())
@@ -268,7 +258,7 @@ impl<'a> VideoTranscoder<'a> {
         while self.encoder.receive_packet(&mut packet).is_ok() {
             packet.set_stream(self.out_index);
             packet.rescale_ts(self.time_base, out_tb[self.out_index]);
-            packet.write_interleaved(octx).with_kind(ErrorKind::Other)?;
+            packet.write_interleaved(octx)?;
         }
         Ok(())
     }
@@ -287,11 +277,9 @@ impl AudioTranscoder {
         ist: &format::stream::Stream,
         octx: &mut format::context::Output,
     ) -> Result<Self> {
-        let decoder = codec::context::Context::from_parameters(ist.parameters())
-            .with_kind(ErrorKind::Other)?
+        let decoder = codec::context::Context::from_parameters(ist.parameters())?
             .decoder()
             .audio()
-            .with_kind(ErrorKind::Other)
             .with_context(|| {
                 format!(
                     "this build cannot decode {} audio",
@@ -326,8 +314,8 @@ impl AudioTranscoder {
         out_tb: &[Rational],
     ) -> Result<()> {
         match packet {
-            Some(p) => self.decoder.send_packet(p).with_kind(ErrorKind::Other)?,
-            None => self.decoder.send_eof().with_kind(ErrorKind::Other)?,
+            Some(p) => self.decoder.send_packet(p)?,
+            None => self.decoder.send_eof()?,
         }
         let mut decoded = frame::Audio::empty();
         while self.decoder.receive_frame(&mut decoded).is_ok() {
@@ -363,15 +351,14 @@ impl AudioTranscoder {
                 Sample::F32(SampleType::Planar),
                 out_layout,
                 rate,
-            )
-            .with_kind(ErrorKind::Other)?;
+            )?;
             self.resampler = Some((ctx, key.0, key.1, key.2));
         }
         let capacity = decoded.samples() * rate as usize / decoded.rate().max(1) as usize + 256;
         let mut out = frame::Audio::new(Sample::F32(SampleType::Planar), capacity, out_layout);
         out.set_rate(rate);
         if let Some((ctx, ..)) = self.resampler.as_mut() {
-            ctx.run(decoded, &mut out).with_kind(ErrorKind::Other)?;
+            ctx.run(decoded, &mut out)?;
         }
         for (ch, buf) in self.aac.buffer.iter_mut().enumerate() {
             buf.extend_from_slice(&out.plane::<f32>(ch)[..out.samples()]);

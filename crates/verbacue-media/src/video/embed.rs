@@ -1,5 +1,6 @@
 //! MKV output: copies all streams and adds the subtitles as SRT tracks.
 
+use crate::error::Result;
 use std::path::Path;
 
 use ffmpeg_next::{
@@ -8,10 +9,7 @@ use ffmpeg_next::{
     media,
 };
 
-use verbacue_core::{
-    Progress, check_cancel,
-    error::{Context as _, ErrorKind, Result, WithKind as _},
-};
+use verbacue_core::{Progress, check_cancel, error::Context as _};
 
 use super::{
     StreamMap, SubtitleTrack, audio_start_ms, duration_secs, open_input, report, rescale_ms,
@@ -37,7 +35,6 @@ pub(super) fn write_embedded(
 ) -> Result<()> {
     let mut ictx = open_input(input)?;
     let mut octx = format::output_as(output, "matroska")
-        .with_kind(ErrorKind::Other)
         .with_context(|| format!("cannot create {}", output.display()))?;
     let mut map = StreamMap::new(&ictx);
 
@@ -76,12 +73,10 @@ pub(super) fn write_embedded(
         packet.rescale_ts(tb, octx.stream(oi).context("missing stream")?.time_base());
         packet.set_position(-1);
         packet.set_stream(oi);
-        packet
-            .write_interleaved(&mut octx)
-            .with_kind(ErrorKind::Other)?;
+        packet.write_interleaved(&mut octx)?;
     }
     subs.write_until(i64::MAX, &mut octx)?;
-    octx.write_trailer().with_kind(ErrorKind::Other)?;
+    octx.write_trailer()?;
     Ok(())
 }
 
@@ -95,9 +90,7 @@ pub(super) fn add_subtitle_streams(
             let mut params = codec::Parameters::new();
             params.set_medium(media::Type::Subtitle);
             params.set_id(codec::Id::SUBRIP);
-            let mut ost = octx
-                .add_stream(encoder::find(codec::Id::None))
-                .with_kind(ErrorKind::Other)?;
+            let mut ost = octx.add_stream(encoder::find(codec::Id::None))?;
             ost.set_parameters(params);
             ost.set_time_base((1, 1000));
             let mut metadata = Dictionary::new();
@@ -171,7 +164,7 @@ impl SubtitleQueue {
             packet.set_duration(*duration);
             packet.set_stream(*stream);
             packet.rescale_ts(Rational::new(1, 1000), self.time_bases[*stream]);
-            packet.write_interleaved(octx).with_kind(ErrorKind::Other)?;
+            packet.write_interleaved(octx)?;
             self.next += 1;
         }
         Ok(())

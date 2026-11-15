@@ -470,7 +470,7 @@ fn process_videos(cli: &Cli) -> Result<()> {
             if videos.len() == 1 {
                 return Err(e.into());
             }
-            tracing::error!("{}: {e:#}", video.display());
+            tracing::error!("{}: {}", video.display(), verbacue::error::report(&e));
             failed += 1;
         }
     }
