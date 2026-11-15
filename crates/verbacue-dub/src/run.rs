@@ -65,7 +65,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Options {
         Options {
-            voice: VoiceChoice::Clone,
+            voice: VoiceChoice::Cast,
             original: Original::Remove,
             speed_limit: 1.3,
             model: default_model().to_string(),

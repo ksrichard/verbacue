@@ -27,9 +27,9 @@ pub enum DubOriginal {
 
 #[derive(Args, Clone, Debug)]
 pub struct DubArgs {
-    /// The voice: "clone" for the voice of each speaker, "cast" for a studio voice for
+    /// The voice: "cast" for a studio voice for each speaker, "clone" for the voice of
     /// each speaker, or one studio voice from `verbacue voices` for all lines.
-    #[arg(long, default_value = "clone")]
+    #[arg(long, default_value = "cast")]
     pub dub_voice: String,
 
     /// What happens to the original speech.

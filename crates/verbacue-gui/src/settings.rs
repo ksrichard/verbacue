@@ -43,7 +43,7 @@ pub struct Settings {
     pub out_dir: Option<PathBuf>,
     /// The last target language.
     pub target: String,
-    /// "clone" for the voice of each speaker, "cast" for a studio voice for each speaker,
+    /// "cast" for a studio voice for each speaker, "clone" for the voice of each speaker,
     /// or one studio voice.
     pub dub_voice: String,
     pub dub_original: DubOriginal,
@@ -108,7 +108,7 @@ impl Default for Settings {
             format: Format::Srt,
             out_dir: None,
             target: "en".to_string(),
-            dub_voice: "clone".to_string(),
+            dub_voice: "cast".to_string(),
             dub_original: DubOriginal::Remove,
             dub_speed_limit: 1.3,
             dub_model: default_dub_model(),
@@ -276,7 +276,7 @@ mod tests {
         .unwrap();
         let (s, notice) = load(&dir);
         assert!(notice.is_none());
-        assert_eq!(s.dub_voice, "clone");
+        assert_eq!(s.dub_voice, "cast");
         assert_eq!(s.dub_original, DubOriginal::Remove);
         assert!((s.dub_speed_limit - 1.3).abs() < f32::EPSILON);
         assert_eq!(s.dub_model, default_dub_model());

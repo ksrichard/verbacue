@@ -21,7 +21,7 @@ The feature follows the rules of the rest of the app:
 
 - A new audio track in the target language, in an MKV or MP4, next to the original
   track. The player lets the viewer pick the track.
-- Each detected speaker gets a cloned voice.
+- Each detected speaker gets their own studio voice (default) or a cloned voice.
 - Each translated line starts at the start time of its subtitle and fits its time.
 - The background (music and effects) of the original audio stays under the new voices.
 - A command line flag and an output option in the desktop app.
@@ -167,7 +167,7 @@ The command line and the desktop app have the same settings for dubbing.
 | Setting | Values | Default | Command line | Desktop app |
 |---|---|---|---|---|
 | Dub the video | on, off | off | `--dub` | Output option "Dubbed voice" |
-| Voice | `clone`, or a studio voice name | `clone` | `--dub-voice` | Settings, "Voice" list |
+| Voice | `cast`, `clone`, or a studio voice name | `cast` | `--dub-voice` | Settings, "Voice" list |
 | Original speech | `remove` (separation), `lower` (lower the volume only, faster) | `remove` | `--dub-original remove\|lower` | Settings, "Original speech" switch |
 | Speed limit | 1.0 to 1.5 | 1.3 | `--dub-speed-limit` | Settings, "Speed limit" slider |
 | Voice model | `xtts-v2`, `xtts-v2-int8`, or a path | `xtts-v2` in a CUDA build, else `xtts-v2-int8` | `--dub-model` | Settings, "Voice model" list and "Choose a folder…" |
