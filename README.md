@@ -289,8 +289,8 @@ Night's Watch = Éjjeli Őrség
 | `-o`, `--output` | | Output file for the translation (one input only) |
 | `--embed` | | Also write `movie.<to>.mkv` with soft subtitle tracks |
 | `--burn` | | Also write `movie.<to>.mp4` with burned-in subtitles |
-| `--burn-style` | `classic` | `classic` (white, outline), `yellow` (yellow, outline), `box` (white on a dark box) or `large` |
-| `--burn-animation` | `none` | `none`, `fade` (in and out), `pop` (grows in), `typewriter` (letter by letter) or `karaoke` (the words light up as they are spoken) |
+| `--burn-style` | `classic` | `classic` (white, outline), `yellow` (yellow, outline), `box` (white on a dark box), `large`, `bold` (large capitals, thick outline, shadow), `highlight` (bold, the spoken word on a green box) or `neon` (pink glow) |
+| `--burn-animation` | `none` | `none`, `fade` (in and out), `pop` (grows in), `typewriter` (letter by letter), `karaoke` (the words light up as they are spoken), `bounce` (grows past its size and settles) or `words` (up to three words at a time, in time with the speech, as in short videos) |
 | `--no-vad` | | Do not skip silence with voice activity detection |
 | `--force` | | Process files that already have an output, and make the subtitle files of an earlier run again |
 | `-v` | | Debug logs; `-vv` for more |

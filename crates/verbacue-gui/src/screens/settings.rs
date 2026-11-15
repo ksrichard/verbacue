@@ -5,7 +5,9 @@ use std::path::PathBuf;
 
 use iced::{
     Alignment, Element, Length,
-    widget::{button, column, container, pick_list, row, scrollable, slider, text, text_input},
+    widget::{
+        button, column, container, image, pick_list, row, scrollable, slider, text, text_input,
+    },
 };
 use verbacue::{
     models::{self, Kind},
@@ -465,6 +467,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
                             (B::Yellow, "Yellow with outline"),
                             (B::Box, "White on a dark box"),
                             (B::Large, "Large white"),
+                            (B::Bold, "Bold capitals with shadow"),
+                            (B::Highlight, "Bold, spoken word on a green box"),
+                            (B::Neon, "Neon glow"),
                         ]
                         .into_iter()
                         .map(|(value, label)| Choice {
@@ -489,6 +494,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
                             (A::Pop, "Pop in"),
                             (A::Typewriter, "Typewriter"),
                             (A::Karaoke, "Karaoke (words light up)"),
+                            (A::Bounce, "Bounce in"),
+                            (A::Words, "Word groups (short-video style)"),
                         ]
                         .into_iter()
                         .map(|(value, label)| Choice {
@@ -501,7 +508,18 @@ pub fn view(app: &App) -> Element<'_, Message> {
                     SettingChange::BurnAnimation,
                 ),
             ),
-        ],
+        ]
+        .into_iter()
+        .chain(app.sample_frame.clone().map(|handle| {
+            setting_row(
+                "Preview",
+                "A sample line with this style and animation.",
+                container(image(handle).width(280).height(158))
+                    .style(theme::card(10.0))
+                    .clip(true),
+            )
+        }))
+        .collect(),
     );
 
     let dubbing = dubbing_card(s, &app.studio_voices);

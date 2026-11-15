@@ -85,6 +85,9 @@ pub enum BurnStyle {
     Yellow,
     Box,
     Large,
+    Bold,
+    Highlight,
+    Neon,
 }
 
 /// How burned-in subtitles appear.
@@ -97,6 +100,35 @@ pub enum BurnAnimation {
     Pop,
     Typewriter,
     Karaoke,
+    Bounce,
+    Words,
+}
+
+impl Settings {
+    /// The look of burned-in subtitles.
+    pub fn look(&self) -> verbacue::video::SubtitleLook {
+        use verbacue::video::{SubtitleAnimation as SA, SubtitleStyle as SS};
+        verbacue::video::SubtitleLook {
+            style: match self.burn_style {
+                BurnStyle::Classic => SS::Classic,
+                BurnStyle::Yellow => SS::Yellow,
+                BurnStyle::Box => SS::Box,
+                BurnStyle::Large => SS::Large,
+                BurnStyle::Bold => SS::Bold,
+                BurnStyle::Highlight => SS::Highlight,
+                BurnStyle::Neon => SS::Neon,
+            },
+            animation: match self.burn_animation {
+                BurnAnimation::None => SA::None,
+                BurnAnimation::Fade => SA::Fade,
+                BurnAnimation::Pop => SA::Pop,
+                BurnAnimation::Typewriter => SA::Typewriter,
+                BurnAnimation::Karaoke => SA::Karaoke,
+                BurnAnimation::Bounce => SA::Bounce,
+                BurnAnimation::Words => SA::Words,
+            },
+        }
+    }
 }
 
 /// What dubbing does with the original speech.

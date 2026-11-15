@@ -665,6 +665,12 @@ enum BurnStyle {
     Box,
     /// Classic, larger.
     Large,
+    /// Large white capitals with a thick outline and a shadow.
+    Bold,
+    /// Bold, and the spoken word is on a green box.
+    Highlight,
+    /// White capitals with a pink glow.
+    Neon,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -678,6 +684,10 @@ enum BurnAnimation {
     Typewriter,
     /// The words light up one after the other.
     Karaoke,
+    /// Grow past full size, then settle.
+    Bounce,
+    /// Up to three words at a time; the spoken word lights up.
+    Words,
 }
 
 impl LookArgs {
@@ -689,6 +699,9 @@ impl LookArgs {
                 BurnStyle::Yellow => S::Yellow,
                 BurnStyle::Box => S::Box,
                 BurnStyle::Large => S::Large,
+                BurnStyle::Bold => S::Bold,
+                BurnStyle::Highlight => S::Highlight,
+                BurnStyle::Neon => S::Neon,
             },
             animation: match self.burn_animation {
                 BurnAnimation::None => A::None,
@@ -696,6 +709,8 @@ impl LookArgs {
                 BurnAnimation::Pop => A::Pop,
                 BurnAnimation::Typewriter => A::Typewriter,
                 BurnAnimation::Karaoke => A::Karaoke,
+                BurnAnimation::Bounce => A::Bounce,
+                BurnAnimation::Words => A::Words,
             },
         }
     }

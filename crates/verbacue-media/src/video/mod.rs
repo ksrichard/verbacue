@@ -16,6 +16,7 @@ mod embed;
 mod fonts;
 mod overlay;
 mod preview;
+mod sample;
 
 use std::path::Path;
 
@@ -34,6 +35,7 @@ use verbacue_core::{
 use burn::{open_video_decoder, write_burned};
 use embed::write_embedded;
 pub use preview::{MediaInfo, PreviewFrame, media_info, preview_frames};
+pub use sample::SubtitleSample;
 
 pub struct SubtitleTrack<'a> {
     /// ISO 639-1 code, for example "hu".
@@ -101,6 +103,12 @@ pub enum SubtitleStyle {
     Box,
     /// Classic, about 1.4 times larger.
     Large,
+    /// Large white capitals with a thick outline and a shadow, as in short videos.
+    Bold,
+    /// Bold, and the spoken word is on a green box.
+    Highlight,
+    /// White capitals with a pink glow.
+    Neon,
 }
 
 /// How burned-in subtitles appear.
@@ -116,6 +124,11 @@ pub enum SubtitleAnimation {
     Typewriter,
     /// The words light up one after the other, in time with the speech.
     Karaoke,
+    /// The line grows past its size and then settles.
+    Bounce,
+    /// Up to three words at a time, in time with the speech. Each group bounces in,
+    /// and the spoken word lights up.
+    Words,
 }
 
 /// The style and the animation of burned-in subtitles.

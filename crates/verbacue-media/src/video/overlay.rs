@@ -82,24 +82,15 @@ impl<'a> Painter<'a> {
             if let Some(i) = self.active_cue(ms) {
                 let cue = &self.cues[i];
                 let since = u64::try_from(ms).unwrap_or(0) - cue.start_ms;
-                let state = Frame::at(
-                    self.look.animation,
-                    i,
-                    &cue.text,
+                draw_cue(
+                    &self.fonts,
+                    &mut self.cached,
+                    &mut out,
+                    self.look,
+                    (i, &cue.text),
                     since,
                     cue.end_ms - cue.start_ms,
                 );
-                if self
-                    .cached
-                    .as_ref()
-                    .is_none_or(|(c, _)| !c.same_drawing(&state))
-                {
-                    let overlay = Overlay::render(&self.fonts, &cue.text, w, h, self.look, &state);
-                    self.cached = Some((state, overlay));
-                }
-                if let Some((_, overlay)) = &self.cached {
-                    overlay.blend(&mut out, state.opacity);
-                }
             }
         }
         Ok(out)
@@ -116,14 +107,59 @@ impl<'a> Painter<'a> {
     }
 }
 
+/// Draws cue `cue` (its number and text) into a YUV 4:2:0 frame, `since` ms after
+/// its start. `cached` keeps the last bitmap, so a still cue is drawn only once.
+pub(super) fn draw_cue(
+    fonts: &Fonts,
+    cached: &mut Option<(Frame, Overlay)>,
+    out: &mut frame::Video,
+    look: SubtitleLook,
+    (cue, text): (usize, &str),
+    since: u64,
+    length: u64,
+) {
+    let (text, state) = cue_state(look, cue, text, since, length);
+    if cached.as_ref().is_none_or(|(c, _)| !c.same_drawing(&state)) {
+        let shown = state.shown(&text);
+        let overlay = Overlay::render(fonts, &shown, out.width(), out.height(), look, &state);
+        *cached = Some((state, overlay));
+    }
+    if let Some((_, overlay)) = cached {
+        overlay.blend(out, state.opacity);
+    }
+}
+
+/// The text that a cue shows in `look`, and its state `since` ms after its start.
+pub(super) fn cue_state(
+    look: SubtitleLook,
+    cue: usize,
+    text: &str,
+    since: u64,
+    length: u64,
+) -> (String, Frame) {
+    let text = if look.style.capitals() {
+        text.to_uppercase()
+    } else {
+        text.to_string()
+    };
+    let state = Frame::at(look.animation, cue, &text, since, length);
+    (text, state)
+}
+
 /// How long Fade takes in and out, and how long Pop grows.
 const FADE_MS: u64 = 200;
 const POP_MS: u64 = 150;
 /// Typewriter writes this many letters per second, faster for a long line, so that the
 /// line is complete after 70 % of its time.
 const TYPE_CPS: u64 = 25;
-/// Karaoke lights the words over this share of the line, in percent.
+/// Karaoke and Words go through the words over this share of the line, in percent.
 const KARAOKE_SHARE: u64 = 90;
+/// Bounce grows to this size (percent) in the first half of BOUNCE_MS, then settles.
+const BOUNCE_TOP: u64 = 115;
+const BOUNCE_MS: u64 = 180;
+/// A group of Words has at most this many words and letters.
+const GROUP_WORDS: usize = 3;
+const GROUP_LETTERS: usize = 16;
 
 /// What one frame of a cue shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,10 +169,12 @@ pub(super) struct Frame {
     opacity: u8,
     /// The text size in percent of the normal size.
     scale: u8,
-    /// The number of letters shown.
+    /// The words of the cue that are shown: all of them, or one group of Words.
+    words: (usize, usize),
+    /// The number of letters shown, counted in the shown words.
     letters: usize,
-    /// The number of words lit by Karaoke.
-    lit: usize,
+    /// The lit words, counted in the shown words.
+    lit: (usize, usize),
 }
 
 impl Frame {
@@ -148,14 +186,29 @@ impl Frame {
         since: u64,
         length: u64,
     ) -> Frame {
-        let letters = text.chars().filter(|c| !c.is_whitespace()).count();
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let lens: Vec<usize> = words.iter().map(|w| w.chars().count()).collect();
+        let letters: usize = lens.iter().sum();
         let mut frame = Frame {
             cue,
             opacity: 255,
             scale: 100,
+            words: (0, words.len()),
             letters,
-            lit: 0,
+            lit: (0, 0),
         };
+        // Each word starts when the share of the letters before it has passed.
+        let span = (length * KARAOKE_SHARE / 100).max(1);
+        let mut before = 0;
+        let starts: Vec<u64> = lens
+            .iter()
+            .map(|len| {
+                let start = before as u64 * span / letters.max(1) as u64;
+                before += len;
+                start
+            })
+            .collect();
+        let spoken = starts.iter().filter(|&&s| since >= s).count();
         let ramp = |ms: u64, of: u64| (ms.min(of) * 255 / of.max(1)) as u8;
         match animation {
             SubtitleAnimation::None => {}
@@ -167,6 +220,10 @@ impl Frame {
                 frame.scale = (70 + since.min(POP_MS) * 30 / POP_MS) as u8;
                 frame.opacity = ramp(since, POP_MS / 2);
             }
+            SubtitleAnimation::Bounce => {
+                frame.scale = bounce(since);
+                frame.opacity = ramp(since, BOUNCE_MS / 3);
+            }
             SubtitleAnimation::Typewriter => {
                 let span = (letters as u64 * 1000 / TYPE_CPS)
                     .min(length * 7 / 10)
@@ -174,27 +231,89 @@ impl Frame {
                 frame.letters = (letters as u64 * since.min(span)).div_ceil(span) as usize;
                 frame.letters = frame.letters.clamp(1.min(letters), letters);
             }
-            SubtitleAnimation::Karaoke => {
-                // Each word lights when the share of the letters before it has passed.
-                let words: Vec<usize> =
-                    text.split_whitespace().map(|w| w.chars().count()).collect();
-                let span = (length * KARAOKE_SHARE / 100).max(1);
-                let mut before = 0usize;
-                for len in &words {
-                    let start = before as u64 * span / letters.max(1) as u64;
-                    if since >= start {
-                        frame.lit += 1;
-                    }
-                    before += len;
+            SubtitleAnimation::Karaoke => frame.lit = (0, spoken),
+            SubtitleAnimation::Words => {
+                let current = spoken.saturating_sub(1);
+                if let Some(&(a, b)) = groups(&words)
+                    .iter()
+                    .find(|(a, b)| (*a..*b).contains(&current))
+                {
+                    frame.words = (a, b);
+                    frame.letters = lens[a..b].iter().sum();
+                    frame.lit = (current - a, current - a + 1);
+                    frame.scale = bounce(since - starts[a]);
                 }
             }
         }
         frame
     }
 
+    pub(super) fn opacity(&self) -> u8 {
+        self.opacity
+    }
+
+    /// The text of the shown words. All words keep the line breaks of the cue.
+    pub(super) fn shown(&self, text: &str) -> String {
+        let words: Vec<&str> = text.split_whitespace().collect();
+        if self.words == (0, words.len()) {
+            text.to_string()
+        } else {
+            words[self.words.0..self.words.1].join(" ")
+        }
+    }
+
     /// True if both states give the same bitmap; only the opacity may differ.
     fn same_drawing(&self, o: &Frame) -> bool {
-        (self.cue, self.scale, self.letters, self.lit) == (o.cue, o.scale, o.letters, o.lit)
+        (self.cue, self.scale, self.words, self.letters, self.lit)
+            == (o.cue, o.scale, o.words, o.letters, o.lit)
+    }
+}
+
+/// The size in percent, `ms` after a Bounce starts.
+fn bounce(ms: u64) -> u8 {
+    let half = BOUNCE_MS / 2;
+    let size = if ms < half {
+        60 + ms * (BOUNCE_TOP - 60) / half
+    } else {
+        BOUNCE_TOP - (ms.min(BOUNCE_MS) - half) * (BOUNCE_TOP - 100) / half
+    };
+    size as u8
+}
+
+/// Splits the words into groups for Words, as (first, end) word numbers. A group ends
+/// after GROUP_WORDS words, before GROUP_LETTERS letters, or after a punctuation mark.
+fn groups(words: &[&str]) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let (mut start, mut letters) = (0, 0);
+    for (i, word) in words.iter().enumerate() {
+        let len = word.chars().count();
+        let after_mark = i > 0 && words[i - 1].ends_with(['.', ',', '!', '?', ';', ':']);
+        if i > start && (i - start == GROUP_WORDS || letters + len > GROUP_LETTERS || after_mark) {
+            out.push((start, i));
+            (start, letters) = (i, 0);
+        }
+        letters += len;
+    }
+    if start < words.len() {
+        out.push((start, words.len()));
+    }
+    out
+}
+
+impl SubtitleStyle {
+    /// The text height as a share of the frame height.
+    fn size(self) -> f32 {
+        match self {
+            Self::Classic | Self::Yellow | Self::Box => 0.055,
+            Self::Large => 0.075,
+            Self::Bold | Self::Highlight => 0.075,
+            Self::Neon => 0.07,
+        }
+    }
+
+    /// The short-video styles: capitals, placed lower in the middle of the picture.
+    fn capitals(self) -> bool {
+        matches!(self, Self::Bold | Self::Highlight | Self::Neon)
     }
 }
 
@@ -202,7 +321,15 @@ impl Frame {
 type Yuv = (u8, u8, u8);
 const WHITE: Yuv = (235, 128, 128);
 const YELLOW: Yuv = (210, 16, 146);
-const BLACK: u8 = 16;
+const BLACK: Yuv = (16, 128, 128);
+/// RGB (40, 200, 70).
+const GREEN: Yuv = (134, 95, 67);
+/// RGB (255, 40, 160).
+const PINK: Yuv = (117, 149, 214);
+/// RGB (40, 230, 255).
+const CYAN: Yuv = (167, 167, 43);
+/// The opacity of the shadow of the short-video styles.
+const SHADOW_ALPHA: u16 = 150;
 /// The opacity of the box of the Box style.
 const BOX_ALPHA: u8 = 170;
 
@@ -215,8 +342,11 @@ pub(super) struct Overlay {
     fill: Vec<u8>,
     /// The part of `fill` that Karaoke has lit.
     lit: Vec<u8>,
-    /// The black outline, or the box of the Box style.
+    /// The outline, the shadow, the glow, or the box of the Box style.
     back: Vec<u8>,
+    /// The boxes behind the lit words of the Highlight style.
+    boxes: Vec<u8>,
+    back_color: Yuv,
     color: Yuv,
     lit_color: Yuv,
 }
@@ -230,11 +360,8 @@ impl Overlay {
         look: SubtitleLook,
         state: &Frame,
     ) -> Self {
-        let size = match look.style {
-            SubtitleStyle::Large => 0.075,
-            _ => 0.055,
-        };
-        let px = (frame_h as f32 * size * f32::from(state.scale) / 100.0).max(10.0);
+        let style = look.style;
+        let px = (frame_h as f32 * style.size() * f32::from(state.scale) / 100.0).max(10.0);
         let text_lines: Vec<&str> = text.lines().collect();
         let lines: Vec<(Vec<PlacedGlyph>, f32)> =
             text_lines.iter().map(|l| fonts.shape(l, px)).collect();
@@ -242,12 +369,20 @@ impl Overlay {
         // fallback font (for example CJK) do not touch each other.
         let (ascent, line_height) =
             fonts.metrics(lines.iter().flat_map(|(g, _)| g).map(|g| g.font), px);
-        let radius = (px / 14.0).round().max(2.0) as usize;
-        let boxed = look.style == SubtitleStyle::Box;
-        let pad = if boxed {
-            (px * 0.35) as usize
+        let radius = if style.capitals() {
+            (px / 8.0).round().max(2.0) as usize
         } else {
-            radius + 2
+            (px / 14.0).round().max(2.0) as usize
+        };
+        let shadow = if style.capitals() {
+            (px / 14.0) as usize
+        } else {
+            0
+        };
+        let pad = match style {
+            SubtitleStyle::Box => (px * 0.35) as usize,
+            SubtitleStyle::Highlight | SubtitleStyle::Neon => (px * 0.4) as usize,
+            _ => radius + shadow + 2,
         };
 
         let max_w = lines.iter().map(|(_, w)| *w).fold(0.0, f32::max);
@@ -256,6 +391,8 @@ impl Overlay {
             ((line_height * lines.len() as f32).ceil() as usize + 2 * pad).min(frame_h as usize);
         let mut fill = vec![0u8; width * height];
         let mut lit = vec![0u8; width * height];
+        // The left, top, right and bottom of each lit word, for the Highlight boxes.
+        let mut lit_rects: Vec<(usize, [f32; 4])> = Vec::new();
 
         // The letter and word number of each byte, over all lines, without spaces.
         let mut letters_before = 0;
@@ -284,7 +421,8 @@ impl Overlay {
                 if letter != usize::MAX && letter >= state.letters {
                     continue;
                 }
-                let is_lit = word_at.get(g.byte).is_some_and(|&w| w < state.lit);
+                let word = word_at.get(g.byte).copied().unwrap_or(usize::MAX);
+                let is_lit = (state.lit.0..state.lit.1).contains(&word);
                 let loaded = &fonts.0[g.font];
                 let font = &loaded.font;
                 let glyph =
@@ -293,6 +431,17 @@ impl Overlay {
                     continue;
                 };
                 let bounds = outlined.px_bounds();
+                if is_lit {
+                    let top = baseline - ascent;
+                    let rect = [bounds.min.x, top, bounds.max.x, top + line_height];
+                    match lit_rects.iter_mut().find(|(w, _)| *w == word) {
+                        Some((_, r)) => {
+                            r[0] = r[0].min(rect[0]);
+                            r[2] = r[2].max(rect[2]);
+                        }
+                        None => lit_rects.push((word, rect)),
+                    }
+                }
                 outlined.draw(|gx, gy, coverage| {
                     let px_x = bounds.min.x as i64 + i64::from(gx);
                     let px_y = bounds.min.y as i64 + i64::from(gy);
@@ -308,37 +457,72 @@ impl Overlay {
                 });
             }
         }
-        let back = if boxed {
-            vec![BOX_ALPHA; width * height]
-        } else {
-            dilate(&fill, width, height, radius)
+
+        let mut boxes = vec![0u8; width * height];
+        let back = match style {
+            SubtitleStyle::Box => vec![BOX_ALPHA; width * height],
+            SubtitleStyle::Neon => {
+                let glow = blur(
+                    &dilate(&fill, width, height, radius / 2),
+                    width,
+                    height,
+                    radius * 2,
+                );
+                glow.iter().map(|&a| a.saturating_mul(2)).collect()
+            }
+            _ => {
+                let outline = dilate(&fill, width, height, radius);
+                with_shadow(&outline, width, height, shadow)
+            }
         };
-        let color = if look.style == SubtitleStyle::Yellow {
-            YELLOW
-        } else {
-            WHITE
+        if style == SubtitleStyle::Highlight {
+            // Only the spoken word has a box, also when Karaoke has lit the earlier ones.
+            let grow = px * 0.14;
+            let last = lit_rects.iter().map(|(w, _)| *w).max();
+            for &(_, [l, t, r, b]) in lit_rects.iter().filter(|(w, _)| Some(*w) == last) {
+                fill_round_rect(
+                    &mut boxes,
+                    width,
+                    height,
+                    [l - grow, t, r + grow, b],
+                    px * 0.22,
+                );
+            }
+        }
+        let (back_color, color, lit_color) = match style {
+            SubtitleStyle::Yellow => (BLACK, YELLOW, WHITE),
+            SubtitleStyle::Highlight => (BLACK, WHITE, WHITE),
+            SubtitleStyle::Neon => (PINK, WHITE, CYAN),
+            SubtitleStyle::Bold => (BLACK, WHITE, GREEN),
+            _ => (BLACK, WHITE, YELLOW),
         };
-        let lit_color = if look.style == SubtitleStyle::Yellow {
-            WHITE
+        let x = (frame_w as usize).saturating_sub(width) / 2;
+        let y = if style.capitals() {
+            // Centred at 72 % of the height, where short videos put their captions.
+            ((frame_h as f32 * 0.72) as usize)
+                .saturating_sub(height / 2)
+                .min((frame_h as usize).saturating_sub(height))
         } else {
-            YELLOW
+            let margin = (frame_h as f32 * 0.06) as usize;
+            (frame_h as usize).saturating_sub(height + margin)
         };
-        let margin = (frame_h as f32 * 0.06) as usize;
         Self {
-            x: (frame_w as usize).saturating_sub(width) / 2,
-            y: (frame_h as usize).saturating_sub(height + margin),
+            x,
+            y,
             width,
             height,
             fill,
             lit,
             back,
+            boxes,
+            back_color,
             color,
             lit_color,
         }
     }
 
-    /// Draws the overlay into a YUV 4:2:0 frame: first the black outline or box, then
-    /// the text, then the lit words. `opacity` (0-255) scales all of it.
+    /// Draws the overlay into a YUV 4:2:0 frame: first the outline, the glow or the box,
+    /// then the word boxes, the text and the lit words. `opacity` (0-255) scales all.
     pub(super) fn blend(&self, frame: &mut frame::Video, opacity: u8) {
         if opacity == 0 {
             return;
@@ -359,7 +543,8 @@ impl Overlay {
                 }
                 let i = row * self.width + col;
                 let p = &mut luma[y * stride + x];
-                *p = mix(*p, BLACK, scale(self.back[i]));
+                *p = mix(*p, self.back_color.0, scale(self.back[i]));
+                *p = mix(*p, GREEN.0, scale(self.boxes[i]));
                 *p = mix(*p, self.color.0, scale(self.fill[i]));
                 *p = mix(*p, self.lit_color.0, scale(self.lit[i]));
             }
@@ -380,7 +565,8 @@ impl Overlay {
                     }
                     let i = row * self.width + col;
                     let p = &mut chroma[y * stride + x];
-                    *p = mix(*p, 128, scale(self.back[i]));
+                    *p = mix(*p, pick(self.back_color), scale(self.back[i]));
+                    *p = mix(*p, pick(GREEN), scale(self.boxes[i]));
                     *p = mix(*p, pick(self.color), scale(self.fill[i]));
                     *p = mix(*p, pick(self.lit_color), scale(self.lit[i]));
                 }
@@ -412,6 +598,60 @@ pub(super) fn dilate(mask: &[u8], width: usize, height: usize, radius: usize) ->
         }
     }
     out
+}
+
+/// Adds a copy of `outline`, moved `offset` pixels right and down, as a shadow.
+fn with_shadow(outline: &[u8], width: usize, height: usize, offset: usize) -> Vec<u8> {
+    let mut out = outline.to_vec();
+    if offset == 0 {
+        return out;
+    }
+    for y in offset..height {
+        for x in offset..width {
+            let a =
+                (u16::from(outline[(y - offset) * width + x - offset]) * SHADOW_ALPHA / 255) as u8;
+            let p = &mut out[y * width + x];
+            *p = (*p).max(a);
+        }
+    }
+    out
+}
+
+/// Averages a mask over a square of `radius` pixels in all directions (a box blur).
+fn blur(mask: &[u8], width: usize, height: usize, radius: usize) -> Vec<u8> {
+    let pass = |src: &[u8], len: usize, lines: usize, at: &dyn Fn(usize, usize) -> usize| {
+        let mut out = vec![0u8; src.len()];
+        for line in 0..lines {
+            for i in 0..len {
+                let lo = i.saturating_sub(radius);
+                let hi = (i + radius).min(len - 1);
+                let sum: u32 = (lo..=hi).map(|k| u32::from(src[at(line, k)])).sum();
+                out[at(line, i)] = (sum / (2 * radius as u32 + 1)) as u8;
+            }
+        }
+        out
+    };
+    let rows = pass(mask, width, height, &|y, x| y * width + x);
+    pass(&rows, height, width, &|x, y| y * width + x)
+}
+
+/// Fills a rectangle with round corners of `radius` into a mask, with soft edges.
+fn fill_round_rect(mask: &mut [u8], width: usize, height: usize, rect: [f32; 4], radius: f32) {
+    let [l, t, r, b] = rect;
+    let y0 = t.floor().max(0.0) as usize;
+    let y1 = (b.ceil().max(0.0) as usize).min(height);
+    let x0 = l.floor().max(0.0) as usize;
+    let x1 = (r.ceil().max(0.0) as usize).min(width);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let (cx, cy) = (x as f32 + 0.5, y as f32 + 0.5);
+            let dx = (l + radius - cx).max(cx - (r - radius)).max(0.0);
+            let dy = (t + radius - cy).max(cy - (b - radius)).max(0.0);
+            let inside = (radius - (dx * dx + dy * dy).sqrt() + 0.5).clamp(0.0, 1.0);
+            let p = &mut mask[y * width + x];
+            *p = (*p).max((inside * 255.0) as u8);
+        }
+    }
 }
 
 pub(super) fn mix(base: u8, color: u8, alpha: u8) -> u8 {
@@ -454,10 +694,10 @@ mod tests {
     fn karaoke_lights_the_words_in_turn() {
         // 3 words of 4, 4 and 2 letters over 90 % of 1000 ms: starts at 0, 360, 720.
         let at = |t| Frame::at(SubtitleAnimation::Karaoke, 0, "abcd efgh ij", t, 1000).lit;
-        assert_eq!(at(0), 1);
-        assert_eq!(at(359), 1);
-        assert_eq!(at(360), 2);
-        assert_eq!(at(720), 3);
+        assert_eq!(at(0), (0, 1));
+        assert_eq!(at(359), (0, 1));
+        assert_eq!(at(360), (0, 2));
+        assert_eq!(at(720), (0, 3));
     }
 
     #[test]
@@ -476,17 +716,87 @@ mod tests {
         assert_eq!(classic.color, WHITE);
         assert_eq!(render(SubtitleStyle::Yellow, &full).color, YELLOW);
         // The box covers the whole overlay; an outline does not.
-        assert!(render(SubtitleStyle::Box, &full).back.iter().all(|&a| a == BOX_ALPHA));
+        assert!(
+            render(SubtitleStyle::Box, &full)
+                .back
+                .iter()
+                .all(|&a| a == BOX_ALPHA)
+        );
         assert!(classic.back.contains(&0));
         assert!(render(SubtitleStyle::Large, &full).height > classic.height);
         // Typewriter with 5 letters draws less text; Karaoke lights a part of it.
         let ink = |o: &Overlay| o.fill.iter().filter(|&&a| a > 128).count();
         let five = Frame { letters: 5, ..full };
         assert!(ink(&render(SubtitleStyle::Classic, &five)) < ink(&classic));
-        let one = Frame { lit: 1, ..full };
+        let one = Frame {
+            lit: (0, 1),
+            ..full
+        };
         let lit = render(SubtitleStyle::Classic, &one);
         let lit_ink = lit.lit.iter().filter(|&&a| a > 128).count();
         assert!(lit_ink > 0 && lit_ink < ink(&lit));
+    }
+
+    #[test]
+    fn bounce_overshoots_and_settles() {
+        let at = |t| Frame::at(SubtitleAnimation::Bounce, 0, "Szia", t, 2000).scale;
+        assert_eq!(at(0), 60);
+        assert_eq!(at(90), 115);
+        assert_eq!(at(180), 100);
+        assert_eq!(at(1000), 100);
+    }
+
+    #[test]
+    fn words_show_one_group_and_light_the_spoken_word() {
+        // 6 words of 3 letters over 90 % of 1800 ms: word n starts at n * 270 ms.
+        let text = "one two six ten red big";
+        let at = |t| Frame::at(SubtitleAnimation::Words, 0, text, t, 1800);
+        assert_eq!(at(0).words, (0, 3));
+        assert_eq!(at(0).lit, (0, 1));
+        assert_eq!(at(0).shown(text), "one two six");
+        assert_eq!(at(560).lit, (2, 3));
+        assert_eq!(at(820).words, (3, 6));
+        assert_eq!(at(820).lit, (0, 1));
+        assert_eq!(at(820).scale, 66);
+        assert_eq!(at(820).shown(text), "ten red big");
+    }
+
+    #[test]
+    fn groups_split_on_size_and_punctuation() {
+        assert_eq!(groups(&["a", "b", "c", "d"]), [(0, 3), (3, 4)]);
+        assert_eq!(groups(&["hi,", "you", "there"]), [(0, 1), (1, 3)]);
+        assert_eq!(groups(&["extraordinarily", "long"]), [(0, 1), (1, 2)]);
+        assert!(groups(&[]).is_empty());
+    }
+
+    #[test]
+    fn short_video_styles_have_their_parts() {
+        let fonts = Fonts::for_cues(&[]).unwrap();
+        let text = "HELLO WORLD";
+        let one = Frame {
+            lit: (1, 2),
+            ..Frame::at(SubtitleAnimation::None, 0, text, 0, 2000)
+        };
+        let render = |style| {
+            let look = SubtitleLook {
+                style,
+                animation: SubtitleAnimation::None,
+            };
+            Overlay::render(&fonts, text, 640, 360, look, &one)
+        };
+        let highlight = render(SubtitleStyle::Highlight);
+        // The box sits behind the second word only: on the right half.
+        let boxed: Vec<usize> = (0..highlight.boxes.len())
+            .filter(|&i| highlight.boxes[i] > 128)
+            .map(|i| i % highlight.width)
+            .collect();
+        assert!(!boxed.is_empty() && boxed.iter().all(|&x| x > highlight.width / 2 - 10));
+        assert!(render(SubtitleStyle::Bold).boxes.iter().all(|&a| a == 0));
+        let neon = render(SubtitleStyle::Neon);
+        assert_eq!(neon.back_color, PINK);
+        // The short-video styles sit above the bottom margin of the classic style.
+        let classic = render(SubtitleStyle::Classic);
+        assert!(render(SubtitleStyle::Bold).y + 40 < classic.y);
     }
 
     #[test]

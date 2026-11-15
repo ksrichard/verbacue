@@ -34,6 +34,10 @@ use crate::{
 };
 
 /// The screens of the app, in the order of the main flow.
+/// The size of the subtitle sample picture, twice its size on the screen.
+const SAMPLE_WIDTH: u32 = 560;
+const SAMPLE_HEIGHT: u32 = 316;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Screen {
     #[default]
@@ -177,6 +181,11 @@ pub struct App {
     opened: Instant,
     now: Instant,
     logo: iced::widget::image::Handle,
+    /// The looping subtitle sample of the Settings screen, made when it first opens.
+    sample: Option<verbacue::video::SubtitleSample>,
+    /// When the sample loop started; a new style or animation starts it again.
+    sample_started: Instant,
+    pub sample_frame: Option<iced::widget::image::Handle>,
 }
 
 impl App {
@@ -263,6 +272,9 @@ impl App {
             opened: now,
             now,
             logo: nav::logo(),
+            sample: None,
+            sample_started: now,
+            sample_frame: None,
         }
     }
 
@@ -354,9 +366,32 @@ impl App {
         self.now.duration_since(self.opened).as_secs_f32()
     }
 
+    /// Starts the subtitle sample from the beginning and draws its first picture.
+    fn restart_sample(&mut self) {
+        if self.sample.is_none() {
+            // A failed font load only hides the sample.
+            self.sample = verbacue::video::SubtitleSample::new(SAMPLE_WIDTH, SAMPLE_HEIGHT).ok();
+        }
+        self.sample_started = Instant::now();
+        self.draw_sample(self.sample_started);
+    }
+
+    fn draw_sample(&mut self, now: Instant) {
+        let look = self.settings.look();
+        let ms = now
+            .saturating_duration_since(self.sample_started)
+            .as_millis() as u64;
+        if let Some(f) = self.sample.as_mut().and_then(|s| s.frame(look, ms)) {
+            self.sample_frame = Some(iced::widget::image::Handle::from_rgba(
+                f.width, f.height, f.rgba,
+            ));
+        }
+    }
+
     fn show(&mut self, screen: Screen) {
         if screen == Screen::Settings {
             self.read_studio_voices();
+            self.restart_sample();
         }
         if self.screen != screen {
             self.screen = screen;
@@ -391,6 +426,9 @@ impl App {
             }
             Message::Tick(now) => {
                 self.now = now;
+                if self.screen == Screen::Settings {
+                    self.draw_sample(now);
+                }
                 Task::none()
             }
             Message::Resized(size) => {
@@ -685,7 +723,14 @@ impl App {
                     self.film_notes_changed = Instant::now();
                 }
                 let model_changed = matches!(change, SettingChange::DubModel(_));
+                let look_changed = matches!(
+                    change,
+                    SettingChange::BurnStyle(_) | SettingChange::BurnAnimation(_)
+                );
                 change.apply(&mut self.settings);
+                if look_changed {
+                    self.restart_sample();
+                }
                 if model_changed {
                     self.read_studio_voices();
                 }
@@ -958,25 +1003,7 @@ impl App {
         job.out_dir = settings.out_dir.clone();
         job.subtitles = s.outputs.subtitles;
         job.burn = s.outputs.burn;
-        job.look = {
-            use crate::settings::{BurnAnimation as A, BurnStyle as B};
-            use verbacue::video::{SubtitleAnimation, SubtitleStyle};
-            verbacue::video::SubtitleLook {
-                style: match settings.burn_style {
-                    B::Classic => SubtitleStyle::Classic,
-                    B::Yellow => SubtitleStyle::Yellow,
-                    B::Box => SubtitleStyle::Box,
-                    B::Large => SubtitleStyle::Large,
-                },
-                animation: match settings.burn_animation {
-                    A::None => SubtitleAnimation::None,
-                    A::Fade => SubtitleAnimation::Fade,
-                    A::Pop => SubtitleAnimation::Pop,
-                    A::Typewriter => SubtitleAnimation::Typewriter,
-                    A::Karaoke => SubtitleAnimation::Karaoke,
-                },
-            }
-        };
+        job.look = settings.look();
         #[cfg(feature = "dub")]
         if s.outputs.dub {
             job.dub = Some(self.dub_options());
@@ -1084,13 +1111,11 @@ impl App {
         });
         let closes = window::close_requests().map(|_| Message::CloseRequested);
         let resizes = window::resize_events().map(|(_, size)| Message::Resized(size));
+        // The Settings screen plays the subtitle sample all the time.
         let animated = matches!(
             self.screen,
-            Screen::Pick | Screen::Choose | Screen::Convert | Screen::Done
-        ) || (self.screen == Screen::Settings
-            && (self.vad_changed.elapsed().as_secs_f32() < 0.5
-                || self.film_notes_changed.elapsed().as_secs_f32() < 0.5
-                || !self.downloads.is_empty()));
+            Screen::Pick | Screen::Choose | Screen::Convert | Screen::Done | Screen::Settings
+        );
         if animated {
             Subscription::batch([drops, closes, resizes, window::frames().map(Message::Tick)])
         } else {
