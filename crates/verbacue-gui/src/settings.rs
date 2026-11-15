@@ -265,6 +265,7 @@ enum RegisterDef {
 enum FormatDef {
     Srt,
     Vtt,
+    Ass,
 }
 
 #[cfg(test)]

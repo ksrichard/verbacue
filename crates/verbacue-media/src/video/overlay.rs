@@ -8,6 +8,10 @@ use verbacue_core::{
     subtitle::Cue,
 };
 
+use verbacue_core::look::{
+    BOUNCE_MS, FADE_MS, POP_MS, bounce, display_text, groups, typewriter_span, word_starts,
+};
+
 use super::{
     SubtitleAnimation, SubtitleLook, SubtitleStyle,
     fonts::{Fonts, PlacedGlyph},
@@ -20,6 +24,8 @@ use super::{
 /// decoded frame would change the decoder's reference frames and break later frames.
 pub(super) struct Painter<'a> {
     cues: &'a [Cue],
+    /// The text of each cue as it shows in the look.
+    texts: Vec<String>,
     fonts: Fonts,
     offset_ms: i64,
     time_base: Rational,
@@ -34,9 +40,14 @@ impl<'a> Painter<'a> {
         offset_ms: i64,
         time_base: Rational,
         look: SubtitleLook,
+        lang: &str,
     ) -> Result<Self> {
         Ok(Self {
             cues,
+            texts: cues
+                .iter()
+                .map(|c| display_text(&c.text, look.style, lang))
+                .collect(),
             fonts: Fonts::for_cues(cues)?,
             offset_ms,
             time_base,
@@ -87,7 +98,7 @@ impl<'a> Painter<'a> {
                     &mut self.cached,
                     &mut out,
                     self.look,
-                    (i, &cue.text),
+                    (i, &self.texts[i]),
                     since,
                     cue.end_ms - cue.start_ms,
                 );
@@ -107,8 +118,9 @@ impl<'a> Painter<'a> {
     }
 }
 
-/// Draws cue `cue` (its number and text) into a YUV 4:2:0 frame, `since` ms after
-/// its start. `cached` keeps the last bitmap, so a still cue is drawn only once.
+/// Draws cue `cue` (its number and its text in the look) into a YUV 4:2:0 frame,
+/// `since` ms after its start. `cached` keeps the last bitmap, so a still cue is drawn
+/// only once.
 pub(super) fn draw_cue(
     fonts: &Fonts,
     cached: &mut Option<(Frame, Overlay)>,
@@ -118,9 +130,9 @@ pub(super) fn draw_cue(
     since: u64,
     length: u64,
 ) {
-    let (text, state) = cue_state(look, cue, text, since, length);
+    let state = Frame::at(look.animation, cue, text, since, length);
     if cached.as_ref().is_none_or(|(c, _)| !c.same_drawing(&state)) {
-        let shown = state.shown(&text);
+        let shown = state.shown(text);
         let overlay = Overlay::render(fonts, &shown, out.width(), out.height(), look, &state);
         *cached = Some((state, overlay));
     }
@@ -128,38 +140,6 @@ pub(super) fn draw_cue(
         overlay.blend(out, state.opacity);
     }
 }
-
-/// The text that a cue shows in `look`, and its state `since` ms after its start.
-pub(super) fn cue_state(
-    look: SubtitleLook,
-    cue: usize,
-    text: &str,
-    since: u64,
-    length: u64,
-) -> (String, Frame) {
-    let text = if look.style.capitals() {
-        text.to_uppercase()
-    } else {
-        text.to_string()
-    };
-    let state = Frame::at(look.animation, cue, &text, since, length);
-    (text, state)
-}
-
-/// How long Fade takes in and out, and how long Pop grows.
-const FADE_MS: u64 = 200;
-const POP_MS: u64 = 150;
-/// Typewriter writes this many letters per second, faster for a long line, so that the
-/// line is complete after 70 % of its time.
-const TYPE_CPS: u64 = 25;
-/// Karaoke and Words go through the words over this share of the line, in percent.
-const KARAOKE_SHARE: u64 = 90;
-/// Bounce grows to this size (percent) in the first half of BOUNCE_MS, then settles.
-const BOUNCE_TOP: u64 = 115;
-const BOUNCE_MS: u64 = 180;
-/// A group of Words has at most this many words and letters.
-const GROUP_WORDS: usize = 3;
-const GROUP_LETTERS: usize = 16;
 
 /// What one frame of a cue shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -189,6 +169,7 @@ impl Frame {
         let words: Vec<&str> = text.split_whitespace().collect();
         let lens: Vec<usize> = words.iter().map(|w| w.chars().count()).collect();
         let letters: usize = lens.iter().sum();
+        let starts = word_starts(&words, length);
         let mut frame = Frame {
             cue,
             opacity: 255,
@@ -197,17 +178,6 @@ impl Frame {
             letters,
             lit: (0, 0),
         };
-        // Each word starts when the share of the letters before it has passed.
-        let span = (length * KARAOKE_SHARE / 100).max(1);
-        let mut before = 0;
-        let starts: Vec<u64> = lens
-            .iter()
-            .map(|len| {
-                let start = before as u64 * span / letters.max(1) as u64;
-                before += len;
-                start
-            })
-            .collect();
         let spoken = starts.iter().filter(|&&s| since >= s).count();
         let ramp = |ms: u64, of: u64| (ms.min(of) * 255 / of.max(1)) as u8;
         match animation {
@@ -225,9 +195,7 @@ impl Frame {
                 frame.opacity = ramp(since, BOUNCE_MS / 3);
             }
             SubtitleAnimation::Typewriter => {
-                let span = (letters as u64 * 1000 / TYPE_CPS)
-                    .min(length * 7 / 10)
-                    .max(1);
+                let span = typewriter_span(letters, length);
                 frame.letters = (letters as u64 * since.min(span)).div_ceil(span) as usize;
                 frame.letters = frame.letters.clamp(1.min(letters), letters);
             }
@@ -266,53 +234,6 @@ impl Frame {
     pub(super) fn same_drawing(&self, o: &Frame) -> bool {
         (self.cue, self.scale, self.words, self.letters, self.lit)
             == (o.cue, o.scale, o.words, o.letters, o.lit)
-    }
-}
-
-/// The size in percent, `ms` after a Bounce starts.
-fn bounce(ms: u64) -> u8 {
-    let half = BOUNCE_MS / 2;
-    let size = if ms < half {
-        60 + ms * (BOUNCE_TOP - 60) / half
-    } else {
-        BOUNCE_TOP - (ms.min(BOUNCE_MS) - half) * (BOUNCE_TOP - 100) / half
-    };
-    size as u8
-}
-
-/// Splits the words into groups for Words, as (first, end) word numbers. A group ends
-/// after GROUP_WORDS words, before GROUP_LETTERS letters, or after a punctuation mark.
-fn groups(words: &[&str]) -> Vec<(usize, usize)> {
-    let mut out = Vec::new();
-    let (mut start, mut letters) = (0, 0);
-    for (i, word) in words.iter().enumerate() {
-        let len = word.chars().count();
-        let after_mark = i > 0 && words[i - 1].ends_with(['.', ',', '!', '?', ';', ':']);
-        if i > start && (i - start == GROUP_WORDS || letters + len > GROUP_LETTERS || after_mark) {
-            out.push((start, i));
-            (start, letters) = (i, 0);
-        }
-        letters += len;
-    }
-    if start < words.len() {
-        out.push((start, words.len()));
-    }
-    out
-}
-
-impl SubtitleStyle {
-    /// The text height as a share of the frame height.
-    fn size(self) -> f32 {
-        match self {
-            Self::Classic | Self::Yellow | Self::Box => 0.055,
-            Self::Large | Self::Bold | Self::Highlight => 0.075,
-            Self::Neon => 0.07,
-        }
-    }
-
-    /// The short-video styles: capitals, placed lower in the middle of the picture.
-    fn capitals(self) -> bool {
-        matches!(self, Self::Bold | Self::Highlight | Self::Neon)
     }
 }
 
@@ -784,15 +705,6 @@ mod tests {
     }
 
     #[test]
-    fn bounce_overshoots_and_settles() {
-        let at = |t| Frame::at(SubtitleAnimation::Bounce, 0, "Szia", t, 2000).scale;
-        assert_eq!(at(0), 60);
-        assert_eq!(at(90), 115);
-        assert_eq!(at(180), 100);
-        assert_eq!(at(1000), 100);
-    }
-
-    #[test]
     fn words_show_one_group_and_light_the_spoken_word() {
         // 6 words of 3 letters over 90 % of 1800 ms: word n starts at n * 270 ms.
         let text = "one two six ten red big";
@@ -805,14 +717,6 @@ mod tests {
         assert_eq!(at(820).lit, (0, 1));
         assert_eq!(at(820).scale, 66);
         assert_eq!(at(820).shown(text), "ten red big");
-    }
-
-    #[test]
-    fn groups_split_on_size_and_punctuation() {
-        assert_eq!(groups(&["a", "b", "c", "d"]), [(0, 3), (3, 4)]);
-        assert_eq!(groups(&["hi,", "you", "there"]), [(0, 1), (1, 3)]);
-        assert_eq!(groups(&["extraordinarily", "long"]), [(0, 1), (1, 2)]);
-        assert!(groups(&[]).is_empty());
     }
 
     #[test]

@@ -11,11 +11,13 @@
 //!
 //! [`Progress`] receives progress reports from all long tasks.
 
+pub mod ass;
 pub mod config;
 pub mod error;
 #[cfg(feature = "http")]
 pub mod http;
 pub mod languages;
+pub mod look;
 pub mod models;
 mod progress;
 pub mod subtitle;

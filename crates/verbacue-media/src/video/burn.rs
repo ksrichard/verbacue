@@ -59,6 +59,7 @@ pub(super) fn write_burned(
     input: &Path,
     output: &Path,
     cues: &[Cue],
+    lang: &str,
     look: super::SubtitleLook,
     progress: &dyn Progress,
 ) -> Result<()> {
@@ -85,6 +86,7 @@ pub(super) fn write_burned(
                 offset_ms,
                 global_header,
                 look,
+                lang,
             )?)))
         } else if params.medium() != media::Type::Audio {
             None
@@ -179,6 +181,7 @@ impl<'a> VideoTranscoder<'a> {
         offset_ms: i64,
         global_header: bool,
         look: super::SubtitleLook,
+        lang: &str,
     ) -> Result<Self> {
         let time_base = ist.time_base();
         let decoder = open_video_decoder(ist)?;
@@ -218,7 +221,7 @@ impl<'a> VideoTranscoder<'a> {
         Ok(Self {
             decoder,
             encoder,
-            painter: Painter::new(cues, offset_ms, time_base, look)?,
+            painter: Painter::new(cues, offset_ms, time_base, look, lang)?,
             scaler: None,
             time_base,
             out_index,

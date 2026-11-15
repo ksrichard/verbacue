@@ -309,7 +309,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let sample = app
         .sample_frame
         .clone()
-        .filter(|_| selection.outputs.burn)
+        .filter(|_| app.styled(selection))
         .map(|handle| {
             image(handle)
                 .width(Length::Fill)
@@ -407,7 +407,18 @@ pub fn view(app: &App) -> Element<'_, Message> {
         card(
             FILE_ICON,
             "Subtitle file",
-            "An SRT file next to the video. Fast, and you can edit it later.".into(),
+            match app.settings.format {
+                verbacue::subtitle::Format::Srt => {
+                    "An SRT file next to the video. Fast, and you can edit it later."
+                }
+                verbacue::subtitle::Format::Vtt => {
+                    "A WebVTT file next to the video. Fast, and you can edit it later."
+                }
+                verbacue::subtitle::Format::Ass => {
+                    "An ASS file next to the video, with the style and animation below."
+                }
+            }
+            .into(),
             outputs.subtitles,
             change,
             Some(Output::Subtitles),
@@ -473,7 +484,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         ),
     ]
     .spacing(14);
-    let look = selection.outputs.burn.then(|| {
+    let look = app.styled(selection).then(|| {
         let styles = style_choices();
         let style = styles
             .iter()

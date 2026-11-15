@@ -6,6 +6,8 @@
 use crate::error::{Context as _, Result, bail};
 use std::fmt::Write as _;
 
+use crate::look::SubtitleLook;
+
 /// Longest cue that [`split_long`] keeps in one piece.
 pub const MAX_CUE_MS: u64 = 6_000;
 /// Widest cue text, in columns, that [`split_long`] keeps in one piece (two lines of
@@ -36,6 +38,8 @@ impl Cue {
 pub enum Format {
     Srt,
     Vtt,
+    /// ASS: the subtitles keep their style and animation.
+    Ass,
 }
 
 impl Format {
@@ -43,6 +47,7 @@ impl Format {
         match self {
             Self::Srt => "srt",
             Self::Vtt => "vtt",
+            Self::Ass => "ass",
         }
     }
 }
@@ -51,7 +56,7 @@ impl Format {
 pub fn format_timestamp(ms: u64, format: Format) -> String {
     let sep = match format {
         Format::Srt => ',',
-        Format::Vtt => '.',
+        Format::Vtt | Format::Ass => '.',
     };
     let (h, m, s, frac) = (ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000);
     format!("{h:02}:{m:02}:{s:02}{sep}{frac:03}")
@@ -81,6 +86,23 @@ pub fn parse_timestamp(text: &str) -> Result<u64> {
         .parse()
         .with_context(|| format!("bad timestamp {text:?}"))?;
     Ok(((h * 60 + m) * 60 + s) * 1000 + frac)
+}
+
+/// Parses an SRT, WebVTT or ASS file. It tells them apart by their first line.
+///
+/// # Errors
+/// Returns an error if a timing line is malformed.
+pub fn parse(text: &str) -> Result<Vec<Cue>> {
+    if crate::ass::is_ass(text) {
+        return crate::ass::parse(text);
+    }
+    let body = text.trim_start_matches('\u{feff}');
+    if body.starts_with("WEBVTT") {
+        // The header block ends at the first empty line; the cues after it read like SRT.
+        let body = body.replace("\r\n", "\n");
+        return parse_srt(body.split_once("\n\n").map_or("", |(_, cues)| cues));
+    }
+    parse_srt(text)
 }
 
 /// Parses SRT text. It accepts a UTF-8 BOM, CRLF line ends and missing cue numbers.
@@ -113,7 +135,18 @@ pub fn parse_srt(text: &str) -> Result<Vec<Cue>> {
 }
 
 /// Writes cues as SRT or WebVTT. Cue numbers start at 1.
+///
+/// An ASS file uses the default look; [`write_styled`] picks one.
 pub fn write(cues: &[Cue], format: Format) -> String {
+    write_styled(cues, "", format, SubtitleLook::default())
+}
+
+/// Writes cues in the language `lang` in `format`. Only ASS keeps `look`; SRT and
+/// WebVTT have no styles.
+pub fn write_styled(cues: &[Cue], lang: &str, format: Format, look: SubtitleLook) -> String {
+    if format == Format::Ass {
+        return crate::ass::write(cues, lang, look);
+    }
     let mut out = String::new();
     if format == Format::Vtt {
         out.push_str("WEBVTT\n\n");

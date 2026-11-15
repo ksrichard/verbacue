@@ -33,7 +33,7 @@ on the binary also opens it.
 2. Look at the preview, and tick one or more outputs: "Subtitle file" (an SRT next to
    the video), "Burned in" (a new MP4) and "Dubbed voice" (a new MKV that speaks the
    translation). Choose the target language and the audio track. With "Burned in",
-   also choose the subtitle style and the animation. A sample line plays over the
+   or with the ASS subtitle format, also choose the subtitle style and the animation. A sample line plays over the
    preview in this style.
 3. Click "Start grilling", and watch the barbecue while verbacue works.
 
@@ -257,6 +257,9 @@ verbacue burn movie.mkv movie.hu.srt
 # Subtitles in the language of the video, without translation, burned in with a style
 verbacue movie.mkv --translator none --burn --burn-style box --burn-animation karaoke
 
+# A styled subtitle file that VLC and mpv play with the same style and animation
+verbacue movie.mkv --to hu --format ass --burn-style highlight --burn-animation words
+
 # WebVTT output, and a chosen output file
 verbacue movie.mkv --to hu --format vtt -o subtitles.vtt
 
@@ -306,12 +309,12 @@ Night's Watch = Éjjeli Őrség
 | `--film-notes` | | Read the whole transcript first and write notes about the characters for the translator (slower; local model or own server) |
 | `--audio-track` | `0` | Audio track index from `verbacue tracks` |
 | `--list-tracks` | | List the audio tracks and stop (the same as `verbacue tracks`) |
-| `--format` | `srt` | `srt` or `vtt` |
+| `--format` | `srt` | `srt`, `vtt` or `ass` (keeps the style and the animation of `--burn-style` and `--burn-animation`, for players such as VLC and mpv) |
 | `-o`, `--output` | | Output file for the translation (one input only) |
 | `--embed` | | Also write `movie.<to>.mkv` with soft subtitle tracks |
 | `--burn` | | Also write `movie.<to>.mp4` with burned-in subtitles |
-| `--burn-style` | `classic` | `classic` (white, outline), `yellow` (yellow, outline), `box` (white on a dark box), `large`, `bold` (large capitals, thick outline, shadow), `highlight` (bold, the spoken word on a green box) or `neon` (pink glow) |
-| `--burn-animation` | `none` | `none`, `fade` (in and out), `pop` (grows in), `typewriter` (letter by letter), `karaoke` (the words light up as they are spoken), `bounce` (grows past its size and settles) or `words` (up to three words at a time, in time with the speech, as in short videos) |
+| `--burn-style` | `classic` | For burned-in subtitles and ASS files:  `classic` (white, outline), `yellow` (yellow, outline), `box` (white on a dark box), `large`, `bold` (large capitals, thick outline, shadow), `highlight` (bold, the spoken word on a green box) or `neon` (pink glow) |
+| `--burn-animation` | `none` | For burned-in subtitles and ASS files:  `none`, `fade` (in and out), `pop` (grows in), `typewriter` (letter by letter), `karaoke` (the words light up as they are spoken), `bounce` (grows past its size and settles) or `words` (up to three words at a time, in time with the speech, as in short videos) |
 | `--no-vad` | | Do not skip silence with voice activity detection |
 | `--force` | | Process files that already have an output, and make the subtitle files of an earlier run again |
 | `-v` | | Debug logs; `-vv` for more |
