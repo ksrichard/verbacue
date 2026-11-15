@@ -5,9 +5,6 @@ use verbacue_core::error::ErrorKind;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
-    /// ONNX Runtime failed to load or run a model.
-    #[error(transparent)]
-    Onnx(#[from] ort::Error),
     #[error("{0}")]
     Media(#[from] verbacue_media::error::Error),
     /// Not transparent, so that the chain keeps the shared error and its kind.
@@ -20,7 +17,6 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 impl Error {
     pub fn kind(&self) -> ErrorKind {
         match self {
-            Self::Onnx(_) => ErrorKind::Model,
             Self::Media(e) => e.kind(),
             Self::Core(e) => e.kind(),
         }

@@ -56,11 +56,28 @@ pub enum Error {
     #[error(transparent)]
     Http(#[from] reqwest::Error),
     /// An error of another library, with the kind that the caller gave it.
-    #[error("{source}")]
-    Foreign {
-        kind: ErrorKind,
-        source: Box<dyn std::error::Error + Send + Sync>,
-    },
+    #[error(transparent)]
+    Foreign(ForeignError),
+}
+
+/// An error of another library with a kind. It shows as that error, so a chain does
+/// not repeat its message.
+#[derive(Debug)]
+pub struct ForeignError {
+    kind: ErrorKind,
+    error: Box<dyn std::error::Error + Send + Sync>,
+}
+
+impl Display for ForeignError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl std::error::Error for ForeignError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.error.source()
+    }
 }
 
 /// The result type of this crate.
@@ -77,17 +94,17 @@ impl Error {
 
     /// Makes an error of `kind` from an error of another library.
     pub fn wrap(kind: ErrorKind, error: impl std::error::Error + Send + Sync + 'static) -> Self {
-        Self::Foreign {
+        Self::Foreign(ForeignError {
             kind,
-            source: Box::new(error),
-        }
+            error: Box::new(error),
+        })
     }
 
     /// The kind of problem. A context takes the kind of the first shared error in its
     /// chain.
     pub fn kind(&self) -> ErrorKind {
         match self {
-            Self::Message { kind, .. } | Self::Foreign { kind, .. } => *kind,
+            Self::Message { kind, .. } | Self::Foreign(ForeignError { kind, .. }) => *kind,
             Self::Context { source, .. } => kind_of(source.as_ref()),
             Self::Io(e) if e.kind() == std::io::ErrorKind::NotFound => ErrorKind::NotFound,
             #[cfg(feature = "http")]
@@ -97,10 +114,28 @@ impl Error {
     }
 }
 
-/// The kind of the first [`Error`] in the chain of `error`, or `Other`.
+/// The kind of the first error in the chain of `error` that has one: a shared
+/// [`Error`], a missing file, or a failed HTTP request. Else `Other`.
 pub fn kind_of(error: &(dyn std::error::Error + 'static)) -> ErrorKind {
     std::iter::successors(Some(error), |e| e.source())
-        .find_map(|e| e.downcast_ref::<Error>().map(Error::kind))
+        .find_map(|e| {
+            if let Some(e) = e.downcast_ref::<Error>() {
+                return Some(e.kind());
+            }
+            if let Some(e) = e.downcast_ref::<ForeignError>() {
+                return Some(e.kind);
+            }
+            if e.downcast_ref::<std::io::Error>()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+            {
+                return Some(ErrorKind::NotFound);
+            }
+            #[cfg(feature = "http")]
+            if e.downcast_ref::<reqwest::Error>().is_some() {
+                return Some(ErrorKind::Network);
+            }
+            None
+        })
         .unwrap_or(ErrorKind::Other)
 }
 
@@ -216,6 +251,17 @@ mod tests {
         assert_eq!(e.kind(), ErrorKind::QuotaExceeded);
         assert_eq!(e.to_string(), "cannot translate");
         assert_eq!(report(&e), "cannot translate: no characters left");
+    }
+
+    #[test]
+    fn context_keeps_the_kind_of_foreign_errors() {
+        let missing: Result<String> = std::fs::read_to_string("/no/such/file").context("x");
+        assert_eq!(missing.unwrap_err().kind(), ErrorKind::NotFound);
+        let model: Result<()> = Err(Error::wrap(ErrorKind::Model, std::fmt::Error));
+        assert_eq!(model.context("x").unwrap_err().kind(), ErrorKind::Model);
+        // A foreign error shows its own text once in the chain.
+        let e = Error::wrap(ErrorKind::Model, std::fmt::Error);
+        assert!(std::error::Error::source(&e).is_none());
     }
 
     #[test]
