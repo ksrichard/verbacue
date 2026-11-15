@@ -384,11 +384,17 @@ impl App {
             Screen::Choose => {
                 let s = self.selection()?;
                 let (w, h) = (s.info.width, s.info.height);
-                (s.outputs.burn && w > 0 && h > 0)
+                (self.styled(s) && w > 0 && h > 0)
                     .then(|| (s.look.video(), (SAMPLE_HEIGHT * w / h, SAMPLE_HEIGHT)))
             }
             _ => None,
         }
+    }
+
+    /// True if a video gets styled subtitles: burned in, or in an ASS file.
+    pub fn styled(&self, s: &Selection) -> bool {
+        s.outputs.burn
+            || (s.outputs.subtitles && self.settings.format == verbacue::subtitle::Format::Ass)
     }
 
     /// Starts the subtitle sample from the beginning and draws its first picture.

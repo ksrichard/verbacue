@@ -81,9 +81,6 @@ struct Cli {
     burn: bool,
 
     #[command(flatten)]
-    look: LookArgs,
-
-    #[command(flatten)]
     translate: TranslateArgs,
 
     /// Also write movie.<to>.dub.mkv: a new audio track that speaks the translation.
@@ -143,8 +140,12 @@ struct TranslateArgs {
     #[arg(long, value_enum, default_value_t = Register::Informal)]
     register: Register,
 
+    /// `ass` keeps the style and the animation of `--burn-style` and `--burn-animation`.
     #[arg(long, value_enum, default_value_t = Format::Srt)]
     format: Format,
+
+    #[command(flatten)]
+    look: LookArgs,
 
     /// Output file. Only valid with one input.
     #[arg(short, long)]
@@ -499,7 +500,7 @@ fn job_for(video: &Path, cli: &Cli) -> Job {
         subtitles: true,
         embed: cli.embed,
         burn: cli.burn,
-        look: cli.look.look(),
+        look: cli.translate.look.look(),
         force: args.force,
         #[cfg(feature = "dub")]
         dub: cli.dub.then(|| cli.dub_args.options()),
@@ -636,82 +637,30 @@ fn translate_files(inputs: &[PathBuf], from: Option<String>, args: &TranslateArg
         }
         let text = fs::read_to_string(input)
             .with_context(|| format!("cannot read {}", input.display()))?;
-        let cues = subtitle::parse_srt(&text)
-            .with_context(|| format!("cannot parse {}", input.display()))?;
+        let cues =
+            subtitle::parse(&text).with_context(|| format!("cannot parse {}", input.display()))?;
         let translated = run_translation(&cues, &source, input, args, &mut translator)?;
-        write_output(&out, &translated, args.format)?;
+        write_output(&out, &translated, &args.to, args.format, args.look.look())?;
     }
     Ok(())
 }
 
-/// The look of burned-in subtitles.
+/// The look of styled subtitles: burned in, or in an ASS file.
 #[derive(Args, Clone, Debug)]
 struct LookArgs {
-    /// The style of burned-in subtitles.
-    #[arg(long, value_enum, default_value_t = BurnStyle::Classic)]
-    burn_style: BurnStyle,
-    /// How burned-in subtitles appear.
-    #[arg(long, value_enum, default_value_t = BurnAnimation::None)]
-    burn_animation: BurnAnimation,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
-enum BurnStyle {
-    /// White text with a black outline.
-    Classic,
-    /// Yellow text with a black outline.
-    Yellow,
-    /// White text on a dark box.
-    Box,
-    /// Classic, larger.
-    Large,
-    /// Large white capitals with a thick outline and a shadow.
-    Bold,
-    /// Bold, and the spoken word is on a green box.
-    Highlight,
-    /// White capitals with a pink glow.
-    Neon,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
-enum BurnAnimation {
-    None,
-    /// Fade in and out.
-    Fade,
-    /// Grow quickly to full size.
-    Pop,
-    /// The letters appear one after the other.
-    Typewriter,
-    /// The words light up one after the other.
-    Karaoke,
-    /// Grow past full size, then settle.
-    Bounce,
-    /// Up to three words at a time; the spoken word lights up.
-    Words,
+    /// The style of burned-in subtitles and ASS files.
+    #[arg(long, value_enum, default_value_t)]
+    burn_style: video::SubtitleStyle,
+    /// How burned-in subtitles and ASS lines appear.
+    #[arg(long, value_enum, default_value_t)]
+    burn_animation: video::SubtitleAnimation,
 }
 
 impl LookArgs {
     fn look(&self) -> video::SubtitleLook {
-        use video::{SubtitleAnimation as A, SubtitleStyle as S};
         video::SubtitleLook {
-            style: match self.burn_style {
-                BurnStyle::Classic => S::Classic,
-                BurnStyle::Yellow => S::Yellow,
-                BurnStyle::Box => S::Box,
-                BurnStyle::Large => S::Large,
-                BurnStyle::Bold => S::Bold,
-                BurnStyle::Highlight => S::Highlight,
-                BurnStyle::Neon => S::Neon,
-            },
-            animation: match self.burn_animation {
-                BurnAnimation::None => A::None,
-                BurnAnimation::Fade => A::Fade,
-                BurnAnimation::Pop => A::Pop,
-                BurnAnimation::Typewriter => A::Typewriter,
-                BurnAnimation::Karaoke => A::Karaoke,
-                BurnAnimation::Bounce => A::Bounce,
-                BurnAnimation::Words => A::Words,
-            },
+            style: self.burn_style,
+            animation: self.burn_animation,
         }
     }
 }
@@ -729,11 +678,12 @@ fn burn_file(
     }
     let text = fs::read_to_string(subtitles)
         .with_context(|| format!("cannot read {}", subtitles.display()))?;
-    let cues = subtitle::parse_srt(&text)
-        .with_context(|| format!("cannot parse {}", subtitles.display()))?;
+    let cues =
+        subtitle::parse(&text).with_context(|| format!("cannot parse {}", subtitles.display()))?;
     video::check_burn(video)?;
+    let lang = split_lang_suffix(subtitles).1.unwrap_or_default();
     let bar = percent_bar("burning");
-    video::burn(video, &out, &cues, look, &bar)?;
+    video::burn(video, &out, &cues, &lang, look, &bar)?;
     bar.finish();
     tracing::info!("wrote {}", out.display());
     Ok(())
@@ -801,8 +751,14 @@ fn run_translation(
     Ok(subtitle::layout_translation(&translated))
 }
 
-fn write_output(path: &Path, cues: &[Cue], format: Format) -> Result<()> {
-    fs::write(path, subtitle::write(cues, format))
+fn write_output(
+    path: &Path,
+    cues: &[Cue],
+    lang: &str,
+    format: Format,
+    look: video::SubtitleLook,
+) -> Result<()> {
+    fs::write(path, subtitle::write_styled(cues, lang, format, look))
         .with_context(|| format!("cannot write {}", path.display()))?;
     tracing::info!("wrote {}", path.display());
     Ok(())

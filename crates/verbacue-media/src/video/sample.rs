@@ -1,12 +1,12 @@
 //! A short subtitle sample that loops, so that the app can show a style and an
 //! animation before a video is burned.
 
-use verbacue_core::error::Result;
+use verbacue_core::{error::Result, look::display_text};
 
 use super::{
     PreviewFrame, SubtitleLook,
     fonts::Fonts,
-    overlay::{Frame, Overlay, cue_state},
+    overlay::{Frame, Overlay},
 };
 
 /// The sample lines as (start, end, text), in ms from the start of the loop.
@@ -60,10 +60,13 @@ impl SubtitleSample {
             .iter()
             .enumerate()
             .find(|(_, (start, end, _))| (*start..*end).contains(&at));
-        let state = line.map(|(i, (start, end, text))| {
-            let (_, frame) = cue_state(look, i, text, at - start, end - start);
-            (frame, frame.opacity())
-        });
+        let text = line.map(|(_, (_, _, text))| display_text(text, look.style, "en"));
+        let state = line
+            .zip(text.as_deref())
+            .map(|((i, (start, end, _)), text)| {
+                let frame = Frame::at(look.animation, i, text, at - start, end - start);
+                (frame, frame.opacity())
+            });
         if self.last == Some((look, state)) {
             return None;
         }
@@ -72,15 +75,14 @@ impl SubtitleSample {
         }
         self.last = Some((look, state));
 
-        let rgba = match (line, state) {
-            (Some((i, (start, end, text))), Some((frame, opacity))) => {
+        let rgba = match (text, state) {
+            (Some(text), Some((frame, opacity))) => {
                 if self
                     .cached
                     .as_ref()
                     .is_none_or(|(c, _)| !c.same_drawing(&frame))
                 {
-                    let (shown, _) = cue_state(look, i, text, at - start, end - start);
-                    let shown = frame.shown(&shown);
+                    let shown = frame.shown(&text);
                     let overlay =
                         Overlay::render(&self.fonts, &shown, self.width, self.height, look, &frame);
                     self.cached = Some((frame, overlay));

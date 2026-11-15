@@ -36,6 +36,7 @@ use burn::{open_video_decoder, write_burned};
 use embed::write_embedded;
 pub use preview::{MediaInfo, PreviewFrame, media_info, preview_frames};
 pub use sample::SubtitleSample;
+pub use verbacue_core::look::{SubtitleAnimation, SubtitleLook, SubtitleStyle};
 
 pub struct SubtitleTrack<'a> {
     /// ISO 639-1 code, for example "hu".
@@ -91,53 +92,6 @@ pub fn dub(
     )
 }
 
-/// The look of burned-in subtitles.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SubtitleStyle {
-    /// White text with a black outline.
-    #[default]
-    Classic,
-    /// Yellow text with a black outline.
-    Yellow,
-    /// White text on a dark, half-transparent box.
-    Box,
-    /// Classic, about 1.4 times larger.
-    Large,
-    /// Large white capitals with a thick outline and a shadow, as in short videos.
-    Bold,
-    /// Bold, and the spoken word is on a green box.
-    Highlight,
-    /// White capitals with a pink glow.
-    Neon,
-}
-
-/// How burned-in subtitles appear.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SubtitleAnimation {
-    #[default]
-    None,
-    /// The line fades in and out.
-    Fade,
-    /// The line grows quickly to its size.
-    Pop,
-    /// The letters appear one after the other.
-    Typewriter,
-    /// The words light up one after the other, in time with the speech.
-    Karaoke,
-    /// The line grows past its size and then settles.
-    Bounce,
-    /// Up to three words at a time, in time with the speech. Each group bounces in,
-    /// and the spoken word lights up.
-    Words,
-}
-
-/// The style and the animation of burned-in subtitles.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SubtitleLook {
-    pub style: SubtitleStyle,
-    pub animation: SubtitleAnimation,
-}
-
 /// Re-encodes the main video stream of `input` with `cues` drawn into the picture, and
 /// writes MP4. Input subtitle streams are dropped, so the burned text is the only one.
 ///
@@ -147,11 +101,15 @@ pub fn burn(
     input: &Path,
     output: &Path,
     cues: &[Cue],
+    lang: &str,
     look: SubtitleLook,
     progress: &dyn Progress,
 ) -> Result<()> {
     crate::audio::init()?;
-    remove_on_error(output, write_burned(input, output, cues, look, progress))
+    remove_on_error(
+        output,
+        write_burned(input, output, cues, lang, look, progress),
+    )
 }
 
 /// Checks before the slow steps that `burn` can decode the video of `input`. It
@@ -345,7 +303,15 @@ mod tests {
         };
         let output = std::env::temp_dir().join("verbacue-burn-cancel-out.mp4");
         let cues = [Cue::new(0, 1500, "hello")];
-        let err = burn(&input, &output, &cues, SubtitleLook::default(), &Stopped).unwrap_err();
+        let err = burn(
+            &input,
+            &output,
+            &cues,
+            "en",
+            SubtitleLook::default(),
+            &Stopped,
+        )
+        .unwrap_err();
         assert_eq!(err.kind(), ErrorKind::Cancelled);
         assert!(!output.exists());
     }

@@ -486,6 +486,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
                             value: Format::Vtt,
                             label: "WebVTT".into(),
                         },
+                        Choice {
+                            value: Format::Ass,
+                            label: "ASS (keeps the style)".into(),
+                        },
                     ],
                     &s.format,
                     SettingChange::Format,

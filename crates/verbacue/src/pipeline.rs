@@ -253,15 +253,7 @@ fn earlier(path: &Path, job: &Job) -> Option<Vec<Cue>> {
         return None;
     }
     let text = fs::read_to_string(path).ok()?;
-    // A WebVTT file starts with a header block; the cues after it read like SRT.
-    let text = match job.format {
-        Format::Vtt => text
-            .replace("\r\n", "\n")
-            .split_once("\n\n")
-            .map_or_else(String::new, |(_, cues)| cues.to_string()),
-        Format::Srt => text,
-    };
-    let cues = subtitle::parse_srt(&text).ok()?;
+    let cues = subtitle::parse(&text).ok()?;
     (!cues.is_empty()).then_some(cues)
 }
 
@@ -373,7 +365,7 @@ impl Pipeline {
                 _ => output_path(job, &lang),
             };
             if job.subtitles {
-                write(&source_out, &cues, job.format, sink, &mut files)?;
+                write(&source_out, &cues, &lang, job, sink, &mut files)?;
             }
             (lang, cues)
         };
@@ -402,7 +394,7 @@ impl Pipeline {
                         if !job.embed && !job.burn && !dubbing(job) {
                             sink.event(Event::Step(Step::Save));
                         }
-                        write(&path, &cues, job.format, sink, &mut files)?;
+                        write(&path, &cues, &job.target, job, sink, &mut files)?;
                     }
                     Some(cues)
                 }
@@ -541,12 +533,16 @@ fn same_translator(a: &Translation, b: &Translation) -> bool {
 fn write(
     path: &Path,
     cues: &[Cue],
-    format: Format,
+    lang: &str,
+    job: &Job,
     sink: &dyn Sink,
     files: &mut Vec<PathBuf>,
 ) -> Result<()> {
-    fs::write(path, subtitle::write(cues, format))
-        .with_context(|| format!("cannot write {}", path.display()))?;
+    fs::write(
+        path,
+        subtitle::write_styled(cues, lang, job.format, job.look),
+    )
+    .with_context(|| format!("cannot write {}", path.display()))?;
     sink.event(Event::Wrote(path));
     files.push(path.to_path_buf());
     Ok(())
@@ -624,7 +620,14 @@ fn video_outputs(
     if job.burn {
         sink.event(Event::Step(Step::Burn));
         let out = video_output(job, "mp4");
-        video::burn(&job.video, &out, tracks[0].cues, job.look, &Report(sink))?;
+        video::burn(
+            &job.video,
+            &out,
+            tracks[0].cues,
+            tracks[0].language,
+            job.look,
+            &Report(sink),
+        )?;
         sink.event(Event::Wrote(&out));
         files.push(out);
     }
@@ -1018,6 +1021,24 @@ mod tests {
         // An empty or broken file is not used.
         std::fs::write(&path, "").unwrap();
         assert!(earlier(&path, &j).is_none());
+    }
+
+    #[test]
+    fn an_earlier_ass_file_reads_back_its_cues() {
+        let dir = reuse_dir("reuse-ass");
+        let path = dir.join("movie.hu.ass");
+        let cues = [Cue::new(1000, 2500, "Szia\nbarátom")];
+        let mut j = Job::new(dir.join("movie.mkv"), "hu");
+        j.format = subtitle::Format::Ass;
+        j.look.animation = crate::video::SubtitleAnimation::Words;
+        let mut files = Vec::new();
+        write(&path, &cues, "hu", &j, &Record::default(), &mut files).unwrap();
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("[Script Info]")
+        );
+        assert_eq!(earlier(&path, &j).unwrap(), cues);
     }
 
     #[test]
