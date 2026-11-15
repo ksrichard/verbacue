@@ -6,9 +6,10 @@
 
 use std::{
     fs::File,
-    io::{BufReader, BufWriter, Read as _, Seek as _, SeekFrom, Write as _},
+    io::{BufReader, BufWriter, Seek as _, SeekFrom, Write as _},
     path::Path,
 };
+use verbacue_media::audio::read_full;
 
 use verbacue_core::{Context as _, Result};
 use verbacue_media::audio::RawAudio;
@@ -228,21 +229,6 @@ pub fn read_mono(audio: &RawAudio, start_ms: u64, end_ms: u64) -> Result<Vec<f32
         })
         .collect();
     Ok(mono)
-}
-
-/// Reads until `buf` is full or the file ends. Returns the bytes read.
-fn read_full(reader: &mut BufReader<File>, buf: &mut [u8]) -> Result<usize> {
-    let mut n = 0;
-    while n < buf.len() {
-        match reader
-            .read(&mut buf[n..])
-            .context("cannot read the audio")?
-        {
-            0 => break,
-            k => n += k,
-        }
-    }
-    Ok(n)
 }
 
 #[cfg(test)]

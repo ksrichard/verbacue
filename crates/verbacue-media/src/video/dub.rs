@@ -2,11 +2,7 @@
 //! AAC, and adds the subtitles as SRT tracks.
 
 use crate::error::Result;
-use std::{
-    fs::File,
-    io::{BufReader, Read as _},
-    path::Path,
-};
+use std::{fs::File, io::BufReader, path::Path};
 
 use ffmpeg_next::{Dictionary, Rational, format, media};
 
@@ -19,7 +15,7 @@ use super::{
     embed::{MKV_SUBTITLE_CODECS, SubtitleQueue, add_subtitle_streams, iso639_2},
     open_input, report, rescale_ms, write_header,
 };
-use crate::audio::RawAudio;
+use crate::audio::{RawAudio, read_full};
 
 /// The bit rate of the new track.
 const BIT_RATE: usize = 192_000;
@@ -160,16 +156,4 @@ impl RawReader {
         }
         Ok(())
     }
-}
-
-/// Reads until `buf` is full or the file ends. Returns the bytes read.
-fn read_full(reader: &mut BufReader<File>, buf: &mut [u8]) -> Result<usize> {
-    let mut n = 0;
-    while n < buf.len() {
-        match reader.read(&mut buf[n..])? {
-            0 => break,
-            k => n += k,
-        }
-    }
-    Ok(n)
 }

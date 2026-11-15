@@ -541,6 +541,7 @@ fn normalize(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use verbacue_core::Stopped;
 
     #[test]
     fn dtw_preset_comes_from_the_model_file_name() {
@@ -662,16 +663,6 @@ mod tests {
     #[test]
     fn a_segment_without_word_times_keeps_its_times() {
         assert_eq!(tighten(1000, 3000, &[]), (1000, 3000));
-    }
-
-    struct Stopped;
-
-    impl Progress for Stopped {
-        fn update(&self, _done: u64, _total: u64) {}
-
-        fn cancelled(&self) -> bool {
-            true
-        }
     }
 
     #[test]

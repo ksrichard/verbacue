@@ -359,19 +359,26 @@ fn send_samples(frame: &frame::Audio, sink: &mut dyn FnMut(&[f32]) -> Result<()>
     sink(&interleaved)
 }
 
+/// Reads until `buf` is full or the reader ends. Returns the bytes read. Raw audio
+/// files are read in whole frames this way.
+///
+/// # Errors
+/// Returns the read error.
+pub fn read_full(reader: &mut impl std::io::Read, buf: &mut [u8]) -> std::io::Result<usize> {
+    let mut n = 0;
+    while n < buf.len() {
+        match reader.read(&mut buf[n..])? {
+            0 => break,
+            k => n += k,
+        }
+    }
+    Ok(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    struct Stopped;
-
-    impl Progress for Stopped {
-        fn update(&self, _done: u64, _total: u64) {}
-
-        fn cancelled(&self) -> bool {
-            true
-        }
-    }
+    use verbacue_core::Stopped;
 
     /// A 16-bit mono PCM WAV with a 440 Hz tone.
     fn write_sine_wav(path: &Path, seconds: u32) {
