@@ -16,6 +16,8 @@ const fn rgba(hex: u32, alpha: f32) -> Color {
 
 pub const BG: Color = rgb(0x120e0d);
 pub const GLOW: Color = rgb(0x2b1a14);
+/// Behind the subtitle sample in Settings: a dark blue, like a night scene.
+pub const SAMPLE_BACKGROUND: Color = rgb(0x1e2a3c);
 pub const CARD: Color = rgba(0xf3e9dc, 0.04);
 pub const CARD_HOVER: Color = rgba(0xf3e9dc, 0.06);
 pub const LINE: Color = rgba(0xf3e9dc, 0.07);

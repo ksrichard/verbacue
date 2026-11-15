@@ -2,6 +2,8 @@
 //! a few seconds after start, then closes the app. It lets developers compare the
 //! screens with the mockups without screen-capture rights. `VERBACUE_GUI_SHOT_FILE`
 //! opens a video first, and `VERBACUE_GUI_SHOT_SCREEN=settings` opens Settings.
+//! `VERBACUE_GUI_SHOT_SCREEN=dub` picks the dub card, and `licence` shows the
+//! licence dialog of the voice model.
 //! `VERBACUE_GUI_SHOT_START=1` presses Start, and `VERBACUE_GUI_SHOT_MODEL` sets the
 //! Whisper model, and `VERBACUE_GUI_SHOT_DEFAULTS=1` starts with the default settings.
 //! In this mode the app never saves `gui.toml`.
@@ -44,12 +46,16 @@ pub fn model() -> Option<String> {
     std::env::var("VERBACUE_GUI_SHOT_MODEL").ok()
 }
 
-/// Presses Start once the preview had time to load.
+/// Presses Start, or picks the dub card, once the preview had time to load.
 pub fn start() -> Task<Message> {
-    if std::env::var_os("VERBACUE_GUI_SHOT_START").is_none() {
+    let message = if std::env::var_os("VERBACUE_GUI_SHOT_START").is_some() {
+        Message::Start
+    } else if std::env::var("VERBACUE_GUI_SHOT_SCREEN").is_ok_and(|s| s == "dub") {
+        Message::Toggle(crate::screens::choose::Output::Dub)
+    } else {
         return Task::none();
-    }
-    Task::future(tokio::time::sleep(Duration::from_millis(1500))).map(|()| Message::Start)
+    };
+    Task::future(tokio::time::sleep(Duration::from_millis(1500))).map(move |()| message.clone())
 }
 
 /// The messages that bring the app to the screen to capture.
@@ -58,8 +64,16 @@ pub fn setup() -> Vec<Message> {
     if let Some(file) = std::env::var_os("VERBACUE_GUI_SHOT_FILE") {
         messages.push(Message::FileChosen(PathBuf::from(file)));
     }
-    if std::env::var("VERBACUE_GUI_SHOT_SCREEN").is_ok_and(|s| s == "settings") {
-        messages.push(Message::Show(crate::app::Screen::Settings));
+    match std::env::var("VERBACUE_GUI_SHOT_SCREEN").as_deref() {
+        Ok("settings") => messages.push(Message::Show(crate::app::Screen::Settings)),
+        Ok("licence") => {
+            messages.push(Message::Show(crate::app::Screen::Convert));
+            messages.push(Message::Pipeline(crate::worker::Update::Licence {
+                model: "xtts-v2-int8".to_string(),
+                text: verbacue::models::XTTS_LICENCE.to_string(),
+            }));
+        }
+        _ => {}
     }
     messages
 }

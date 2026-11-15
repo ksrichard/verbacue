@@ -18,20 +18,104 @@ use crate::{
     anim::{cycle, wave},
     app::{App, KEEP, Message},
     queue::Status,
+    screens::settings::{animation_choices, style_choices},
     theme,
 };
 
 const FLAME_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#ff8a4c" stroke-width="2"><path d="M12 3c2 4 6 5 6 10a6 6 0 0 1-12 0c0-3 2-4 2-7 2 1 3 3 4 5 1-3 0-6 0-8z"/></svg>"##;
 const FILE_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#f2c14e" stroke-width="2"><path d="M6 3h9l4 4v14H6z"/><path d="M9 13h6M9 17h4"/></svg>"##;
+#[cfg(feature = "dub")]
+const VOICE_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#ff8a4c" stroke-width="2"><path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>"##;
 const PLAY_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="#1a0f0a"><path d="M8 5v14l11-7z"/></svg>"##;
 
-/// What the user wants to get.
+/// One thing the user can get from a video.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutputMode {
+pub enum Output {
+    /// Subtitle files next to the video.
+    Subtitles,
     /// A new MP4 with the subtitles drawn into the picture.
     Burn,
-    /// Only subtitle files next to the video.
-    Srt,
+    /// A new MKV with an audio track that speaks the translation.
+    Dub,
+}
+
+/// The outputs of one video. At least one is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Outputs {
+    pub subtitles: bool,
+    pub burn: bool,
+    pub dub: bool,
+}
+
+impl Default for Outputs {
+    /// The subtitle files and the burned-in video.
+    fn default() -> Self {
+        Self {
+            subtitles: true,
+            burn: true,
+            dub: false,
+        }
+    }
+}
+
+impl Outputs {
+    /// Turns `output` on or off. The last output that is on stays on.
+    pub fn toggle(&mut self, output: Output) {
+        let mut next = *self;
+        let flag = match output {
+            Output::Subtitles => &mut next.subtitles,
+            Output::Burn => &mut next.burn,
+            Output::Dub => &mut next.dub,
+        };
+        *flag = !*flag;
+        if next.subtitles || next.burn || next.dub {
+            *self = next;
+        }
+    }
+
+    /// Turns dubbing off when `target` cannot be dubbed. The subtitle files come on if
+    /// nothing else is left.
+    pub fn fit(&mut self, target: &str) {
+        if self.dub && dub_blocked(target).is_some() {
+            self.dub = false;
+            if !self.burn {
+                self.subtitles = true;
+            }
+        }
+    }
+
+    /// "subtitle file + burned in", for the line under the title.
+    pub fn label(self) -> String {
+        let mut parts = Vec::new();
+        if self.subtitles {
+            parts.push("subtitle file");
+        }
+        if self.burn {
+            parts.push("burned in");
+        }
+        if self.dub {
+            parts.push("dubbed voice");
+        }
+        parts.join(" + ")
+    }
+}
+
+/// Why dubbing is not possible for `target`, or `None` when it is.
+pub fn dub_blocked(target: &str) -> Option<String> {
+    if target == KEEP {
+        return Some("Pick a language to translate to.".to_string());
+    }
+    #[cfg(feature = "dub")]
+    if !verbacue::dub::supports(target) {
+        return Some(format!(
+            "XTTS-v2 cannot speak {}.",
+            verbacue::translate::language_name(target)
+        ));
+    }
+    #[cfg(not(feature = "dub"))]
+    return Some("This build cannot dub.".to_string());
+    #[cfg(feature = "dub")]
+    None
 }
 
 /// The state of this screen.
@@ -65,7 +149,7 @@ impl std::fmt::Display for Language {
     }
 }
 
-/// "Keep the original language" first, then every language Whisper knows, by name.
+/// "Original language (no translation)" first, then every language Whisper knows, by name.
 pub fn languages() -> Vec<Language> {
     let mut list: Vec<Language> = verbacue::translate::languages()
         .iter()
@@ -79,7 +163,7 @@ pub fn languages() -> Vec<Language> {
         0,
         Language {
             code: KEEP.to_string(),
-            name: "Keep the original language".to_string(),
+            name: "Original language (no translation)".to_string(),
         },
     );
     list
@@ -221,8 +305,20 @@ pub fn view(app: &App) -> Element<'_, Message> {
         ..button::Style::default()
     })
     .on_press(Message::PlayVideo);
+    // With "Burned in", a sample line plays over the frames in the chosen look.
+    let sample = app
+        .sample_frame
+        .clone()
+        .filter(|_| selection.outputs.burn)
+        .map(|handle| {
+            image(handle)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .content_fit(iced::ContentFit::Cover)
+        });
     let preview = container(stack![
         preview,
+        stack![].extend(sample.map(Element::from)),
         canvas(Scan { t }).width(Length::Fill).height(Length::Fill),
         container(play).center(Length::Fill),
     ])
@@ -301,33 +397,48 @@ pub fn view(app: &App) -> Element<'_, Message> {
             a: a1,
             ..theme::TEXT
         });
-    let mode = if selection.burn {
-        OutputMode::Burn
-    } else {
-        OutputMode::Srt
-    };
+    let outputs = selection.outputs;
     let change = app.choose.mode_changed.elapsed().as_secs_f32().min(0.25) / 0.25;
-    let cards = row![
+    #[cfg_attr(
+        not(feature = "dub"),
+        expect(unused_mut, reason = "only dub adds a card")
+    )]
+    let mut cards = row![
         card(
-            FLAME_ICON,
-            "Burned in",
-            "A new MP4 with the subtitles drawn into the picture. Plays anywhere.",
-            mode == OutputMode::Burn,
+            FILE_ICON,
+            "Subtitle file",
+            "An SRT file next to the video. Fast, and you can edit it later.".into(),
+            outputs.subtitles,
             change,
-            OutputMode::Burn,
+            Some(Output::Subtitles),
             a2,
         ),
         card(
-            FILE_ICON,
-            "Separate SRT file",
-            "A subtitle file next to the video. Fast, and you can edit it later.",
-            mode == OutputMode::Srt,
+            FLAME_ICON,
+            "Burned in",
+            "A new MP4 with the subtitles in the picture. Plays anywhere.".into(),
+            outputs.burn,
             change,
-            OutputMode::Srt,
+            Some(Output::Burn),
             a2,
         ),
     ]
     .spacing(14);
+    #[cfg(feature = "dub")]
+    {
+        let blocked = dub_blocked(&selection.target);
+        let enabled = blocked.is_none();
+        let body = blocked.unwrap_or_else(|| "A new MKV that speaks the translation.".into());
+        cards = cards.push(card(
+            VOICE_ICON,
+            "Dubbed voice",
+            body,
+            outputs.dub,
+            change,
+            enabled.then_some(Output::Dub),
+            if enabled { a2 } else { 0.45 * a2 },
+        ));
+    }
 
     let languages = languages();
     let selected = languages
@@ -362,6 +473,38 @@ pub fn view(app: &App) -> Element<'_, Message> {
         ),
     ]
     .spacing(14);
+    let look = selection.outputs.burn.then(|| {
+        let styles = style_choices();
+        let style = styles
+            .iter()
+            .find(|c| c.value == selection.look.style)
+            .cloned();
+        let animations = animation_choices();
+        let animation = animations
+            .iter()
+            .find(|c| c.value == selection.look.animation)
+            .cloned();
+        row![
+            labelled(
+                "Subtitle style",
+                pick_list(styles, style, |c| Message::BurnStyle(c.value))
+                    .width(Length::Fill)
+                    .padding([12, 14])
+                    .style(theme::pick)
+                    .into(),
+            ),
+            labelled(
+                "Animation",
+                pick_list(animations, animation, |c| Message::BurnAnimation(c.value))
+                    .width(Length::Fill)
+                    .padding([12, 14])
+                    .style(theme::pick)
+                    .into(),
+            ),
+        ]
+        .spacing(14)
+    });
+    let pickers = column![pickers].extend(look.map(Element::from)).spacing(14);
 
     let pulse = wave(t, 2.4, 0.0);
     let waiting = app
@@ -391,7 +534,17 @@ pub fn view(app: &App) -> Element<'_, Message> {
     .align_y(Alignment::Center);
 
     let right = column![
-        container(title).padding(iced::Padding::ZERO.top(y1)),
+        container(
+            column![
+                title,
+                text("Pick one or more.").size(14).color(Color {
+                    a: a1,
+                    ..theme::MUTED
+                }),
+            ]
+            .spacing(6)
+        )
+        .padding(iced::Padding::ZERO.top(y1)),
         container(cards).padding(iced::Padding::ZERO.top(y2)),
         container(pickers).padding(iced::Padding::ZERO.top(y3)),
         notes(selection),
@@ -425,10 +578,11 @@ pub fn view(app: &App) -> Element<'_, Message> {
 fn card<'a>(
     icon: &'static [u8],
     title: &'a str,
-    body: &'a str,
+    body: String,
     selected: bool,
     change: f32,
-    mode: OutputMode,
+    // `None` shows the card without a click action.
+    output: Option<Output>,
     alpha: f32,
 ) -> Element<'a, Message> {
     let border_alpha = if selected { 0.1 + 0.9 * change } else { 0.1 };
@@ -447,7 +601,12 @@ fn card<'a>(
     };
     button(
         column![
-            svg(svg::Handle::from_memory(icon)).width(30).height(30),
+            row![
+                svg(svg::Handle::from_memory(icon)).width(30).height(30),
+                iced::widget::space::horizontal(),
+                check_box(selected),
+            ]
+            .align_y(Alignment::Center),
             text(title).font(theme::HEADING).size(20).color(Color {
                 a: alpha,
                 ..theme::TEXT
@@ -476,7 +635,31 @@ fn card<'a>(
             snap: true,
         }
     })
-    .on_press(Message::Mode(mode))
+    .on_press_maybe(output.map(Message::Toggle))
+    .into()
+}
+
+/// The check box in the corner of a card.
+fn check_box<'a>(checked: bool) -> Element<'a, Message> {
+    container(
+        text(if checked { "✓" } else { "" })
+            .size(15)
+            .color(theme::TEXT),
+    )
+    .center(24)
+    .style(move |_| container::Style {
+        background: checked.then(|| theme::ACCENT.into()),
+        border: Border {
+            color: if checked {
+                theme::ACCENT
+            } else {
+                Color::from_rgba8(0xf3, 0xe9, 0xdc, 0.35)
+            },
+            width: 2.0,
+            radius: 7.0.into(),
+        },
+        ..container::Style::default()
+    })
     .into()
 }
 

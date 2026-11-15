@@ -5,3 +5,9 @@ dist
 *.mkv
 *.srt
 *.vtt
+tools/xtts-export/ckpt
+tools/xtts-export/out
+tools/xtts-export/.venv
+**/__pycache__
+.claude
+.superpowers

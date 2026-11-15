@@ -63,7 +63,7 @@ impl OnlineTranslator {
             Backend::Deepl => Service::Deepl,
             Backend::Google => Service::Google,
             Backend::Azure => Service::Azure,
-            Backend::Local | Backend::OpenaiCompat | Backend::None => {
+            Backend::Local | Backend::OpenaiCompat | Backend::Claude | Backend::None => {
                 bail!("not an online translator")
             }
         };
@@ -335,6 +335,7 @@ mod tests {
     #[test]
     fn deepl_context_has_notes_earlier_and_next_lines() {
         let hints = Hints {
+            title: String::new(),
             notes: "Two sisters talk.".into(),
             film_notes: "Ayşe is the older sister.".into(),
             names: vec![],

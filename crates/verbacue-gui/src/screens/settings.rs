@@ -1,10 +1,13 @@
-//! Settings: speech to text, translation, output, and the models on this computer.
+//! Settings: speech to text, translation, output, dubbing, and the models on this
+//! computer.
 
 use std::path::PathBuf;
 
 use iced::{
     Alignment, Element, Length,
-    widget::{button, column, container, pick_list, row, scrollable, text, text_input},
+    widget::{
+        button, column, container, image, pick_list, row, scrollable, slider, text, text_input,
+    },
 };
 use verbacue::{
     models::{self, Kind},
@@ -14,7 +17,7 @@ use verbacue::{
 
 use crate::{
     app::{App, Message},
-    settings::Settings,
+    settings::{DubOriginal, Settings},
     theme,
     widgets::switch,
 };
@@ -35,6 +38,12 @@ pub enum SettingChange {
     ReviewNotes(bool),
     Format(Format),
     OutDir(Option<PathBuf>),
+    BurnStyle(crate::settings::BurnStyle),
+    BurnAnimation(crate::settings::BurnAnimation),
+    DubVoice(String),
+    DubOriginal(DubOriginal),
+    DubSpeedLimit(f32),
+    DubModel(String),
 }
 
 impl SettingChange {
@@ -53,6 +62,12 @@ impl SettingChange {
             Self::ReviewNotes(v) => s.review_notes = v,
             Self::Format(v) => s.format = v,
             Self::OutDir(v) => s.out_dir = v,
+            Self::BurnStyle(v) => s.burn_style = v,
+            Self::BurnAnimation(v) => s.burn_animation = v,
+            Self::DubVoice(v) => s.dub_voice = v,
+            Self::DubOriginal(v) => s.dub_original = v,
+            Self::DubSpeedLimit(v) => s.dub_speed_limit = v.clamp(1.0, 1.5),
+            Self::DubModel(v) => s.dub_model = v,
         }
     }
 }
@@ -69,7 +84,7 @@ fn key_source(backend: Backend) -> Option<(&'static str, &'static str)> {
         Backend::Google => Some(("GOOGLE_TRANSLATE_API_KEY", "google.key")),
         Backend::Azure => Some(("AZURE_TRANSLATOR_KEY", "azure.key")),
         Backend::OpenaiCompat => Some(("OPENAI_API_KEY", "openai.key")),
-        Backend::Local | Backend::None => None,
+        Backend::Local | Backend::Claude | Backend::None => None,
     }
 }
 
@@ -80,15 +95,55 @@ fn key_found(var: &str, file: &str) -> bool {
 
 /// A choice in a list, shown with a friendly name.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Choice<T> {
-    value: T,
-    label: String,
+pub(crate) struct Choice<T> {
+    pub(crate) value: T,
+    pub(crate) label: String,
 }
 
 impl<T> std::fmt::Display for Choice<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.label)
     }
+}
+
+/// The subtitle styles, with the names that the lists show.
+pub(crate) fn style_choices() -> Vec<Choice<crate::settings::BurnStyle>> {
+    use crate::settings::BurnStyle as B;
+    [
+        (B::Classic, "White with outline"),
+        (B::Yellow, "Yellow with outline"),
+        (B::Box, "White on a dark box"),
+        (B::Large, "Large white"),
+        (B::Bold, "Bold capitals with shadow"),
+        (B::Highlight, "Bold, spoken word on a green box"),
+        (B::Neon, "Neon glow"),
+    ]
+    .into_iter()
+    .map(|(value, label)| Choice {
+        value,
+        label: label.into(),
+    })
+    .collect()
+}
+
+/// The subtitle animations, with the names that the lists show.
+pub(crate) fn animation_choices() -> Vec<Choice<crate::settings::BurnAnimation>> {
+    use crate::settings::BurnAnimation as A;
+    [
+        (A::None, "None"),
+        (A::Fade, "Fade in and out"),
+        (A::Pop, "Pop in"),
+        (A::Typewriter, "Typewriter"),
+        (A::Karaoke, "Karaoke (words light up)"),
+        (A::Bounce, "Bounce in"),
+        (A::Words, "Word groups (short-video style)"),
+    ]
+    .into_iter()
+    .map(|(value, label)| Choice {
+        value,
+        label: label.into(),
+    })
+    .collect()
 }
 
 fn model_choices(kind: Kind) -> Vec<Choice<String>> {
@@ -131,6 +186,14 @@ fn card<'a>(title: &'a str, rows: Vec<Element<'a, Message>>) -> Element<'a, Mess
     .width(Length::Fill)
     .style(theme::card(20.0))
     .into()
+}
+
+/// The list label of a local voice model: "Folder: <name>".
+fn folder_label(path: &str) -> String {
+    let name = std::path::Path::new(path)
+        .file_name()
+        .map_or_else(|| path.to_string(), |n| n.to_string_lossy().into_owned());
+    format!("Folder: {name}")
 }
 
 fn list<'a, T: Clone + PartialEq + 'a>(
@@ -219,6 +282,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
         Choice {
             value: Backend::Azure,
             label: "Azure".to_string(),
+        },
+        Choice {
+            value: Backend::Claude,
+            label: "Claude (Claude Code CLI)".to_string(),
         },
         Choice {
             value: Backend::None,
@@ -352,7 +419,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 .on_press(Message::Setting(SettingChange::Glossary(None))),
         );
     }
-    if matches!(s.translator, Backend::Local | Backend::OpenaiCompat) {
+    if matches!(
+        s.translator,
+        Backend::Local | Backend::OpenaiCompat | Backend::Claude
+    ) {
         translation.push(setting_row(
             "Read the whole story first",
             "Notes about the characters before translating. Slower; better names and forms of address.",
@@ -426,8 +496,42 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 "Next to the video, or a folder you choose.",
                 save_to,
             ),
-        ],
+            setting_row(
+                "Default subtitle style",
+                "For subtitles burned into the picture. Each video can change it.",
+                list(style_choices(), &s.burn_style, SettingChange::BurnStyle),
+            ),
+            setting_row(
+                "Default animation",
+                "How burned-in subtitles appear. Each video can change it.",
+                list(
+                    animation_choices(),
+                    &s.burn_animation,
+                    SettingChange::BurnAnimation,
+                ),
+            ),
+        ]
+        .into_iter()
+        .chain(app.sample_frame.clone().map(|handle| {
+            setting_row(
+                "Preview",
+                "A sample line with this style and animation.",
+                container(image(handle).width(280).height(158))
+                    .style(|_| container::Style {
+                        background: Some(theme::SAMPLE_BACKGROUND.into()),
+                        border: iced::Border {
+                            radius: 10.0.into(),
+                            ..iced::Border::default()
+                        },
+                        ..container::Style::default()
+                    })
+                    .clip(true),
+            )
+        }))
+        .collect(),
     );
+
+    let dubbing = dubbing_card(s, &app.studio_voices);
 
     let model_rows = models::known()
         .iter()
@@ -437,6 +541,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 Kind::Whisper => "Whisper",
                 Kind::Llm => "Translation",
                 Kind::Vad => "Silence detection",
+                Kind::Voice => "Voice",
+                Kind::Separation => "Voice separation",
+                Kind::Speakers => "Speaker recognition",
             };
             let hint = format!("{kind} · {}", models::human_size(m.size));
             let control: Element<'_, Message> = match app.downloads.get(m.name) {
@@ -489,6 +596,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 speech,
                 translation,
                 output,
+                dubbing,
                 models_card,
             ]
             .spacing(20)
@@ -497,4 +605,110 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .padding([40, 56]),
     )
     .into()
+}
+
+/// The dub settings. Empty in a build without dubbing.
+fn dubbing_card<'a>(s: &'a Settings, studio_voices: &'a [String]) -> Element<'a, Message> {
+    if !cfg!(feature = "dub") {
+        return column![].into();
+    }
+    let mut voices = vec![
+        Choice {
+            value: "cast".to_string(),
+            label: "A studio voice per actor".to_string(),
+        },
+        Choice {
+            value: "clone".to_string(),
+            label: "Clone the actors".to_string(),
+        },
+    ];
+    voices.extend(studio_voices.iter().map(|v| Choice {
+        value: v.clone(),
+        label: v.clone(),
+    }));
+    if !voices.iter().any(|c| c.value == s.dub_voice) {
+        voices.push(Choice {
+            value: s.dub_voice.clone(),
+            label: s.dub_voice.clone(),
+        });
+    }
+    let voice_hint = if studio_voices.is_empty() {
+        "Each actor keeps one studio voice. The voice names show after the download."
+    } else {
+        "Each actor keeps one studio voice or a clone, or one studio voice speaks all lines."
+    };
+    let mut models: Vec<Choice<String>> = models::bundles()
+        .iter()
+        .filter(|b| b.kind == Kind::Voice)
+        .map(|b| Choice {
+            value: b.name.to_string(),
+            label: format!("{} ({})", b.name, models::human_size(b.size())),
+        })
+        .collect();
+    if !models.iter().any(|m| m.value == s.dub_model) {
+        models.push(Choice {
+            value: s.dub_model.clone(),
+            label: folder_label(&s.dub_model),
+        });
+    }
+    let model_row = row![
+        list(models, &s.dub_model, SettingChange::DubModel),
+        button(text("Choose a folder…").size(13))
+            .padding([9, 14])
+            .style(theme::ghost)
+            .on_press(Message::ChooseDubModel),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+    let speed = row![
+        slider(1.0_f32..=1.5, s.dub_speed_limit, |v| {
+            Message::Setting(SettingChange::DubSpeedLimit((v * 20.0).round() / 20.0))
+        })
+        .step(0.05_f32)
+        .width(200),
+        text(format!("{:.2}×", s.dub_speed_limit))
+            .size(13)
+            .color(theme::TEXT),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
+    card(
+        "Dubbing",
+        vec![
+            setting_row(
+                "Voice",
+                voice_hint,
+                list(voices, &s.dub_voice, SettingChange::DubVoice),
+            ),
+            setting_row(
+                "Original speech",
+                "Take the voices out and keep music and effects, or make them quieter (faster).",
+                list(
+                    vec![
+                        Choice {
+                            value: DubOriginal::Remove,
+                            label: "Take them out".into(),
+                        },
+                        Choice {
+                            value: DubOriginal::Lower,
+                            label: "Make them quieter".into(),
+                        },
+                    ],
+                    &s.dub_original,
+                    SettingChange::DubOriginal,
+                ),
+            ),
+            setting_row(
+                "Speed limit",
+                "A long line plays faster, up to this speed.",
+                speed,
+            ),
+            setting_row(
+                "Voice model",
+                "The int8 model is smaller and faster on a CPU. A folder holds an exported \
+                 model. Non-commercial use only.",
+                model_row,
+            ),
+        ],
+    )
 }

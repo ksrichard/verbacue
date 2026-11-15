@@ -12,9 +12,11 @@ name = "verbacue"
 path = "src/main.rs"
 
 [features]
-default = ["gui"]
+default = ["gui", "dub"]
 # The desktop app (`verbacue gui`, or `verbacue` with no arguments).
 gui = ["dep:verbacue-gui"]
+# Dubbing with XTTS-v2.
+dub = ["verbacue/dub", "verbacue-gui?/dub"]
 # GPU support on Linux and Windows. NVIDIA only; needs the CUDA toolkit.
 cuda = ["verbacue/cuda", "verbacue-gui?/cuda"]
 # GPU support on Linux and Windows for any GPU with a Vulkan driver.

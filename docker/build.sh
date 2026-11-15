@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds self-contained verbacue binaries in Docker and writes them to dist/<target>/.
 # Usage: docker/build.sh <target>...
-#   linux-arm64, linux-amd64              CPU only, fully static, command line only
+#   linux-arm64, linux-amd64              CPU only, command line only (amd64 fully static)
 #   linux-arm64-gui, linux-amd64-gui      CPU only, with the desktop app (glibc 2.35+)
 #   linux-arm64-cuda, linux-amd64-cuda    with CUDA (NVIDIA GPUs)
 #   linux-arm64-vulkan, linux-amd64-vulkan with Vulkan (AMD, Intel and NVIDIA GPUs)
@@ -11,7 +11,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 [ $# -gt 0 ] || { sed -n '3,10p' "$0"; exit 1; }
-cuda_image=nvidia/cuda:12.9.1-devel-ubuntu22.04
+cuda_image=nvidia/cuda:13.0.2-devel-ubuntu22.04
 vulkan_packages=libvulkan-dev,glslc,spirv-headers
 for target in "$@"; do
     set --

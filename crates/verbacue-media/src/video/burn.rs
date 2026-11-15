@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use ffmpeg_next::{
-    self as ffmpeg, ChannelLayout, Dictionary, Packet, Rational, codec, encoder,
+    self as ffmpeg, Dictionary, Packet, Rational, codec, encoder,
     format::{self, Pixel, Sample, sample::Type as SampleType},
     frame, media,
     software::{resampling, scaling},
@@ -17,7 +17,10 @@ use verbacue_core::{
     subtitle::Cue,
 };
 
-use super::{audio_start_ms, duration_secs, open_input, overlay::Painter, report, rescale_ms};
+use super::{
+    aac::AacEncoder, audio_start_ms, duration_secs, open_input, overlay::Painter, report,
+    rescale_ms,
+};
 
 /// Audio codecs that MP4 can hold. Other audio is encoded to AAC.
 pub(super) const MP4_AUDIO_CODECS: &[codec::Id] = &[
@@ -56,6 +59,7 @@ pub(super) fn write_burned(
     input: &Path,
     output: &Path,
     cues: &[Cue],
+    look: super::SubtitleLook,
     progress: &dyn Progress,
 ) -> Result<()> {
     let mut ictx = open_input(input)?;
@@ -80,6 +84,7 @@ pub(super) fn write_burned(
                 cues,
                 offset_ms,
                 global_header,
+                look,
             )?)))
         } else if params.medium() != media::Type::Audio {
             None
@@ -96,7 +101,7 @@ pub(super) fn write_burned(
                 params.id().name(),
                 ist.index()
             );
-            let transcoder = AudioTranscoder::new(&ist, &mut octx, global_header)?;
+            let transcoder = AudioTranscoder::new(&ist, &mut octx)?;
             Some(Route::Audio(Box::new(transcoder)))
         };
         routes.push(route);
@@ -173,6 +178,7 @@ impl<'a> VideoTranscoder<'a> {
         cues: &'a [Cue],
         offset_ms: i64,
         global_header: bool,
+        look: super::SubtitleLook,
     ) -> Result<Self> {
         let time_base = ist.time_base();
         let decoder = open_video_decoder(ist)?;
@@ -212,7 +218,7 @@ impl<'a> VideoTranscoder<'a> {
         Ok(Self {
             decoder,
             encoder,
-            painter: Painter::new(cues, offset_ms, time_base)?,
+            painter: Painter::new(cues, offset_ms, time_base, look)?,
             scaler: None,
             time_base,
             out_index,
@@ -265,28 +271,18 @@ impl<'a> VideoTranscoder<'a> {
     }
 }
 
-/// Decodes audio that MP4 cannot hold and encodes it to AAC with FFmpeg's own encoder.
-///
-/// The AAC encoder needs frames of exactly `frame_size` samples, so the converted
-/// samples go through a per-channel buffer first.
+/// Decodes audio that MP4 cannot hold and encodes it to AAC.
 pub(super) struct AudioTranscoder {
     decoder: ffmpeg::decoder::Audio,
-    encoder: encoder::audio::Encoder,
     resampler: Option<(resampling::Context, Sample, u64, u32)>,
-    layout: ChannelLayout,
-    rate: u32,
-    buffer: Vec<Vec<f32>>,
-    /// Position of the next encoder frame, in samples (time base 1/rate).
-    next_pts: Option<i64>,
+    aac: AacEncoder,
     in_time_base: Rational,
-    out_index: usize,
 }
 
 impl AudioTranscoder {
     pub(super) fn new(
         ist: &format::stream::Stream,
         octx: &mut format::context::Output,
-        global_header: bool,
     ) -> Result<Self> {
         let decoder = codec::context::Context::from_parameters(ist.parameters())
             .with_kind(ErrorKind::Other)?
@@ -299,46 +295,24 @@ impl AudioTranscoder {
                     ist.parameters().id().name()
                 )
             })?;
-        let codec = encoder::find(codec::Id::AAC).context("this build has no AAC encoder")?;
         let channels = decoder.channels().clamp(1, 8);
-        let layout = ChannelLayout::default(i32::from(channels));
         let rate = if decoder.rate() > 0 {
             decoder.rate()
         } else {
             48_000
         };
-
-        let mut enc = codec::context::Context::new_with_codec(codec)
-            .encoder()
-            .audio()
-            .with_kind(ErrorKind::Other)?;
-        enc.set_rate(i32::try_from(rate).unwrap_or(48_000));
-        enc.set_channel_layout(layout);
-        enc.set_format(Sample::F32(SampleType::Planar));
-        enc.set_bit_rate(64_000 * usize::from(channels));
-        enc.set_time_base((1, i32::try_from(rate).unwrap_or(48_000)));
-        if global_header {
-            enc.set_flags(codec::Flags::GLOBAL_HEADER);
-        }
-        let encoder = enc
-            .open_as(codec)
-            .with_kind(ErrorKind::Other)
-            .context("cannot open the AAC encoder")?;
-
-        let mut ost = octx.add_stream(codec).with_kind(ErrorKind::Other)?;
-        ost.set_parameters(&encoder);
-        ost.set_metadata(ist.metadata().to_owned());
-        let out_index = ost.index();
+        let aac = AacEncoder::new(
+            octx,
+            channels,
+            rate,
+            64_000 * usize::from(channels),
+            ist.metadata().to_owned(),
+        )?;
         Ok(Self {
             decoder,
-            encoder,
             resampler: None,
-            layout,
-            rate,
-            buffer: vec![Vec::new(); usize::from(channels)],
-            next_pts: None,
+            aac,
             in_time_base: ist.time_base(),
-            out_index,
         })
     }
 
@@ -354,26 +328,25 @@ impl AudioTranscoder {
         }
         let mut decoded = frame::Audio::empty();
         while self.decoder.receive_frame(&mut decoded).is_ok() {
-            if self.next_pts.is_none() {
+            if self.aac.next_pts.is_none() {
                 let start = decoded.timestamp().unwrap_or(0);
-                self.next_pts =
-                    Some(rescale_ms(start, self.in_time_base) * i64::from(self.rate) / 1000);
+                self.aac.next_pts =
+                    Some(rescale_ms(start, self.in_time_base) * i64::from(self.aac.rate()) / 1000);
             }
             self.convert(&decoded)?;
-            self.encode_full_frames(octx, out_tb, false)?;
+            self.aac.encode_full_frames(octx, out_tb, false)?;
         }
         if packet.is_none() {
-            self.encode_full_frames(octx, out_tb, true)?;
-            self.encoder.send_eof().with_kind(ErrorKind::Other)?;
-            self.drain(octx, out_tb)?;
+            self.aac.finish(octx, out_tb)?;
         }
         Ok(())
     }
 
-    pub(super) fn convert(&mut self, decoded: &frame::Audio) -> Result<()> {
+    fn convert(&mut self, decoded: &frame::Audio) -> Result<()> {
         let decoded = crate::audio::with_known_layout(decoded);
         let decoded = decoded.as_ref();
         let layout = decoded.channel_layout();
+        let (out_layout, rate) = (self.aac.layout(), self.aac.rate());
         let key = (decoded.format(), layout.bits(), decoded.rate());
         if self
             .resampler
@@ -385,66 +358,20 @@ impl AudioTranscoder {
                 layout,
                 decoded.rate(),
                 Sample::F32(SampleType::Planar),
-                self.layout,
-                self.rate,
+                out_layout,
+                rate,
             )
             .with_kind(ErrorKind::Other)?;
             self.resampler = Some((ctx, key.0, key.1, key.2));
         }
-        let capacity =
-            decoded.samples() * self.rate as usize / decoded.rate().max(1) as usize + 256;
-        let mut out = frame::Audio::new(Sample::F32(SampleType::Planar), capacity, self.layout);
-        out.set_rate(self.rate);
+        let capacity = decoded.samples() * rate as usize / decoded.rate().max(1) as usize + 256;
+        let mut out = frame::Audio::new(Sample::F32(SampleType::Planar), capacity, out_layout);
+        out.set_rate(rate);
         if let Some((ctx, ..)) = self.resampler.as_mut() {
             ctx.run(decoded, &mut out).with_kind(ErrorKind::Other)?;
         }
-        for (ch, buf) in self.buffer.iter_mut().enumerate() {
+        for (ch, buf) in self.aac.buffer.iter_mut().enumerate() {
             buf.extend_from_slice(&out.plane::<f32>(ch)[..out.samples()]);
-        }
-        Ok(())
-    }
-
-    /// Sends every full frame in the buffer to the encoder. At the end of the stream,
-    /// the last partial frame is padded with silence.
-    pub(super) fn encode_full_frames(
-        &mut self,
-        octx: &mut format::context::Output,
-        out_tb: &[Rational],
-        last: bool,
-    ) -> Result<()> {
-        let size = self.encoder.frame_size().max(1) as usize;
-        while self.buffer[0].len() >= size || (last && !self.buffer[0].is_empty()) {
-            let mut frame = frame::Audio::new(Sample::F32(SampleType::Planar), size, self.layout);
-            frame.set_rate(self.rate);
-            for (ch, buf) in self.buffer.iter_mut().enumerate() {
-                let n = buf.len().min(size);
-                let plane = frame.plane_mut::<f32>(ch);
-                plane[..n].copy_from_slice(&buf[..n]);
-                plane[n..].fill(0.0);
-                buf.drain(..n);
-            }
-            let pts = self.next_pts.unwrap_or(0);
-            frame.set_pts(Some(pts));
-            self.next_pts = Some(pts + size as i64);
-            self.encoder
-                .send_frame(&frame)
-                .with_kind(ErrorKind::Other)?;
-            self.drain(octx, out_tb)?;
-        }
-        Ok(())
-    }
-
-    pub(super) fn drain(
-        &mut self,
-        octx: &mut format::context::Output,
-        out_tb: &[Rational],
-    ) -> Result<()> {
-        let mut packet = Packet::empty();
-        let tb = Rational::new(1, i32::try_from(self.rate).unwrap_or(48_000));
-        while self.encoder.receive_packet(&mut packet).is_ok() {
-            packet.set_stream(self.out_index);
-            packet.rescale_ts(tb, out_tb[self.out_index]);
-            packet.write_interleaved(octx).with_kind(ErrorKind::Other)?;
         }
         Ok(())
     }

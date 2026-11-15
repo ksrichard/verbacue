@@ -28,9 +28,24 @@ pub enum Update {
     },
     Cue(Cue),
     Note(String),
-    /// The film notes; the pipeline waits for the corrected text on the reply channel.
+    /// The film notes; the pipeline waits for [`Reply::Notes`].
     Review(String),
+    /// A model licence to accept before the download; the pipeline waits for
+    /// [`Reply::Licence`].
+    Licence {
+        model: String,
+        text: String,
+    },
     Finished(Result<Outcome, Failure>),
+}
+
+/// The answer of the user to a question of the pipeline.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Reply {
+    /// The corrected film notes.
+    Notes(String),
+    /// True when the user accepts the licence.
+    Licence(bool),
 }
 
 /// Why a job did not finish.
@@ -67,7 +82,7 @@ type Request = (
     Job,
     Arc<AtomicBool>,
     UnboundedSender<Update>,
-    mpsc::Receiver<String>,
+    mpsc::Receiver<Reply>,
 );
 
 /// The pipeline thread.
@@ -100,12 +115,12 @@ impl Worker {
     }
 
     /// Starts `job` and returns its updates. The last one is always `Finished`.
-    /// `replies` brings the corrected film notes back (see [`Update::Review`]).
+    /// `replies` brings the answers to [`Update::Review`] and [`Update::Licence`].
     pub fn run(
         &self,
         job: Job,
         cancel: Arc<AtomicBool>,
-        replies: mpsc::Receiver<String>,
+        replies: mpsc::Receiver<Reply>,
     ) -> impl Stream<Item = Update> + use<> {
         let (updates, mut received) = unbounded_channel();
         if let Err(mpsc::SendError((_, _, updates, _))) =
@@ -125,7 +140,7 @@ struct Forward<'a> {
     updates: &'a UnboundedSender<Update>,
     cancel: &'a AtomicBool,
     /// In a mutex, because a sink must be `Sync`.
-    replies: &'a Mutex<mpsc::Receiver<String>>,
+    replies: &'a Mutex<mpsc::Receiver<Reply>>,
 }
 
 impl Sink for Forward<'_> {
@@ -145,23 +160,33 @@ impl Sink for Forward<'_> {
     }
 
     fn review_notes(&self, notes: &str) -> Option<String> {
-        if self
-            .updates
-            .send(Update::Review(notes.to_string()))
-            .is_err()
-        {
-            return None;
+        match self.ask(Update::Review(notes.to_string()))? {
+            Reply::Notes(text) => Some(text),
+            Reply::Licence(_) => None,
         }
-        // Wait for the user, but stop when the job is cancelled or the app is gone.
+    }
+
+    fn accept_licence(&self, model: &str, licence: &str) -> bool {
+        let question = Update::Licence {
+            model: model.to_string(),
+            text: licence.to_string(),
+        };
+        matches!(self.ask(question), Some(Reply::Licence(true)))
+    }
+}
+
+impl Forward<'_> {
+    /// Sends `question` to the app and waits for the answer. Stops waiting when the
+    /// job is cancelled or the app is gone.
+    fn ask(&self, question: Update) -> Option<Reply> {
+        self.updates.send(question).ok()?;
         loop {
             if self.cancelled() {
                 return None;
             }
-            let Ok(replies) = self.replies.lock() else {
-                return None;
-            };
+            let replies = self.replies.lock().ok()?;
             match replies.recv_timeout(std::time::Duration::from_millis(200)) {
-                Ok(text) => return Some(text),
+                Ok(reply) => return Some(reply),
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => return None,
             }
@@ -184,7 +209,7 @@ mod tests {
             cancel: &cancel,
             replies: &replies,
         };
-        reply.send("edited".to_string()).unwrap();
+        reply.send(Reply::Notes("edited".to_string())).unwrap();
         assert_eq!(sink.review_notes("automatic"), Some("edited".to_string()));
         assert!(matches!(sent.try_recv(), Ok(Update::Review(t)) if t == "automatic"));
     }
@@ -193,7 +218,7 @@ mod tests {
     fn notes_review_stops_waiting_when_cancelled() {
         let (updates, _sent) = unbounded_channel();
         let cancel = AtomicBool::new(true);
-        let (_reply, replies) = mpsc::channel::<String>();
+        let (_reply, replies) = mpsc::channel::<Reply>();
         let replies = Mutex::new(replies);
         let sink = Forward {
             updates: &updates,
@@ -201,5 +226,26 @@ mod tests {
             replies: &replies,
         };
         assert_eq!(sink.review_notes("automatic"), None);
+    }
+
+    #[test]
+    fn licence_waits_for_the_answer() {
+        let (updates, mut sent) = unbounded_channel();
+        let cancel = AtomicBool::new(false);
+        let (reply, replies) = mpsc::channel();
+        let replies = Mutex::new(replies);
+        let sink = Forward {
+            updates: &updates,
+            cancel: &cancel,
+            replies: &replies,
+        };
+        reply.send(Reply::Licence(true)).unwrap();
+        assert!(sink.accept_licence("xtts-v2", "CPML"));
+        assert!(matches!(
+            sent.try_recv(),
+            Ok(Update::Licence { model, text }) if model == "xtts-v2" && text == "CPML"
+        ));
+        reply.send(Reply::Licence(false)).unwrap();
+        assert!(!sink.accept_licence("xtts-v2", "CPML"));
     }
 }

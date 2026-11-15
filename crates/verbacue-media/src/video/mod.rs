@@ -9,11 +9,14 @@
 //! FFmpeg's own MPEG-4 encoder elsewhere. Audio is copied if MP4 can hold its codec, and
 //! is encoded to AAC otherwise.
 
+mod aac;
 mod burn;
+mod dub;
 mod embed;
 mod fonts;
 mod overlay;
 mod preview;
+mod sample;
 
 use std::path::Path;
 
@@ -32,6 +35,7 @@ use verbacue_core::{
 use burn::{open_video_decoder, write_burned};
 use embed::write_embedded;
 pub use preview::{MediaInfo, PreviewFrame, media_info, preview_frames};
+pub use sample::SubtitleSample;
 
 pub struct SubtitleTrack<'a> {
     /// ISO 639-1 code, for example "hu".
@@ -54,14 +58,100 @@ pub fn embed(
     remove_on_error(output, write_embedded(input, output, tracks, progress))
 }
 
+/// Copies `input` to `output` (MKV), adds `audio` as a new AAC track, and adds
+/// `tracks` as subtitle tracks, as [`embed`] does. The new track gets the `language`
+/// and `title` tags, and it is the only default audio track.
+///
+/// # Errors
+/// Returns an error if a file cannot be read or written. Then `output` is deleted.
+#[expect(clippy::too_many_arguments, reason = "the parts of one output file")]
+pub fn dub(
+    input: &Path,
+    output: &Path,
+    audio: &crate::audio::RawAudio,
+    language: &str,
+    title: &str,
+    tracks: &[SubtitleTrack],
+    show_subtitles: bool,
+    progress: &dyn Progress,
+) -> Result<()> {
+    crate::audio::init()?;
+    remove_on_error(
+        output,
+        dub::write_dubbed(
+            input,
+            output,
+            audio,
+            language,
+            title,
+            tracks,
+            show_subtitles,
+            progress,
+        ),
+    )
+}
+
+/// The look of burned-in subtitles.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SubtitleStyle {
+    /// White text with a black outline.
+    #[default]
+    Classic,
+    /// Yellow text with a black outline.
+    Yellow,
+    /// White text on a dark, half-transparent box.
+    Box,
+    /// Classic, about 1.4 times larger.
+    Large,
+    /// Large white capitals with a thick outline and a shadow, as in short videos.
+    Bold,
+    /// Bold, and the spoken word is on a green box.
+    Highlight,
+    /// White capitals with a pink glow.
+    Neon,
+}
+
+/// How burned-in subtitles appear.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SubtitleAnimation {
+    #[default]
+    None,
+    /// The line fades in and out.
+    Fade,
+    /// The line grows quickly to its size.
+    Pop,
+    /// The letters appear one after the other.
+    Typewriter,
+    /// The words light up one after the other, in time with the speech.
+    Karaoke,
+    /// The line grows past its size and then settles.
+    Bounce,
+    /// Up to three words at a time, in time with the speech. Each group bounces in,
+    /// and the spoken word lights up.
+    Words,
+}
+
+/// The style and the animation of burned-in subtitles.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SubtitleLook {
+    pub style: SubtitleStyle,
+    pub animation: SubtitleAnimation,
+}
+
 /// Re-encodes the main video stream of `input` with `cues` drawn into the picture, and
 /// writes MP4. Input subtitle streams are dropped, so the burned text is the only one.
 ///
 /// # Errors
 /// Returns an error if the video cannot be decoded or encoded.
-pub fn burn(input: &Path, output: &Path, cues: &[Cue], progress: &dyn Progress) -> Result<()> {
+pub fn burn(
+    input: &Path,
+    output: &Path,
+    cues: &[Cue],
+    look: SubtitleLook,
+    progress: &dyn Progress,
+) -> Result<()> {
     crate::audio::init()?;
-    remove_on_error(output, write_burned(input, output, cues, progress))
+    remove_on_error(output, write_burned(input, output, cues, look, progress))
 }
 
 /// Checks before the slow steps that `burn` can decode the video of `input`. It
@@ -124,10 +214,23 @@ pub(super) fn open_input(path: &Path) -> Result<format::context::Input> {
 /// Writes the header. `strict=experimental` lets MKV accept codec tags from other
 /// containers (for example `avc1` from MP4); MKV does not use those tags anyway.
 /// `default_mode=infer` marks the first subtitle track as the default one.
-pub(super) fn write_header(octx: &mut format::context::Output) -> Result<()> {
+/// Writes the header. MKV marks the first track of each type as the default one; with
+/// `subtitles_default` false, no subtitle track is a default, so players do not show
+/// one on their own.
+pub(super) fn write_header(
+    octx: &mut format::context::Output,
+    subtitles_default: bool,
+) -> Result<()> {
     let mut options = Dictionary::new();
     options.set("strict", "experimental");
-    options.set("default_mode", "infer");
+    options.set(
+        "default_mode",
+        if subtitles_default {
+            "infer"
+        } else {
+            "infer_no_subs"
+        },
+    );
     octx.write_header_with(options)
         .with_kind(ErrorKind::Other)
         .context("cannot write the output header")?;
@@ -242,9 +345,79 @@ mod tests {
         };
         let output = std::env::temp_dir().join("verbacue-burn-cancel-out.mp4");
         let cues = [Cue::new(0, 1500, "hello")];
-        let err = burn(&input, &output, &cues, &Stopped).unwrap_err();
+        let err = burn(&input, &output, &cues, SubtitleLook::default(), &Stopped).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::Cancelled);
         assert!(!output.exists());
+    }
+
+    #[test]
+    fn decode_to_file_writes_stereo() {
+        let Some(input) = test_video("verbacue-dub-decode-in.mkv", 2, "160x120", true) else {
+            return;
+        };
+        let raw = std::env::temp_dir().join("verbacue-dub-decode.f32");
+        let frames = crate::audio::decode_to_file(&input, 0, 48_000, &raw, &()).unwrap();
+        assert_eq!(std::fs::metadata(&raw).unwrap().len(), frames * 2 * 4);
+        assert!((95_000..=97_000).contains(&frames), "{frames} frames");
+    }
+
+    #[test]
+    fn dub_adds_default_track() {
+        let Some(input) = test_video("verbacue-dub-in.mkv", 2, "160x120", true) else {
+            return;
+        };
+        let raw = std::env::temp_dir().join("verbacue-dub-track.f32");
+        crate::audio::decode_to_file(&input, 0, 48_000, &raw, &()).unwrap();
+        let audio = crate::audio::RawAudio {
+            path: raw,
+            rate: 48_000,
+            channels: 2,
+        };
+        let output = std::env::temp_dir().join("verbacue-dub-out.mkv");
+        let cues = [Cue::new(0, 1500, "szia")];
+        let tracks = [SubtitleTrack {
+            language: "hu",
+            cues: &cues,
+        }];
+        dub(
+            &input,
+            &output,
+            &audio,
+            "hu",
+            "Hungarian (AI voice)",
+            &tracks,
+            false,
+            &(),
+        )
+        .unwrap();
+
+        let probe = std::process::Command::new("ffprobe")
+            .args(["-v", "error", "-show_entries"])
+            .arg("stream=codec_type,codec_name:stream_disposition=default:stream_tags=language,title")
+            .args(["-of", "compact=p=0:nk=0"])
+            .arg(&output)
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&probe.stdout);
+        let audio: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains("codec_type=audio"))
+            .collect();
+        assert_eq!(audio.len(), 2, "{text}");
+        assert!(audio[0].contains("codec_name=aac"), "{text}");
+        assert!(audio[0].contains("disposition:default=1"), "{text}");
+        assert!(audio[0].contains("tag:language=hun"), "{text}");
+        assert!(
+            audio[0].contains("tag:title=Hungarian (AI voice)"),
+            "{text}"
+        );
+        assert!(audio[1].contains("disposition:default=0"), "{text}");
+        // Without burned-in subtitles, the player shows none on its own.
+        let subtitle = text
+            .lines()
+            .find(|l| l.contains("codec_type=subtitle"))
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(subtitle.contains("disposition:default=0"), "{text}");
     }
 
     #[test]

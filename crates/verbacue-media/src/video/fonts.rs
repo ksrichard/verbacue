@@ -91,6 +91,8 @@ pub(super) struct PlacedGlyph {
     pub(super) id: GlyphId,
     pub(super) x: f32,
     pub(super) y: f32,
+    /// The byte offset in the line of the character that the glyph draws.
+    pub(super) byte: usize,
 }
 
 pub(super) struct LoadedFont {
@@ -237,8 +239,9 @@ impl Fonts {
                     parts.reverse();
                 }
                 for (font, range) in parts {
-                    let text = &line[run.start + range.start..run.start + range.end];
-                    x = self.shape_run(font, text, rtl, px, x, &mut glyphs);
+                    let base = run.start + range.start;
+                    let text = &line[base..run.start + range.end];
+                    x = self.shape_run(font, (text, base), rtl, px, x, &mut glyphs);
                 }
             }
         }
@@ -274,7 +277,8 @@ impl Fonts {
     pub(super) fn shape_run(
         &self,
         font: usize,
-        text: &str,
+        // The text of the run and its byte offset in the line.
+        (text, base): (&str, usize),
         rtl: bool,
         px: f32,
         mut x: f32,
@@ -301,6 +305,7 @@ impl Fonts {
                 id: GlyphId(u16::try_from(info.glyph_id).unwrap_or(0)),
                 x: x + pos.x_offset as f32 * sx,
                 y: pos.y_offset as f32 * sy,
+                byte: base + info.cluster as usize,
             });
             x += pos.x_advance as f32 * sx;
         }

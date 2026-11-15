@@ -10,6 +10,8 @@
 
 mod script;
 
+pub mod claude;
+
 #[cfg(feature = "local")]
 pub mod local;
 #[cfg(feature = "online")]
@@ -53,6 +55,8 @@ pub enum Backend {
     /// Colibri). Set the address with --endpoint. An optional key comes from
     /// OPENAI_API_KEY or openai.key in the config folder.
     OpenaiCompat,
+    /// Claude through the Claude Code CLI. Needs `claude` on PATH and a login.
+    Claude,
     /// No translation; write only the original-language subtitles.
     None,
 }
@@ -70,7 +74,8 @@ pub struct Config {
     pub register: Register,
     pub glossary: Vec<(String, String)>,
     pub llm_model: String,
-    /// Only for [`Backend::OpenaiCompat`]: the base URL and the model name.
+    /// The base URL (only for [`Backend::OpenaiCompat`]) and the model name (also used
+    /// by [`Backend::Claude`]).
     pub endpoint: String,
     pub endpoint_model: Option<String>,
 }
@@ -101,6 +106,8 @@ pub struct Batch<'a> {
 /// Knowledge about the whole video that helps every batch.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Hints {
+    /// The file name of the video.
+    pub title: String,
     /// What the user wrote about the video, for example who the characters are.
     pub notes: String,
     /// Notes the model wrote after it read the whole transcript.
@@ -111,6 +118,7 @@ pub struct Hints {
 
 /// No hints.
 pub const NO_HINTS: Hints = Hints {
+    title: String::new(),
     notes: String::new(),
     film_notes: String::new(),
     names: Vec::new(),
@@ -130,6 +138,11 @@ pub trait Translator {
     fn translate_with(&mut self, batch: &Batch, progress: &dyn Progress) -> Result<Vec<String>> {
         let _ = progress;
         self.translate(batch)
+    }
+
+    /// How many lines one call of [`translate_with`](Self::translate_with) can take.
+    fn batch_size(&self) -> usize {
+        BATCH_SIZE
     }
 
     /// Reads the whole transcript and writes short notes for the translation: the
@@ -175,6 +188,11 @@ pub trait ChatModel {
     fn complete_with(&mut self, prompt: &Prompt, progress: &dyn Progress) -> Result<String> {
         let _ = progress;
         self.complete(prompt)
+    }
+
+    /// How many lines one request can hold.
+    fn batch_size(&self) -> usize {
+        BATCH_SIZE
     }
 }
 
@@ -230,6 +248,10 @@ pub fn create(config: &Config) -> Result<Box<dyn Translator>> {
             #[cfg(not(feature = "online"))]
             bail!("this build has no server translator (feature `online`)")
         }
+        Backend::Claude => {
+            let model = claude::ClaudeModel::new(config.endpoint_model.as_deref());
+            Ok(Box::new(LlmTranslator::new(model, config)))
+        }
         Backend::Local => {
             #[cfg(feature = "local")]
             {
@@ -261,6 +283,26 @@ pub fn translate_cues(
     translate_cues_with(translator, cues, source_lang, &Hints::default(), progress)
 }
 
+/// The progress of one batch as the progress of the whole file. A model that streams
+/// its answer reports the lines of the batch that are done (see the Claude model).
+struct BatchProgress<'a> {
+    inner: &'a dyn Progress,
+    before: u64,
+    size: u64,
+    total: u64,
+}
+
+impl Progress for BatchProgress<'_> {
+    fn update(&self, done: u64, _total: u64) {
+        self.inner
+            .update(self.before + done.min(self.size), self.total);
+    }
+
+    fn cancelled(&self) -> bool {
+        self.inner.cancelled()
+    }
+}
+
 /// Like [`translate_cues`], with knowledge about the whole video.
 ///
 /// # Errors
@@ -281,7 +323,7 @@ pub fn translate_cues_with(
         })
         .collect();
     let mut translated: Vec<String> = Vec::with_capacity(lines.len());
-    for chunk in lines.chunks(BATCH_SIZE) {
+    for chunk in lines.chunks(translator.batch_size().max(1)) {
         check_cancel(progress)?;
         let start = translated.len().saturating_sub(CONTEXT_LINES);
         let context: Vec<ContextLine> = lines[start..translated.len()]
@@ -301,7 +343,13 @@ pub fn translate_cues_with(
             upcoming,
             hints,
         };
-        translated.extend(translator.translate_with(&batch, progress)?);
+        let in_batch = BatchProgress {
+            inner: progress,
+            before: translated.len() as u64,
+            size: chunk.len() as u64,
+            total: lines.len() as u64,
+        };
+        translated.extend(translator.translate_with(&batch, &in_batch)?);
         progress.update(translated.len() as u64, lines.len() as u64);
     }
     Ok(cues
@@ -441,6 +489,10 @@ impl<M: ChatModel> Translator for LlmTranslator<M> {
         self.translate_with(batch, &())
     }
 
+    fn batch_size(&self) -> usize {
+        self.model.batch_size()
+    }
+
     fn film_notes(
         &mut self,
         lines: &[String],
@@ -453,6 +505,11 @@ impl<M: ChatModel> Translator for LlmTranslator<M> {
         } else {
             language_name(source_lang)
         };
+        // One request per part, and one more to merge the parts. The progress counts
+        // the requests.
+        let chunks = lines.len().div_ceil(NOTES_CHUNK) as u64;
+        let total = if chunks > 1 { chunks + 1 } else { chunks };
+        progress.update(0, total);
         let mut parts = Vec::new();
         for chunk in lines.chunks(NOTES_CHUNK) {
             check_cancel(progress)?;
@@ -465,6 +522,7 @@ impl<M: ChatModel> Translator for LlmTranslator<M> {
                 chunk.join("\n")
             );
             parts.push(self.free_text(&user, progress)?);
+            progress.update(parts.len() as u64, total);
         }
         let notes = match parts.len() {
             0 => return Ok(None),
@@ -478,7 +536,9 @@ impl<M: ChatModel> Translator for LlmTranslator<M> {
                      story so far. Plain text only.",
                     parts.join("\n---\n")
                 );
-                self.free_text(&user, progress)?
+                let merged = self.free_text(&user, progress)?;
+                progress.update(total, total);
+                merged
             }
         };
         let notes = notes.trim().to_string();
@@ -499,6 +559,19 @@ impl<M: ChatModel> Translator for LlmTranslator<M> {
             ),
         }
         let mut out = Vec::with_capacity(batch.lines.len());
+        // A big batch first falls back to normal sized batches. One request per line
+        // would be slow and expensive.
+        if batch.lines.len() > BATCH_SIZE {
+            for chunk in batch.lines.chunks(BATCH_SIZE) {
+                check_cancel(progress)?;
+                let part = Batch {
+                    lines: chunk,
+                    ..*batch
+                };
+                out.extend(self.translate_with(&part, progress)?);
+            }
+            return Ok(out);
+        }
         for line in batch.lines {
             check_cancel(progress)?;
             let single = Batch {
@@ -637,6 +710,9 @@ fn user_prompt(batch: &Batch, previous_error: Option<&ResponseError>) -> String 
     };
     let _ = writeln!(prompt, "Translate these subtitle lines from {source}.");
     let hints = batch.hints;
+    if !hints.title.is_empty() {
+        let _ = writeln!(prompt, "\nThe video file is called: {}", hints.title);
+    }
     if !hints.notes.is_empty() {
         let _ = writeln!(
             prompt,
@@ -1037,6 +1113,7 @@ mod tests {
     #[test]
     fn prompts_contain_notes_names_and_next_lines() {
         let hints = Hints {
+            title: String::new(),
             notes: "Ayşe and Kerem are siblings.".into(),
             film_notes: "Kerem speaks formally to his mother.".into(),
             names: vec!["Ayşe".into(), "Kerem".into()],
@@ -1079,8 +1156,12 @@ mod tests {
         let model = ScriptedModel::new(&["part one", "part two", "merged notes"]);
         let mut t = LlmTranslator::new(model, &config());
         let text: Vec<String> = (0..250).map(|i| format!("line {i}")).collect();
-        let notes = t.film_notes(&text, "en", &()).unwrap();
+        let steps = std::sync::Mutex::new(Vec::new());
+        let progress = |done, total| steps.lock().unwrap().push((done, total));
+        let notes = t.film_notes(&text, "en", &progress).unwrap();
         assert_eq!(notes.as_deref(), Some("merged notes"));
+        // Two parts and the merge.
+        assert_eq!(*steps.lock().unwrap(), [(0, 3), (1, 3), (2, 3), (3, 3)]);
         assert_eq!(t.model.prompts.len(), 3);
         assert!(t.model.prompts[0].contains("line 0") && !t.model.prompts[0].contains("line 249"));
         assert!(t.model.prompts[2].contains("part one") && t.model.prompts[2].contains("part two"));

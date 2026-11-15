@@ -13,7 +13,10 @@ permissions:
 
 env:
   RUST_VERSION: "1.94.0"
-  CUDA_VERSION: "12.9.1"
+  CUDA_VERSION: "13.0.2"
+  # Windows loads ONNX Runtime (for dubbing) from Microsoft's onnxruntime.dll. The
+  # version must match the ort crate (ort-sys 2.0.0-rc.15 uses 1.31.0).
+  ORT_VERSION: "1.31.0"
   VULKAN_VERSION: "1.4.313.2"
 
 jobs:
@@ -38,7 +41,7 @@ jobs:
       - name: Build in Docker
         run: |
           args=""
-          # cpu is fully static and has only the command line; cpu-gui adds the app.
+          # cpu has only the command line; cpu-gui adds the app.
           if [ "${{ matrix.gpu }}" = cpu-gui ]; then
             args="--build-arg FEATURES=gui"
           fi
@@ -55,7 +58,9 @@ jobs:
       - name: Package
         run: |
           cp LICENSE THIRD-PARTY-LICENSES.txt dist/
-          tar -czf verbacue-linux-${{ matrix.arch }}-${{ matrix.gpu }}.tar.gz -C dist verbacue LICENSE THIRD-PARTY-LICENSES.txt
+          # The CUDA build also has the CUDA libraries of ONNX Runtime (*.so).
+          (cd dist && tar -czf ../verbacue-linux-${{ matrix.arch }}-${{ matrix.gpu }}.tar.gz \
+            verbacue LICENSE THIRD-PARTY-LICENSES.txt $(ls *.so 2>/dev/null))
       # Every build with the desktop app also gets a .deb and an AppImage.
       - name: Make the installers
         if: matrix.gpu != 'cpu'
@@ -113,7 +118,8 @@ jobs:
         with:
           cuda: ${{ env.CUDA_VERSION }}
           method: network
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
+          # CUDA 13 ships the crt headers and libNVVM as their own packages.
+          sub-packages: '["nvcc", "crt", "nvvm", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
       - name: Install the Vulkan SDK
         if: matrix.gpu == 'vulkan'
         run: |
@@ -139,6 +145,23 @@ jobs:
           "$VCPKG_INSTALLATION_ROOT/vcpkg" install \
             "ffmpeg[core,avcodec,avdevice,avfilter,avformat,swresample,swscale]:x64-windows-static"
           echo "VCPKG_ROOT=$VCPKG_INSTALLATION_ROOT" >> "$GITHUB_ENV"
+      # There is no prebuilt static ONNX Runtime for Windows, so verbacue loads
+      # Microsoft's DLLs at run time. The CUDA build takes the CUDA 13 package.
+      - name: Get ONNX Runtime
+        run: |
+          if [ "${{ matrix.gpu }}" = cuda ]; then
+            name="onnxruntime-win-x64-gpu_cuda13-$ORT_VERSION"
+            sha=d332ccf84acb769a11364cddd4e8d2992a168d16be472d5ba70b279b644552f5
+          else
+            name="onnxruntime-win-x64-$ORT_VERSION"
+            sha=3958d8a44984160692c1b4ffd0de3cb48f8c39f9d34bb31e433db06e30b82195
+          fi
+          curl -fsSL -o "$RUNNER_TEMP/ort.zip" \
+            "https://github.com/microsoft/onnxruntime/releases/download/v$ORT_VERSION/$name.zip"
+          echo "$sha  $RUNNER_TEMP/ort.zip" | sha256sum -c -
+          7z x -o"$RUNNER_TEMP" "$RUNNER_TEMP/ort.zip" > /dev/null
+          echo "ORT_DIR=$RUNNER_TEMP/$name/lib" >> "$GITHUB_ENV"
+          echo "ORT_DYLIB_PATH=$(cygpath -w "$RUNNER_TEMP/$name/lib/onnxruntime.dll")" >> "$GITHUB_ENV"
       # GPU builds skip the tests, because the runner has no GPU.
       - name: Test
         if: matrix.gpu == 'cpu'
@@ -149,12 +172,18 @@ jobs:
           if [ "${{ matrix.gpu }}" != cpu ]; then features="--features ${{ matrix.gpu }}"; fi
           cargo build --release --locked $features
           mkdir dist && cp /c/t/release/verbacue.exe dist/
+          cp "$ORT_DIR/onnxruntime.dll" "$ORT_DIR/onnxruntime_providers_shared.dll" dist/
+          if [ "${{ matrix.gpu }}" = cuda ]; then
+            cp "$ORT_DIR/onnxruntime_providers_cuda.dll" dist/
+          fi
       # cuBLAS has no static library on Windows, so the CUDA build ships its DLLs.
       - name: Add the CUDA DLLs
         if: matrix.gpu == 'cuda'
         run: |
-          for dll in cudart64_12 cublas64_12 cublasLt64_12; do
-            cp "$CUDA_PATH/bin/$dll.dll" dist/
+          # CUDA 13 may keep its DLLs in bin\x64, so search the bin folder.
+          for dll in cudart64_13 cublas64_13 cublasLt64_13; do
+            find "$(cygpath -u "$CUDA_PATH")/bin" -iname "$dll.dll" -exec cp {} dist/ \; -quit
+            test -f "dist/$dll.dll"
           done
       - name: Check the linked DLLs
         run: docker/check-dlls.sh dist/verbacue.exe "/c/Program Files/LLVM/bin/llvm-objdump"
@@ -217,6 +246,21 @@ jobs:
           fi
           echo "RUSTFLAGS=$flags" >> "$GITHUB_ENV"
           echo "RUSTFLAGS=$flags"
+      # There is no prebuilt ONNX Runtime for Intel Macs, so build it from source. The
+      # build takes about an hour; the cache keeps the result for later runs.
+      - name: Cache ONNX Runtime (Intel)
+        if: matrix.arch == 'x86_64'
+        id: ort-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/onnxruntime/lib
+          key: onnxruntime-macos-x86_64-${{ env.MACOSX_DEPLOYMENT_TARGET }}-${{ hashFiles('tools/build-onnxruntime.sh') }}
+      - name: Build ONNX Runtime (Intel)
+        if: matrix.arch == 'x86_64' && steps.ort-cache.outputs.cache-hit != 'true'
+        run: tools/build-onnxruntime.sh "$RUNNER_TEMP/onnxruntime"
+      - name: Use the ONNX Runtime build (Intel)
+        if: matrix.arch == 'x86_64'
+        run: echo "ORT_LIB_LOCATION=$RUNNER_TEMP/onnxruntime/lib" >> "$GITHUB_ENV"
       - name: Test
         run: cargo test --workspace --release --locked
       - name: Build

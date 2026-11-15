@@ -15,7 +15,7 @@ rm -rf $build/ffmpeg-sys-next-*
 # the archives with the prefix. Then delete the cargo fingerprints of those build
 # script runs, so the scripts run again, find the copies, and link them.
 pass=1
-until cargo build --release --locked --target $target --no-default-features; do
+until cargo build --release --locked --target $target --no-default-features --features dub; do
     [ $pass -lt 4 ] || exit 1
     for dir in $build/whisper-rs-sys-*/out $build/llama-cpp-sys-2-*/out; do
         [ -d "$dir" ] || continue
@@ -29,5 +29,5 @@ until cargo build --release --locked --target $target --no-default-features; do
 done
 
 mkdir -p "$out"
-cp target/$target/release/verbacue.exe "$out/"
+cp target/$target/release/verbacue.exe /opt/onnxruntime/*.dll "$out/"
 docker/check-dlls.sh "$out/verbacue.exe" x86_64-w64-mingw32-objdump

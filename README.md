@@ -30,13 +30,17 @@ macOS, `~/.cache/verbacue/models` on Linux, `%LOCALAPPDATA%\verbacue\models` on 
 on the binary also opens it.
 
 1. Pick a video: drop it on the grill, or click "Choose a video".
-2. Look at the preview, and choose "Burned in" (a new MP4) or "Separate SRT file".
-   Choose the target language and the audio track.
+2. Look at the preview, and tick one or more outputs: "Subtitle file" (an SRT next to
+   the video), "Burned in" (a new MP4) and "Dubbed voice" (a new MKV that speaks the
+   translation). Choose the target language and the audio track. With "Burned in",
+   also choose the subtitle style and the animation. A sample line plays over the
+   preview in this style.
 3. Click "Start grilling", and watch the barbecue while verbacue works.
 
 All the options of the command line that make sense in the app are on the Settings
 page: the models, the spoken language, the translator, the form of address, the
-glossary, the subtitle format and the output folder. The app saves them in `gui.toml`
+glossary, the subtitle format, the output folder, and the default subtitle style and
+animation for new videos. The app saves them in `gui.toml`
 in the config folder (`~/.config/verbacue` on macOS and Linux, `%APPDATA%\verbacue` on
 Windows). Keys for online services stay where the command line reads them.
 
@@ -93,7 +97,7 @@ Each release also has the installers of each build:
 
 `packaging/` holds the scripts and icons that make them.
 
-All binaries include the app, except the fully static Linux CPU binaries
+All binaries include the app, except the Linux CPU binaries
 (`linux-*-cpu`, for servers and containers) and the MinGW build from `docker/build.sh`.
 On Linux without a GPU, use `linux-*-cpu-gui`; it links glibc 2.35 or newer
 dynamically, because a static program cannot open a window. Without a display (for example
@@ -109,12 +113,13 @@ a tag also attaches the binaries to a GitHub release.
 | Binary                                     | GPU                         | Needs on the target system                 |
 |--------------------------------------------|-----------------------------|--------------------------------------------|
 | `macos-universal-metal`                    | Metal                       | macOS 11 or newer, Apple Silicon or Intel  |
-| `linux-amd64-cpu`, `linux-arm64-cpu`       | none                        | nothing: fully static, runs on any Linux   |
+| `linux-amd64-cpu`                          | none                        | nothing: fully static, runs on any Linux   |
+| `linux-arm64-cpu`                          | none                        | glibc 2.35 or newer                        |
 | `linux-amd64-cpu-gui`, `linux-arm64-cpu-gui` | none                      | glibc 2.35 or newer                        |
-| `linux-amd64-cuda`, `linux-arm64-cuda`     | NVIDIA (CUDA)               | glibc 2.35 or newer, NVIDIA driver         |
+| `linux-amd64-cuda`, `linux-arm64-cuda`     | NVIDIA (CUDA 13)            | glibc 2.35 or newer, NVIDIA driver 580+    |
 | `linux-amd64-vulkan`, `linux-arm64-vulkan` | AMD, Intel, NVIDIA (Vulkan) | glibc 2.39 or newer, Vulkan driver         |
 | `windows-x64-cpu`                          | none                        | Windows 10 or 11                           |
-| `windows-x64-cuda`                         | NVIDIA (CUDA)               | Windows 10 or 11, NVIDIA driver            |
+| `windows-x64-cuda`                         | NVIDIA (CUDA 13)            | Windows 10 or 11, NVIDIA driver 580+       |
 | `windows-x64-vulkan`                       | AMD, Intel, NVIDIA (Vulkan) | Windows 10 or 11, GPU driver               |
 
 Use a CUDA binary for an NVIDIA GPU. Use a Vulkan binary for other GPUs, including the
@@ -123,20 +128,28 @@ GPUs inside Intel and AMD processors.
 All binaries are self-contained. They need no FFmpeg, Python or other installed tools,
 and each build job checks what the binary links:
 
-- The Linux CPU binaries are fully static, glibc included. They have no dynamic
-  dependencies and run even in an empty container.
+- The Linux amd64 CPU binary is fully static, glibc included. It has no dynamic
+  dependencies and runs even in an empty container.
+- The Linux arm64 CPU binary links glibc dynamically. On arm64, the static glibc
+  cannot link a program of this size with ONNX Runtime.
 - The Linux CUDA binaries must load the NVIDIA driver (`libcuda.so`) at run time. A
   static program cannot do that, so they link glibc and the driver dynamically.
-  CUDA and cuBLAS are inside the binary.
+  CUDA and cuBLAS are inside the binary. Next to it are the two CUDA libraries of
+  ONNX Runtime for dubbing (`libonnxruntime_providers_*.so`). Keep them in the same
+  folder.
 - The Linux Vulkan binaries load the Vulkan loader (`libvulkan.so.1`) in the same way.
   The GPU driver package installs it. glibc 2.39 means Ubuntu 24.04, Debian 13,
   Fedora 40 or newer.
 - The Windows binaries need only the DLLs that are part of Windows and of the GPU
   driver (`vulkan-1.dll` for Vulkan). The CUDA zip has
   three CUDA DLLs next to `verbacue.exe`, because cuBLAS has no static library on
-  Windows. Keep them in the same folder.
+  Windows. Every Windows zip also has Microsoft's ONNX Runtime DLLs for dubbing
+  (`onnxruntime.dll`; the CUDA zip also has its CUDA part), because ONNX Runtime has
+  no static build for Windows. Keep them in the same folder.
 - macOS does not allow fully static programs. The binary links only system
   frameworks. It is universal: one file with code for Apple Silicon and for Intel.
+  ONNX Runtime has no prebuilt library for Intel Macs, so CI builds it from source
+  with `tools/build-onnxruntime.sh`.
 
 The binaries contain the Mozilla root certificates, so model downloads also work on
 systems without a certificate store. The x86_64 binaries and the Intel code of the macOS binary need a CPU with
@@ -207,7 +220,7 @@ cargo build --release
 | Feature             | GPU                         | Platforms       | Build needs        |
 |---------------------|-----------------------------|-----------------|--------------------|
 | (always, on macOS)  | Apple GPU (Metal)           | macOS           | nothing            |
-| `--features cuda`   | NVIDIA                      | Linux, Windows  | CUDA toolkit 12    |
+| `--features cuda`   | NVIDIA                      | Linux, Windows  | CUDA toolkit 13    |
 | `--features vulkan` | AMD, Intel, NVIDIA (Vulkan) | Linux, Windows  | Vulkan SDK         |
 
 Without a GPU feature, Whisper and the translation model run on the CPU. This works,
@@ -241,12 +254,20 @@ verbacue translate movie.en.srt --to de
 # Burn an existing (for example hand-corrected) SRT file into the video: movie.hu.mp4
 verbacue burn movie.mkv movie.hu.srt
 
+# Subtitles in the language of the video, without translation, burned in with a style
+verbacue movie.mkv --translator none --burn --burn-style box --burn-animation karaoke
+
 # WebVTT output, and a chosen output file
 verbacue movie.mkv --to hu --format vtt -o subtitles.vtt
 
 # A whole season: every media file in the folder. Files that already have an
 # output are skipped; --force does them again.
 verbacue ~/Videos/Season1 --to hu
+
+# The subtitle files of an earlier run are used again: movie.tr.srt skips the
+# transcription, and movie.hu.srt also skips the translation. So this only adds
+# the burned-in video. --force (or "Replace" in the app) makes them again.
+verbacue movie.mkv --to hu --burn
 
 # Video with subtitles
 verbacue movie.mkv --to hu --embed   # movie.hu.mkv: streams copied, soft subtitle tracks
@@ -275,9 +296,9 @@ Night's Watch = Éjjeli Őrség
 | `--to` | `en` (or `$VERBACUE_TO`) | Target language code, see `verbacue languages` |
 | `--from` | `auto` | Source language code; `auto` detects it |
 | `--model` | `large-v3` | Whisper model name (tiny, base, small, medium, large-v3, large-v3-turbo) or a file path |
-| `--translator` | `local` | `local` (GGUF model), `deepl`, `google` or `azure` (online, see below), `openai-compat` (your own model server, see below), or `none` (transcript only) |
+| `--translator` | `local` | `local` (GGUF model), `deepl`, `google` or `azure` (online, see below), `openai-compat` (your own model server, see below), `claude` (Claude Code CLI, see below), or `none` (transcript only) |
 | `--endpoint` | `http://localhost:8080/v1` | Base URL of the server for `openai-compat` |
-| `--endpoint-model` | first listed | Model name on the server |
+| `--endpoint-model` | first listed | Model name on the server, or the model for `claude` (CLI default if not set) |
 | `--llm-model` | `translategemma-12b` | Translation model: `translategemma-12b`, `translategemma-27b`, `gemma-3-12b`, `gemma-4-26b-a4b`, or a path to any GGUF instruct model |
 | `--register` | `informal` | Form of address: `informal` (Hungarian "te") or `formal` ("ön") |
 | `--glossary` | | File with `term = translation` lines |
@@ -289,8 +310,10 @@ Night's Watch = Éjjeli Őrség
 | `-o`, `--output` | | Output file for the translation (one input only) |
 | `--embed` | | Also write `movie.<to>.mkv` with soft subtitle tracks |
 | `--burn` | | Also write `movie.<to>.mp4` with burned-in subtitles |
+| `--burn-style` | `classic` | `classic` (white, outline), `yellow` (yellow, outline), `box` (white on a dark box), `large`, `bold` (large capitals, thick outline, shadow), `highlight` (bold, the spoken word on a green box) or `neon` (pink glow) |
+| `--burn-animation` | `none` | `none`, `fade` (in and out), `pop` (grows in), `typewriter` (letter by letter), `karaoke` (the words light up as they are spoken), `bounce` (grows past its size and settles) or `words` (up to three words at a time, in time with the speech, as in short videos) |
 | `--no-vad` | | Do not skip silence with voice activity detection |
-| `--force` | | Process files that already have an output |
+| `--force` | | Process files that already have an output, and make the subtitle files of an earlier run again |
 | `-v` | | Debug logs; `-vv` for more |
 
 ## Use as a Rust library
@@ -356,6 +379,10 @@ Whisper runs with beam search. The Silero voice activity model skips silence and
 music, because Whisper tends to invent text there. A filter then removes typical
 invented lines ("Thanks for watching", subtitle credits), empty or punctuation-only
 lines, and long runs of the same line.
+
+Whisper sometimes misses a few lines, or repeats one line instead of the next. So a
+second pass finds the speech that no subtitle covers, and transcribes only those parts
+again. It needs the voice activity model, so `--no-vad` turns it off.
 
 Whisper often ends a segment in the middle of a sentence. verbacue joins such segments
 and then splits them again at sentence ends. A cue is at most about 6 seconds and
@@ -427,6 +454,24 @@ Use a general instruct model on the server. llama-server has a special mode for
 TranslateGemma that translates the whole prompt and ignores the schema, so
 TranslateGemma works only with the local translator.
 
+### Claude Code CLI (optional)
+
+`--translator claude` runs `claude -p` and sends the subtitles to Claude. It needs the
+[Claude Code CLI](https://docs.claude.com/claude-code) on your PATH and a login. Claude
+reads a long text well, so verbacue sends the whole file in one request. It adds the
+file name, the languages, the form of address, the glossary and `--context`. A file
+with more than 800 lines goes in parts of 800 lines. Each part gets the last translated
+lines of the part before. The CLI runs with no tools. The subtitle text goes to
+Anthropic, and the use counts against your Claude plan or API bill.
+
+```sh
+verbacue movie.mkv --to hu --translator claude --context "Two sisters, Ayse and Kerem"
+verbacue movie.mkv --to hu --translator claude --endpoint-model sonnet
+```
+
+If the answer has missing or extra lines, verbacue asks again with a stricter prompt,
+then with smaller parts. Set `VERBACUE_CLAUDE_BIN` to use another program than `claude`.
+
 ### Models
 
 verbacue downloads models only from Hugging Face, and only when a model is used for the
@@ -478,6 +523,54 @@ Whisper is unloaded before the translation model loads, so the peak is about 9 G
   lines are in the right order. If no font has the letters of a script, `--burn`
   stops with an error; `--embed` always works.
 
+### Dubbing
+
+`--dub` writes `movie.<to>.dub.mkv`. It has all original streams, a new audio track
+that speaks the translation, and the subtitles as soft tracks. The new track is the
+default audio track, with the title "<Language> (AI voice)". The subtitles show on
+their own only with `--burn`; else they are off until you turn them on in the player.
+
+Each new line starts where the actor starts to speak. A short line plays up to 15 %
+slower, so that it ends with the actor. With `--dub-original remove`, each line also
+gets the sound colour of the actor's line and a short room echo, so that it sounds
+like part of the scene.
+
+```sh
+verbacue movie.mkv --to hu --dub --dub-original lower --dub-voice "Ana Florence"
+verbacue dub movie.mkv movie.hu.srt     # dub with an existing subtitle file
+verbacue voices                         # list the studio voices
+```
+
+- Dubbing works in every binary. The voice model is XTTS-v2. ONNX Runtime runs it on
+  the CPU, and in a CUDA build on the NVIDIA GPU. For the GPU, dubbing also needs the
+  CUDA 13 runtime libraries (cuBLAS, cuRAND) and cuDNN 9, and on Linux glibc 2.38 or
+  newer. Without them, dubbing runs on the CPU. macOS has no GPU dubbing.
+- The XTTS-v2 model is under the Coqui Public Model License: **non-commercial use only**.
+  verbacue asks you to accept the licence before the first download. Without a
+  terminal, add `--accept-model-licence`.
+- It speaks en, es, fr, de, it, pt, pl, tr, ru, nl, cs, ar, zh, ja, hu, ko and hi.
+  For another `--to`, verbacue stops before it transcribes.
+- `--dub-original remove` (default) takes the original voices out with the HTDemucs
+  vocals model (316 MB download) and keeps the music and effects. It needs about
+  0.55 s per second of audio on an Apple Silicon CPU. `lower` keeps the original
+  audio and makes it quieter while a new line plays; it is much faster.
+- `--dub-voice cast` (default) finds the speakers and gives each speaker their own
+  studio voice: the free one that sounds nearest to the speaker. The speaker keeps this
+  voice for the whole video. The CAM++ speaker model makes a voiceprint for each
+  3-second window of each line, and verbacue groups the windows by voice. The grouping
+  adapts to the length of the video, and small groups join the nearest speaker.
+- `--dub-voice clone` finds the speakers in the same way, and speaks each line in a
+  clone of its speaker's voice. Up to 30 seconds of the most typical lines of each
+  speaker become the voice sample.
+- With `--dub-original remove`, each new line also takes some of the delivery of the
+  original line, such as anger or a whisper. The sound of the voice stays the same.
+- `--dub-voice <name>` uses one studio voice for all lines.
+- A line that is longer than its cue plays faster, up to `--dub-speed-limit`
+  (default 1.3). Then it may use the silence before the next line. Above that, it
+  plays up to 1.5 times faster with a warning, and it never plays over the next line.
+- `--dub-model` is `xtts-v2-int8` (default; about twice as fast on a CPU), `xtts-v2`
+  (default in a CUDA build), or a folder with the model files.
+
 ## Tests
 
 ```sh
@@ -501,4 +594,5 @@ texts, also those of the Rust crates, and each release archive includes it. Run
 - whisper.cpp and llama.cpp (MIT)
 - DejaVu Sans Bold font (free license, see `crates/verbacue-media/assets/DejaVu-LICENSE.txt`)
 - Model weights have their own licenses: Whisper (MIT), Silero VAD (MIT), Gemma 3 and
-  TranslateGemma (Gemma Terms of Use), Gemma 4 (Apache 2.0)
+  TranslateGemma (Gemma Terms of Use), Gemma 4 (Apache 2.0), CAM++ from 3D-Speaker
+  (Apache 2.0)

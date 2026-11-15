@@ -2,7 +2,8 @@
 //!
 //! Whisper often invents text during silence or music. Two steps reduce that: the
 //! Silero VAD model skips parts without speech, and [`filter_hallucinations`] removes
-//! typical invented lines from the result.
+//! typical invented lines from the result. Whisper also misses lines sometimes, so a
+//! second pass transcribes the speech that no cue covers.
 
 use std::{
     path::Path,
@@ -15,7 +16,8 @@ use std::{
 
 use whisper_rs::{
     DtwMode, DtwModelPreset, DtwParameters, FullParams, SamplingStrategy, WhisperContext,
-    WhisperContextParameters,
+    WhisperContextParameters, WhisperState, WhisperVadContext, WhisperVadContextParams,
+    WhisperVadParams,
 };
 
 use verbacue_core::{
@@ -38,6 +40,9 @@ pub struct Options<'a> {
 }
 
 /// Transcribes 16 kHz mono samples. `progress` receives percent values (0-100).
+///
+/// With a VAD model, a second pass transcribes the speech that the first pass missed:
+/// large-v3 sometimes jumps over a few lines or repeats one line instead of the next.
 ///
 /// The Whisper model stays loaded only while this function runs, so the memory is free
 /// again before the translation model loads.
@@ -62,14 +67,88 @@ pub fn transcribe(pcm: &[f32], opts: &Options, progress: &dyn Progress) -> Resul
         .create_state()
         .with_kind(ErrorKind::Model)
         .context("cannot create Whisper state")?;
+    if preset.is_none() {
+        tracing::debug!("no word timing preset for {}", opts.model.display());
+    }
 
+    let main_share = if opts.vad_model.is_some() { 90 } else { 100 };
+    let pass = Pass {
+        language: opts.language.unwrap_or("auto"),
+        vad_model: opts.vad_model,
+        offset_ms: 0,
+        percent: (0, main_share),
+        live: true,
+    };
+    let mut cues = clean(run(&mut state, pcm, &pass, progress)?);
+    let language = whisper_rs::get_lang_str(state.full_lang_id_from_state())
+        .unwrap_or("und")
+        .to_string();
+
+    if let Some(vad) = opts.vad_model {
+        let regions = missed(&speech(vad, pcm)?, &cues);
+        tracing::info!(
+            "second pass over {} parts with missed speech",
+            regions.len()
+        );
+        let count = u64::try_from(regions.len()).unwrap_or(1).max(1);
+        for (i, region) in (0_u64..).zip(&regions) {
+            check_cancel(progress)?;
+            let done = main_share + (100 - main_share) * i / count;
+            progress.update(done, 100);
+            let from = sample_index(region.start_ms).min(pcm.len());
+            let to = sample_index(region.end_ms).min(pcm.len());
+            let pass = Pass {
+                language: &language,
+                vad_model: None,
+                offset_ms: region.start_ms,
+                percent: (done, done),
+                live: false,
+            };
+            let found = clean(run(&mut state, &pcm[from..to], &pass, progress)?);
+            cues.extend(region.keep(found));
+        }
+        cues.sort_by_key(|c| c.start_ms);
+        progress.update(100, 100);
+    }
+
+    Ok(Transcript { language, cues })
+}
+
+/// The settings of one Whisper run.
+struct Pass<'a> {
+    language: &'a str,
+    vad_model: Option<&'a Path>,
+    /// The time of the first sample in the film.
+    offset_ms: u64,
+    /// The progress range of this run, in percent.
+    percent: (u64, u64),
+    /// Shows each new segment with [`Progress::cue`].
+    live: bool,
+}
+
+const SAMPLES_PER_MS: u64 = 16;
+
+fn sample_index(ms: u64) -> usize {
+    usize::try_from(ms * SAMPLES_PER_MS).unwrap_or(usize::MAX)
+}
+
+/// One Whisper segment as Whisper timed it, and the times of its words (DTW).
+type Segment = (Cue, Vec<u64>);
+
+/// Runs Whisper on `pcm`. The times in the result are film times.
+fn run(
+    state: &mut WhisperState,
+    pcm: &[f32],
+    pass: &Pass,
+    progress: &dyn Progress,
+) -> Result<Vec<Segment>> {
     let mut params = FullParams::new(SamplingStrategy::BeamSearch {
         beam_size: 5,
         patience: -1.0,
     });
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
     params.set_n_threads(i32::try_from(threads).unwrap_or(4));
-    params.set_language(Some(opts.language.unwrap_or("auto")));
+    params.set_language(Some(pass.language));
     // Each 30 s window would otherwise get the text of the earlier windows as a prompt.
     // After one invented line in a quiet part, large-v3 then repeats it for the rest of
     // the file (on a 2.5 h film it lost 56 minutes). `no_context` does not stop this:
@@ -81,14 +160,16 @@ pub fn transcribe(pcm: &[f32], opts: &Options, progress: &dyn Progress) -> Resul
     params.set_print_timestamps(false);
     // Suppresses non-speech tokens such as "[Music]" or "(applause)".
     params.set_suppress_nst(true);
-    if let Some(vad) = opts.vad_model {
+    if let Some(vad) = pass.vad_model {
         params.set_vad_model_path(vad.to_str());
         params.enable_vad(true);
     }
-    let percent = Arc::new(AtomicU64::new(0));
+    let percent = Arc::new(AtomicU64::new(pass.percent.0));
     let reported = Arc::clone(&percent);
+    let (low, high) = pass.percent;
     params.set_progress_callback_safe(move |p: i32| {
-        reported.store(u64::try_from(p).unwrap_or(0), Ordering::Relaxed);
+        let p = u64::try_from(p).unwrap_or(0).min(100);
+        reported.store(low + (high - low) * p / 100, Ordering::Relaxed);
     });
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -97,16 +178,19 @@ pub fn transcribe(pcm: &[f32], opts: &Options, progress: &dyn Progress) -> Resul
     // `Box<dyn FnMut>`. With `F` already that box type, both sides agree.
     let abort: Box<dyn FnMut() -> bool> = Box::new(move || stop_flag.load(Ordering::Relaxed));
     params.set_abort_callback_safe(abort);
+
     let new_cues = Arc::new(Mutex::new(Vec::new()));
-    let segments = Arc::clone(&new_cues);
-    params.set_segment_callback_safe_lossy(move |seg: whisper_rs::SegmentCallbackData| {
-        // Whisper timestamps are in centiseconds.
-        let start = u64::try_from(seg.start_timestamp).unwrap_or(0) * 10;
-        let end = u64::try_from(seg.end_timestamp).unwrap_or(0) * 10;
-        if let Ok(mut cues) = segments.lock() {
-            cues.push(Cue::new(start, end, seg.text.trim()));
-        }
-    });
+    if pass.live {
+        let segments = Arc::clone(&new_cues);
+        params.set_segment_callback_safe_lossy(move |seg: whisper_rs::SegmentCallbackData| {
+            // Whisper timestamps are in centiseconds.
+            let start = u64::try_from(seg.start_timestamp).unwrap_or(0) * 10;
+            let end = u64::try_from(seg.end_timestamp).unwrap_or(0) * 10;
+            if let Ok(mut cues) = segments.lock() {
+                cues.push(Cue::new(start, end, seg.text.trim()));
+            }
+        });
+    }
 
     // Whisper's callbacks must be 'static, so inference runs on its own thread, and this
     // thread passes progress, new cues and the cancel flag between the two.
@@ -135,13 +219,10 @@ pub fn transcribe(pcm: &[f32], opts: &Options, progress: &dyn Progress) -> Resul
     result
         .with_kind(ErrorKind::Model)
         .context("Whisper inference failed")?;
-    progress.update(100, 100);
+    progress.update(high, 100);
 
-    let language = whisper_rs::get_lang_str(state.full_lang_id_from_state())
-        .unwrap_or("und")
-        .to_string();
-    // Each segment as Whisper timed it, and the times of its words (DTW).
-    let (segments, words): (Vec<Cue>, Vec<Vec<u64>>) = state
+    let offset = pass.offset_ms;
+    let segments: Vec<Segment> = state
         .as_iter()
         .map(|seg| {
             // Whisper timestamps are in centiseconds.
@@ -155,12 +236,12 @@ pub fn transcribe(pcm: &[f32], opts: &Options, progress: &dyn Progress) -> Resul
                 .filter_map(|i| seg.get_token(i))
                 .filter(|token| token.to_str_lossy().is_ok_and(|t| is_word(&t)))
                 .filter_map(|token| u64::try_from(token.token_data().t_dtw).ok())
-                .map(|t| t * 10)
+                .map(|t| t * 10 + offset)
                 .collect();
-            (Cue::new(start, end, text), words)
+            (Cue::new(start + offset, end + offset, text), words)
         })
-        .unzip();
-    for (cue, words) in segments.iter().zip(&words) {
+        .collect();
+    for (cue, words) in &segments {
         tracing::debug!(
             "segment {}-{} ms, words at {words:?} ms: {:?}",
             cue.start_ms,
@@ -168,28 +249,141 @@ pub fn transcribe(pcm: &[f32], opts: &Options, progress: &dyn Progress) -> Resul
             cue.text
         );
     }
+    Ok(segments)
+}
 
-    // The filter judges Whisper's own segment times; the kept segments then get the
-    // times of their words.
-    let kept = filter_hallucinations(segments.clone());
-    let mut kept = kept.iter().peekable();
-    let cues = segments
-        .iter()
-        .zip(&words)
-        .filter_map(|(segment, words)| {
-            if kept.peek() != Some(&segment) {
-                return None;
-            }
-            kept.next();
-            let (start, end) = tighten(segment.start_ms, segment.end_ms, words);
-            Some(Cue::new(start, end, segment.text.clone()))
+/// Gives each segment the times of its words, then removes invented lines. The filter
+/// judges the word times, because a segment often includes seconds of silence.
+fn clean(segments: Vec<Segment>) -> Vec<Cue> {
+    let tight = segments
+        .into_iter()
+        .map(|(segment, words)| {
+            let (start, end) = tighten(segment.start_ms, segment.end_ms, &words);
+            Cue::new(start, end, segment.text)
         })
         .collect();
-    if preset.is_none() {
-        tracing::debug!("no word timing preset for {}", opts.model.display());
-    }
+    filter_hallucinations(tight)
+}
 
-    Ok(Transcript { language, cues })
+/// The speech parts of `pcm` that the Silero VAD model finds, as (start, end) in ms.
+fn speech(vad_model: &Path, pcm: &[f32]) -> Result<Vec<(u64, u64)>> {
+    let path = vad_model
+        .to_str()
+        .context("the VAD model path is not UTF-8")?;
+    let mut vad = WhisperVadContext::new(path, WhisperVadContextParams::new())
+        .with_kind(ErrorKind::Model)
+        .context("cannot load the VAD model")?;
+    let segments = vad
+        .segments_from_samples(WhisperVadParams::new(), pcm)
+        .with_kind(ErrorKind::Model)
+        .context("speech detection failed")?;
+    // VAD times are in centiseconds.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "film times in ms fit in u64"
+    )]
+    Ok(segments
+        .map(|s| ((s.start * 10.0) as u64, (s.end * 10.0) as u64))
+        .collect())
+}
+
+/// Speech shorter than this outside every cue is noise or a breath.
+const MIN_MISSED_MS: u64 = 1_000;
+/// Speech this close to a cue belongs to that cue.
+const CUE_MARGIN_MS: u64 = 300;
+/// Extra audio around a missed part, so that Whisper hears the first and last word.
+const REGION_PAD_MS: u64 = 300;
+
+/// A part of the film between two cues with speech that no cue covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Region {
+    start_ms: u64,
+    end_ms: u64,
+    /// The end of the cue before and the start of the cue after.
+    gap: (u64, u64),
+}
+
+impl Region {
+    /// The new cues of this region. A cue keeps its place only if its middle is in the
+    /// region, and it never overlaps the cues around the gap.
+    fn keep(&self, found: Vec<Cue>) -> Vec<Cue> {
+        found
+            .into_iter()
+            .filter(|c| (self.start_ms..self.end_ms).contains(&(c.start_ms / 2 + c.end_ms / 2)))
+            .map(|c| {
+                let start = c.start_ms.max(self.gap.0);
+                let end = c.end_ms.min(self.gap.1).max(start);
+                Cue::new(start, end, c.text)
+            })
+            .collect()
+    }
+}
+
+/// The parts with speech (`speech`, sorted) that no cue covers. Missed speech in the
+/// same gap between two cues forms one region.
+fn missed(speech: &[(u64, u64)], cues: &[Cue]) -> Vec<Region> {
+    let mut regions: Vec<Region> = Vec::new();
+    for &(start, end) in speech {
+        // The cues that touch this speech part, with the margin.
+        let mut cursor = start;
+        let mut parts = Vec::new();
+        for cue in cues {
+            let (c0, c1) = (
+                cue.start_ms.saturating_sub(CUE_MARGIN_MS),
+                cue.end_ms + CUE_MARGIN_MS,
+            );
+            if c1 <= cursor || c0 >= end {
+                continue;
+            }
+            if c0 > cursor {
+                parts.push((cursor, c0));
+            }
+            cursor = cursor.max(c1);
+        }
+        if cursor < end {
+            parts.push((cursor, end));
+        }
+        for (p0, p1) in parts {
+            if p1 - p0 < MIN_MISSED_MS {
+                continue;
+            }
+            let gap = gap_around(p0, p1, cues);
+            match regions.last_mut() {
+                Some(last) if last.gap == gap => last.end_ms = p1,
+                _ => regions.push(Region {
+                    start_ms: p0,
+                    end_ms: p1,
+                    gap,
+                }),
+            }
+        }
+    }
+    for region in &mut regions {
+        region.start_ms = region
+            .start_ms
+            .saturating_sub(REGION_PAD_MS)
+            .max(region.gap.0);
+        region.end_ms = (region.end_ms + REGION_PAD_MS).min(region.gap.1);
+    }
+    regions
+}
+
+/// The end of the last cue before `start` and the start of the first cue after `end`.
+fn gap_around(start: u64, end: u64, cues: &[Cue]) -> (u64, u64) {
+    let before = cues
+        .iter()
+        .filter(|c| c.end_ms <= start + CUE_MARGIN_MS)
+        .map(|c| c.end_ms)
+        .max()
+        .unwrap_or(0);
+    let after = cues
+        .iter()
+        .filter(|c| c.start_ms + CUE_MARGIN_MS >= end)
+        .map(|c| c.start_ms)
+        .min()
+        .unwrap_or(u64::MAX);
+    (before, after)
 }
 
 /// True for a token with a letter or digit. Punctuation tokens often get the time of
@@ -205,9 +399,12 @@ const TAIL_MS: u64 = 500;
 
 /// Whisper's segment times often cover the silence before or after the speech, so a
 /// subtitle would show seconds early or late. The word times (DTW) mark the speech;
-/// the result stays inside the segment. Without word times the segment stays as it is.
+/// the result stays inside the segment. Word times outside the segment are wrong
+/// (Whisper sometimes gives a value far past the end of the film), so they do not count.
+/// Without word times the segment stays as it is.
 fn tighten(start: u64, end: u64, words: &[u64]) -> (u64, u64) {
-    let (Some(first), Some(last)) = (words.iter().min(), words.iter().max()) else {
+    let inside = || words.iter().filter(|&&w| (start..=end).contains(&w));
+    let (Some(first), Some(last)) = (inside().min(), inside().max()) else {
         return (start, end);
     };
     (
@@ -258,6 +455,7 @@ const HALLUCINATIONS: &[&str] = &[
     "transcribed by",
     "izlediğiniz için teşekkür ederim",
     "izlediğiniz için teşekkürler",
+    "altyazı mk",
     "vielen dank fürs zuschauen",
     "gracias por ver el video",
     "gracias por ver",
@@ -375,6 +573,81 @@ mod tests {
     }
 
     #[test]
+    fn word_times_outside_the_segment_do_not_count() {
+        // Whisper gave one word a time far past the end of the film.
+        assert_eq!(
+            tighten(1_000, 5_000, &[2_000, 440_000_000_000]),
+            (1_900, 2_500)
+        );
+        assert_eq!(tighten(1_000, 5_000, &[440_000_000_000]), (1_000, 5_000));
+    }
+
+    #[test]
+    fn a_short_line_in_a_long_segment_stays() {
+        let long_silence = (Cue::new(0, 16_000, "Hadi Turgut."), vec![7_000, 7_400]);
+        let music = (Cue::new(20_000, 38_000, "Dicle"), vec![]);
+        assert_eq!(texts(&clean(vec![long_silence, music])), ["Hadi Turgut."]);
+    }
+
+    #[test]
+    fn speech_without_a_cue_is_missed() {
+        let cues = [Cue::new(1_000, 3_000, "a"), Cue::new(20_000, 22_000, "b")];
+        // Covered, too short, then two missed parts in the same gap.
+        let speech = [
+            (1_000, 3_100),
+            (5_000, 5_500),
+            (8_000, 10_000),
+            (12_000, 15_000),
+        ];
+        assert_eq!(
+            missed(&speech, &cues),
+            [Region {
+                start_ms: 7_700,
+                end_ms: 15_300,
+                gap: (3_000, 20_000)
+            }]
+        );
+    }
+
+    #[test]
+    fn missed_speech_in_two_gaps_gives_two_regions() {
+        let cues = [Cue::new(10_000, 12_000, "a")];
+        let speech = [(2_000, 4_000), (11_000, 16_000)];
+        assert_eq!(
+            missed(&speech, &cues),
+            [
+                Region {
+                    start_ms: 1_700,
+                    end_ms: 4_300,
+                    gap: (0, 10_000)
+                },
+                Region {
+                    start_ms: 12_000,
+                    end_ms: 16_300,
+                    gap: (12_000, u64::MAX)
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_region_keeps_only_its_own_lines_inside_the_gap() {
+        let region = Region {
+            start_ms: 5_000,
+            end_ms: 9_000,
+            gap: (4_000, 10_000),
+        };
+        let found = vec![
+            Cue::new(3_800, 6_400, "starts before the gap"),
+            Cue::new(6_000, 7_000, "inside"),
+            Cue::new(9_500, 11_000, "after the region"),
+        ];
+        let kept = region.keep(found);
+        assert_eq!(texts(&kept), ["starts before the gap", "inside"]);
+        assert_eq!((kept[0].start_ms, kept[0].end_ms), (4_000, 6_400));
+    }
+
+    #[test]
     fn word_times_tighten_a_segment() {
         // Whisper gave 0-10.32 s; the words were spoken from 2.14 to 4.40 s.
         let words = [2140, 2440, 2660, 2980, 3260, 3560, 3640, 3920, 4400];
@@ -453,6 +726,7 @@ mod tests {
     fn removes_phrases_in_other_languages() {
         let out = filter_hallucinations(cues(&[
             "İzlediğiniz için teşekkür ederim.",
+            "Altyazı M.K.",
             "Vielen Dank fürs Zuschauen!",
             "ご視聴ありがとうございました",
             "Teşekkür ederim.",

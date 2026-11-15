@@ -41,8 +41,19 @@ pub struct Settings {
     pub format: Format,
     /// `None` saves next to the video.
     pub out_dir: Option<PathBuf>,
+    /// The look of burned-in subtitles.
+    pub burn_style: BurnStyle,
+    pub burn_animation: BurnAnimation,
     /// The last target language.
     pub target: String,
+    /// "cast" for a studio voice for each speaker, "clone" for the voice of each speaker,
+    /// or one studio voice.
+    pub dub_voice: String,
+    pub dub_original: DubOriginal,
+    /// The highest speed-up of a line, from 1.0 to 1.5.
+    pub dub_speed_limit: f32,
+    /// The voice model for dubbing.
+    pub dub_model: String,
     /// Newest first.
     pub recent: Vec<Recent>,
 }
@@ -52,7 +63,106 @@ pub struct Settings {
 pub struct Recent {
     pub path: PathBuf,
     pub target: String,
+    /// Subtitle files. Files from before the output choice do not have this key.
+    #[serde(default = "yes")]
+    pub subtitles: bool,
     pub burn: bool,
+    /// A dubbed video. Files from before dubbing do not have this key.
+    #[serde(default)]
+    pub dub: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// The style of burned-in subtitles.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BurnStyle {
+    #[default]
+    Classic,
+    Yellow,
+    Box,
+    Large,
+    Bold,
+    Highlight,
+    Neon,
+}
+
+/// How burned-in subtitles appear.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BurnAnimation {
+    #[default]
+    None,
+    Fade,
+    Pop,
+    Typewriter,
+    Karaoke,
+    Bounce,
+    Words,
+}
+
+impl Settings {
+    /// The look that new videos start with.
+    pub fn default_look(&self) -> Look {
+        Look {
+            style: self.burn_style,
+            animation: self.burn_animation,
+        }
+    }
+}
+
+/// The style and the animation of burned-in subtitles for one video.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Look {
+    pub style: BurnStyle,
+    pub animation: BurnAnimation,
+}
+
+impl Look {
+    pub fn video(self) -> verbacue::video::SubtitleLook {
+        use verbacue::video::{SubtitleAnimation as SA, SubtitleStyle as SS};
+        verbacue::video::SubtitleLook {
+            style: match self.style {
+                BurnStyle::Classic => SS::Classic,
+                BurnStyle::Yellow => SS::Yellow,
+                BurnStyle::Box => SS::Box,
+                BurnStyle::Large => SS::Large,
+                BurnStyle::Bold => SS::Bold,
+                BurnStyle::Highlight => SS::Highlight,
+                BurnStyle::Neon => SS::Neon,
+            },
+            animation: match self.animation {
+                BurnAnimation::None => SA::None,
+                BurnAnimation::Fade => SA::Fade,
+                BurnAnimation::Pop => SA::Pop,
+                BurnAnimation::Typewriter => SA::Typewriter,
+                BurnAnimation::Karaoke => SA::Karaoke,
+                BurnAnimation::Bounce => SA::Bounce,
+                BurnAnimation::Words => SA::Words,
+            },
+        }
+    }
+}
+
+/// What dubbing does with the original speech.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DubOriginal {
+    /// Take the original voices out; keep music and effects.
+    Remove,
+    /// Keep the original audio, quieter while a new line plays.
+    Lower,
+}
+
+/// The default voice model of this build. Empty in a build without dubbing.
+pub fn default_dub_model() -> String {
+    #[cfg(feature = "dub")]
+    return verbacue::dub::default_model().to_string();
+    #[cfg(not(feature = "dub"))]
+    String::new()
 }
 
 impl Default for Settings {
@@ -71,7 +181,13 @@ impl Default for Settings {
             review_notes: true,
             format: Format::Srt,
             out_dir: None,
+            burn_style: BurnStyle::Classic,
+            burn_animation: BurnAnimation::None,
             target: "en".to_string(),
+            dub_voice: "cast".to_string(),
+            dub_original: DubOriginal::Remove,
+            dub_speed_limit: 1.3,
+            dub_model: default_dub_model(),
             recent: Vec::new(),
         }
     }
@@ -133,6 +249,7 @@ enum BackendDef {
     Google,
     Azure,
     OpenaiCompat,
+    Claude,
     None,
 }
 
@@ -193,11 +310,19 @@ mod tests {
             review_notes: false,
             format: Format::Vtt,
             out_dir: Some(PathBuf::from("/out")),
+            burn_style: BurnStyle::Box,
+            burn_animation: BurnAnimation::Karaoke,
             target: "hu".into(),
+            dub_voice: "Ana Florence".into(),
+            dub_original: DubOriginal::Lower,
+            dub_speed_limit: 1.15,
+            dub_model: "/models/xtts".into(),
             recent: vec![Recent {
                 path: PathBuf::from("/v/Szép film.mkv"),
                 target: "hu".into(),
+                subtitles: true,
                 burn: true,
+                dub: true,
             }],
         };
         save(&dir, &s).unwrap();
@@ -220,6 +345,23 @@ mod tests {
     }
 
     #[test]
+    fn old_settings_load_with_dub_defaults() {
+        let dir = temp_dir("old-dub");
+        std::fs::write(
+            dir.join(FILE),
+            "target = \"hu\"\n\n[[recent]]\npath = \"/v/a.mkv\"\ntarget = \"hu\"\nburn = true\n",
+        )
+        .unwrap();
+        let (s, notice) = load(&dir);
+        assert!(notice.is_none());
+        assert_eq!(s.dub_voice, "cast");
+        assert_eq!(s.dub_original, DubOriginal::Remove);
+        assert!((s.dub_speed_limit - 1.3).abs() < f32::EPSILON);
+        assert_eq!(s.dub_model, default_dub_model());
+        assert!(s.recent[0].subtitles && s.recent[0].burn && !s.recent[0].dub);
+    }
+
+    #[test]
     fn broken_file_is_renamed_and_reported() {
         let dir = temp_dir("broken");
         std::fs::write(dir.join(FILE), "vad = [").unwrap();
@@ -237,13 +379,17 @@ mod tests {
             s.remember(Recent {
                 path: PathBuf::from(format!("/v/{i}.mkv")),
                 target: "hu".into(),
+                subtitles: true,
                 burn: false,
+                dub: false,
             });
         }
         s.remember(Recent {
             path: PathBuf::from("/v/5.mkv"),
             target: "en".into(),
+            subtitles: true,
             burn: true,
+            dub: false,
         });
         assert_eq!(s.recent.len(), 8);
         assert_eq!(s.recent[0].path, PathBuf::from("/v/5.mkv"));
@@ -268,7 +414,9 @@ mod tests {
             s.remember(Recent {
                 path,
                 target: "hu".into(),
+                subtitles: true,
                 burn: false,
+                dub: false,
             });
         }
         s.drop_missing();

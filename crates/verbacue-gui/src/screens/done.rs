@@ -56,6 +56,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .count();
 
     let subtitle = match (items.as_slice(), done) {
+        // Without subtitle files there are no lines to count.
+        ([(_, item)], _) if item.lines() == 0 => {
+            format!("Ready to watch in {}.", language(app, item))
+        }
         ([(_, item)], _) => format!(
             "{} subtitle lines in {}, ready to watch.",
             item.lines(),

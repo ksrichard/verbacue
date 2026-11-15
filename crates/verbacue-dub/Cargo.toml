@@ -1,0 +1,39 @@
+[package]
+name = "verbacue-dub"
+description = "Speaks translated subtitles with XTTS-v2 and takes the original voices out with HTDemucs, as ONNX graphs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+# GPU support on Linux and Windows. NVIDIA only; needs the CUDA toolkit.
+# copy-dylibs puts the CUDA libraries of ONNX Runtime next to the built program.
+cuda = ["ort/cuda", "ort/copy-dylibs"]
+
+[dependencies]
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "ndarray"] }
+# Japanese words and their readings, with the IPADIC dictionary inside the binary.
+lindera = { version = "6.2.0", default-features = false, features = ["embed-ipadic"] }
+# Chinese characters to pinyin.
+pinyin = { version = "0.11.0", default-features = false, features = ["with_tone_num_end"] }
+# The FFT for the mel spectrograms of a voice sample.
+rustfft = { version = "6.4.1" }
+serde_json = { version = "1.0.154" }
+tracing = { version = "0.1.44" }
+verbacue-core = { path = "../verbacue-core", version = "0.1.0" }
+verbacue-media = { path = "../verbacue-media", version = "0.1.0" }
+
+# On macOS and Linux: a static ONNX Runtime, so the binary needs no libonnxruntime at
+# run time. tls-rustls is for the build script, which downloads ONNX Runtime.
+[target.'cfg(not(windows))'.dependencies]
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "ndarray", "download-binaries", "tls-rustls"] }
+
+# On Windows there is no prebuilt static ONNX Runtime for the CPU, and none for MinGW.
+# verbacue loads Microsoft's onnxruntime.dll, which ships next to verbacue.exe.
+[target.'cfg(windows)'.dependencies]
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "ndarray", "load-dynamic"] }
+
+[lints]
+workspace = true

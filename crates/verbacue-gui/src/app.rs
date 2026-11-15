@@ -22,7 +22,7 @@ use crate::{
     queue::{Item, Status},
     screens::{
         self,
-        choose::{Choose, OutputMode},
+        choose::{Choose, Output, Outputs},
         convert::Convert,
         pick::Pick,
         settings::SettingChange,
@@ -30,10 +30,14 @@ use crate::{
     settings::{self, Recent, Settings},
     theme,
     widgets::{backdrop::Backdrop, nav},
-    worker::{Failure, Update, Worker},
+    worker::{Failure, Reply, Update, Worker},
 };
 
 /// The screens of the app, in the order of the main flow.
+/// The size of the subtitle sample picture, twice its size on the screen.
+const SAMPLE_WIDTH: u32 = 560;
+const SAMPLE_HEIGHT: u32 = 316;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Screen {
     #[default]
@@ -49,19 +53,20 @@ pub enum Screen {
 pub struct Selection {
     pub video: PathBuf,
     pub info: MediaInfo,
-    /// Burned-in MP4 (true) or only subtitle files (false).
-    pub burn: bool,
+    pub outputs: Outputs,
     /// A language code, or [`KEEP`] for no translation.
     pub target: String,
     pub track: usize,
     /// What the user wrote about this video, for the translator.
     pub notes: String,
+    /// The style and the animation of the burned-in subtitles.
+    pub look: crate::settings::Look,
 }
 
 /// How long iced may still report sizes with the old scale after a change.
 const SETTLE: std::time::Duration = std::time::Duration::from_millis(400);
 
-/// The target value for "Keep the original language".
+/// The target value for "Original language (no translation)".
 pub const KEEP: &str = "";
 
 /// The language code in output file names when the video keeps its language.
@@ -91,9 +96,14 @@ pub enum Message {
     Remove(usize),
     /// Copies the shown video's options to every waiting video.
     ApplyToAll,
-    Mode(OutputMode),
+    /// Turns one output of the shown video on or off.
+    Toggle(Output),
     Target(String),
     Track(usize),
+    /// The subtitle style of the shown video.
+    BurnStyle(crate::settings::BurnStyle),
+    /// The subtitle animation of the shown video.
+    BurnAnimation(crate::settings::BurnAnimation),
     /// The notes about the shown video.
     Notes(String),
     PlayVideo,
@@ -104,6 +114,8 @@ pub enum Message {
     ReviewEdit(iced::widget::text_editor::Action),
     /// The user checked the film notes; the translation starts.
     ReviewDone,
+    /// The answer to the licence dialog: true accepts it.
+    Licence(bool),
     Cancel,
     CloseRequested,
     ConfirmClose(bool),
@@ -114,6 +126,8 @@ pub enum Message {
     Again,
     Setting(SettingChange),
     ChooseGlossary,
+    /// Picks a folder with an exported voice model.
+    ChooseDubModel,
     ChooseOutDir,
     OpenConfigFolder,
     DownloadModel(&'static str),
@@ -146,7 +160,7 @@ pub struct App {
     force: bool,
     next_id: u64,
     /// The options of recent entries, for the files being checked.
-    recent_options: HashMap<PathBuf, (String, bool)>,
+    recent_options: HashMap<PathBuf, (String, Outputs)>,
     /// The id of each file being checked, given in the order the user chose them.
     chosen: HashMap<PathBuf, u64>,
     /// Start the queue when all opened files are checked; true also replaces outputs.
@@ -159,6 +173,8 @@ pub struct App {
     pub vad_changed: Instant,
     /// When the film notes switch last changed, for its animation.
     pub film_notes_changed: Instant,
+    /// The studio voices of the voice model, when it is on this computer.
+    pub studio_voices: Vec<String>,
     /// How much larger than the mockups the whole interface draws.
     pub scale: f32,
     /// When the scale last changed.
@@ -171,6 +187,11 @@ pub struct App {
     opened: Instant,
     now: Instant,
     logo: iced::widget::image::Handle,
+    /// The looping subtitle sample of the Settings screen, made when it first opens.
+    sample: Option<verbacue::video::SubtitleSample>,
+    /// When the sample loop started; a new style or animation starts it again.
+    sample_started: Instant,
+    pub sample_frame: Option<iced::widget::image::Handle>,
 }
 
 impl App {
@@ -249,6 +270,7 @@ impl App {
             downloads: HashMap::new(),
             vad_changed: now,
             film_notes_changed: now,
+            studio_voices: Vec::new(),
             scale: 1.0,
             scale_changed: None,
             worker: Arc::new(OnceLock::new()),
@@ -256,6 +278,9 @@ impl App {
             opened: now,
             now,
             logo: nav::logo(),
+            sample: None,
+            sample_started: now,
+            sample_frame: None,
         }
     }
 
@@ -347,11 +372,80 @@ impl App {
         self.now.duration_since(self.opened).as_secs_f32()
     }
 
+    /// The look and the size of the subtitle sample on the current screen: the default
+    /// look in Settings, and the look of the shown video, at its shape, in Choose.
+    fn sample_target(&self) -> Option<(verbacue::video::SubtitleLook, (u32, u32))> {
+        match self.screen {
+            Screen::Settings => Some((
+                self.settings.default_look().video(),
+                (SAMPLE_WIDTH, SAMPLE_HEIGHT),
+            )),
+            Screen::Choose => {
+                let s = self.selection()?;
+                let (w, h) = (s.info.width, s.info.height);
+                (s.outputs.burn && w > 0 && h > 0)
+                    .then(|| (s.look.video(), (SAMPLE_HEIGHT * w / h, SAMPLE_HEIGHT)))
+            }
+            _ => None,
+        }
+    }
+
+    /// Starts the subtitle sample from the beginning and draws its first picture.
+    fn restart_sample(&mut self) {
+        self.sample_started = Instant::now();
+        self.sample_frame = None;
+        if let Some(sample) = &mut self.sample {
+            // A new start must draw again, even if the look is the same.
+            sample.forget();
+        }
+        self.draw_sample(self.sample_started);
+    }
+
+    fn draw_sample(&mut self, now: Instant) {
+        let Some((look, size)) = self.sample_target() else {
+            return;
+        };
+        if self.sample.as_ref().is_none_or(|s| s.size() != size) {
+            // A failed font load only hides the sample.
+            self.sample = verbacue::video::SubtitleSample::new(size.0, size.1).ok();
+        }
+        let ms = now
+            .saturating_duration_since(self.sample_started)
+            .as_millis() as u64;
+        if let Some(f) = self.sample.as_mut().and_then(|s| s.frame(look, ms)) {
+            self.sample_frame = Some(iced::widget::image::Handle::from_rgba(
+                f.width, f.height, f.rgba,
+            ));
+        }
+    }
+
     fn show(&mut self, screen: Screen) {
+        if screen == Screen::Settings {
+            self.read_studio_voices();
+        }
         if self.screen != screen {
             self.screen = screen;
             self.opened = Instant::now();
             self.now = self.opened;
+        }
+        self.restart_sample();
+    }
+
+    /// Reads the studio voices of the voice model, if it is on this computer.
+    fn read_studio_voices(&mut self) {
+        #[cfg(feature = "dub")]
+        {
+            let model = &self.settings.dub_model;
+            let dir = if std::path::Path::new(model).is_dir() {
+                Some(PathBuf::from(model))
+            } else {
+                models::bundle(model)
+                    .filter(|b| b.is_cached())
+                    .and_then(|b| b.cached_dir().ok())
+            };
+            self.studio_voices = dir
+                .and_then(|d| verbacue::dub::xtts::studio_voices_in(&d).ok())
+                .unwrap_or_default();
         }
     }
 
@@ -363,6 +457,7 @@ impl App {
             }
             Message::Tick(now) => {
                 self.now = now;
+                self.draw_sample(now);
                 Task::none()
             }
             Message::Resized(size) => {
@@ -400,7 +495,17 @@ impl App {
                 Task::none()
             }
             Message::OpenRecent(i) => match self.settings.recent.get(i).cloned() {
-                Some(r) => self.check(r.path, Some((r.target, r.burn))),
+                Some(r) => {
+                    let mut outputs = Outputs {
+                        subtitles: r.subtitles,
+                        burn: r.burn,
+                        dub: r.dub && cfg!(feature = "dub"),
+                    };
+                    if !(outputs.burn || outputs.dub) {
+                        outputs.subtitles = true;
+                    }
+                    self.check(r.path, Some((r.target, outputs)))
+                }
                 None => Task::none(),
             },
             Message::MediaChecked(result) => {
@@ -467,8 +572,10 @@ impl App {
                 if let Some(shown) = self.selection().cloned() {
                     for item in &mut self.queue {
                         if item.status == Status::Waiting {
-                            item.selection.burn = shown.burn;
+                            item.selection.outputs = shown.outputs;
                             item.selection.target.clone_from(&shown.target);
+                            item.selection.look = shown.look;
+                            item.selection.outputs.fit(&item.selection.target);
                             if shown.track < item.selection.info.audio.len() {
                                 item.selection.track = shown.track;
                             }
@@ -477,9 +584,11 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Mode(mode) => {
-                if let Some(s) = self.selection_mut() {
-                    s.burn = mode == OutputMode::Burn;
+            Message::Toggle(output) => {
+                if let Some(s) = self.selection_mut()
+                    && (output != Output::Dub || screens::choose::dub_blocked(&s.target).is_none())
+                {
+                    s.outputs.toggle(output);
                     self.choose.mode_changed = Instant::now();
                 }
                 Task::none()
@@ -487,7 +596,22 @@ impl App {
             Message::Target(code) => {
                 if let Some(s) = self.selection_mut() {
                     s.target = code;
+                    s.outputs.fit(&s.target);
                 }
+                Task::none()
+            }
+            Message::BurnStyle(style) => {
+                if let Some(s) = self.selection_mut() {
+                    s.look.style = style;
+                }
+                self.restart_sample();
+                Task::none()
+            }
+            Message::BurnAnimation(animation) => {
+                if let Some(s) = self.selection_mut() {
+                    s.look.animation = animation;
+                }
+                self.restart_sample();
                 Task::none()
             }
             Message::Track(index) => {
@@ -543,7 +667,23 @@ impl App {
                     self.convert.review =
                         Some(iced::widget::text_editor::Content::with_text(&notes));
                 } else if let Some(reply) = &self.convert.reply {
-                    let _ = reply.send(notes);
+                    let _ = reply.send(Reply::Notes(notes));
+                }
+                Task::none()
+            }
+            Message::Pipeline(Update::Licence { model, text }) => {
+                self.convert.licence = Some((model, text));
+                Task::none()
+            }
+            Message::Licence(accept) => {
+                if self.convert.licence.take().is_some()
+                    && let Some(reply) = &self.convert.reply
+                {
+                    let _ = reply.send(Reply::Licence(accept));
+                }
+                if !accept {
+                    self.convert.cancel.store(true, Ordering::Relaxed);
+                    self.convert.stopping = true;
                 }
                 Task::none()
             }
@@ -557,7 +697,7 @@ impl App {
                 if let (Some(content), Some(reply)) =
                     (self.convert.review.take(), &self.convert.reply)
                 {
-                    let _ = reply.send(content.text());
+                    let _ = reply.send(Reply::Notes(content.text()));
                 }
                 Task::none()
             }
@@ -626,7 +766,18 @@ impl App {
                 ) {
                     self.film_notes_changed = Instant::now();
                 }
+                let model_changed = matches!(change, SettingChange::DubModel(_));
+                let look_changed = matches!(
+                    change,
+                    SettingChange::BurnStyle(_) | SettingChange::BurnAnimation(_)
+                );
                 change.apply(&mut self.settings);
+                if look_changed {
+                    self.restart_sample();
+                }
+                if model_changed {
+                    self.read_studio_voices();
+                }
                 self.save_settings();
                 Task::none()
             }
@@ -641,6 +792,17 @@ impl App {
                 Task::done(Message::Setting(SettingChange::Glossary(Some(
                     f.path().to_path_buf(),
                 ))))
+            }),
+            Message::ChooseDubModel => Task::future(async {
+                rfd::AsyncFileDialog::new()
+                    .set_title("Choose a voice model folder")
+                    .pick_folder()
+                    .await
+            })
+            .and_then(|f| {
+                Task::done(Message::Setting(SettingChange::DubModel(
+                    f.path().display().to_string(),
+                )))
             }),
             Message::ChooseOutDir => Task::future(async {
                 rfd::AsyncFileDialog::new()
@@ -670,6 +832,7 @@ impl App {
             }
             Message::ModelDone(name, result) => {
                 self.downloads.remove(name);
+                self.read_studio_voices();
                 if let Err(e) = result {
                     self.notice = Some(format!("Download of {name} failed: {e}"));
                 }
@@ -716,7 +879,9 @@ impl App {
                 self.settings.remember(Recent {
                     path: s.video.clone(),
                     target: s.target.clone(),
-                    burn: s.burn,
+                    subtitles: s.outputs.subtitles,
+                    burn: s.outputs.burn,
+                    dub: s.outputs.dub,
                 });
                 if s.target != KEEP {
                     self.settings.target = s.target.clone();
@@ -736,7 +901,8 @@ impl App {
                 self.queue[index].status = Status::Done(outcome, lines);
                 self.run_next()
             }
-            Err(failure) if failure.kind == ErrorKind::Cancelled => {
+            // A declined licence also ends the job with an error, after the stop.
+            Err(failure) if failure.kind == ErrorKind::Cancelled || self.convert.stopping => {
                 self.queue[index].status = Status::Waiting;
                 self.current = index;
                 self.run.clear();
@@ -789,10 +955,10 @@ impl App {
 
     /// Adds a checked video to the end of the queue.
     fn add(&mut self, video: PathBuf, info: MediaInfo) -> Task<Message> {
-        let (target, burn) = self
+        let (target, outputs) = self
             .recent_options
             .remove(&video)
-            .unwrap_or_else(|| (self.settings.target.clone(), true));
+            .unwrap_or_else(|| (self.settings.target.clone(), Outputs::default()));
         let id = self.chosen.remove(&video).unwrap_or_else(|| {
             self.next_id += 1;
             self.next_id - 1
@@ -813,10 +979,11 @@ impl App {
                 selection: Selection {
                     video: video.clone(),
                     info,
-                    burn,
+                    outputs,
                     target,
                     track: 0,
                     notes: String::new(),
+                    look: self.settings.default_look(),
                 },
                 frames: Vec::new(),
                 status: Status::Waiting,
@@ -879,7 +1046,13 @@ impl App {
         job.language = settings.language.clone();
         job.format = settings.format;
         job.out_dir = settings.out_dir.clone();
-        job.burn = s.burn;
+        job.subtitles = s.outputs.subtitles;
+        job.burn = s.outputs.burn;
+        job.look = s.look.video();
+        #[cfg(feature = "dub")]
+        if s.outputs.dub {
+            job.dub = Some(self.dub_options());
+        }
         job.translation = (!keep && settings.translator != verbacue::translate::Backend::None)
             .then(|| Translation {
                 backend: settings.translator,
@@ -892,6 +1065,28 @@ impl App {
                 film_notes: settings.film_notes,
             });
         Some(job)
+    }
+
+    /// The dub options from the settings.
+    #[cfg(feature = "dub")]
+    fn dub_options(&self) -> verbacue::dub::Options {
+        use verbacue::dub::{Original, VoiceChoice};
+        let s = &self.settings;
+        verbacue::dub::Options {
+            voice: if s.dub_voice == "clone" {
+                VoiceChoice::Clone
+            } else if s.dub_voice == "cast" {
+                VoiceChoice::Cast
+            } else {
+                VoiceChoice::Studio(s.dub_voice.clone())
+            },
+            original: match s.dub_original {
+                settings::DubOriginal::Remove => Original::Remove,
+                settings::DubOriginal::Lower => Original::Lower,
+            },
+            speed_limit: s.dub_speed_limit.clamp(1.0, 1.5),
+            model: s.dub_model.clone(),
+        }
     }
 
     /// Opens the Converting screen and runs `job` on the pipeline thread.
@@ -926,12 +1121,12 @@ impl App {
         } else {
             verbacue::translate::language_name(&s.target).to_string()
         };
-        let mode = if s.burn { "burned in" } else { "subtitle file" };
+        let mode = s.outputs.label();
         format!("{name} · {language} · {mode}")
     }
 
     /// Reads the facts of `path` on the blocking thread pool.
-    fn check(&mut self, path: PathBuf, options: Option<(String, bool)>) -> Task<Message> {
+    fn check(&mut self, path: PathBuf, options: Option<(String, Outputs)>) -> Task<Message> {
         self.pick.hovering = false;
         self.pick.error = None;
         self.pick.checking = Some(path.clone());
@@ -961,13 +1156,11 @@ impl App {
         });
         let closes = window::close_requests().map(|_| Message::CloseRequested);
         let resizes = window::resize_events().map(|(_, size)| Message::Resized(size));
+        // The Settings screen plays the subtitle sample all the time.
         let animated = matches!(
             self.screen,
-            Screen::Pick | Screen::Choose | Screen::Convert | Screen::Done
-        ) || (self.screen == Screen::Settings
-            && (self.vad_changed.elapsed().as_secs_f32() < 0.5
-                || self.film_notes_changed.elapsed().as_secs_f32() < 0.5
-                || !self.downloads.is_empty()));
+            Screen::Pick | Screen::Choose | Screen::Convert | Screen::Done | Screen::Settings
+        );
         if animated {
             Subscription::batch([drops, closes, resizes, window::frames().map(Message::Tick)])
         } else {
@@ -1087,9 +1280,12 @@ fn download(name: &'static str) -> Task<Message> {
 mod tests {
     use super::*;
     use crate::{
-        screens::{choose::OutputMode, settings::SettingChange},
+        screens::{
+            choose::{Output, Outputs},
+            settings::SettingChange,
+        },
         settings::Recent,
-        worker::{Failure, Update, friendly},
+        worker::{Failure, Reply, Update, friendly},
     };
     use std::path::PathBuf;
     use std::sync::atomic::Ordering;
@@ -1169,14 +1365,23 @@ mod tests {
         a.settings.recent.push(Recent {
             path: path.clone(),
             target: "hu".into(),
+            subtitles: false,
             burn: true,
+            dub: false,
         });
         let _ = a.update(Message::OpenRecent(0));
         assert_eq!(a.pick.checking, Some(path.clone()));
         let _ = a.update(Message::MediaChecked(Ok((path, info()))));
         let selection = a.selection().unwrap();
         assert_eq!(selection.target, "hu");
-        assert!(selection.burn);
+        assert_eq!(
+            selection.outputs,
+            Outputs {
+                subtitles: false,
+                burn: true,
+                dub: false
+            }
+        );
     }
 
     fn chosen(dir: &str) -> App {
@@ -1192,22 +1397,27 @@ mod tests {
     }
 
     #[test]
-    fn burn_card_builds_a_burn_job() {
-        let mut a = chosen("burn");
-        let _ = a.update(Message::Mode(OutputMode::Burn));
+    fn a_new_video_gets_subtitles_and_a_burned_in_video() {
+        let a = chosen("burn");
         let job = a.job().unwrap();
-        assert!(job.burn && !job.embed);
+        assert!(job.subtitles && job.burn && !job.embed);
         assert_eq!(job.target, "hu");
         assert!(job.translation.is_some());
     }
 
     #[test]
-    fn srt_card_builds_a_subtitle_only_job() {
-        let mut a = chosen("srt");
-        let _ = a.update(Message::Mode(OutputMode::Srt));
+    fn the_cards_turn_outputs_on_and_off() {
+        let mut a = chosen("toggle");
+        let _ = a.update(Message::Toggle(Output::Burn));
         let job = a.job().unwrap();
-        assert!(!job.burn && !job.embed);
-        assert!(job.translation.is_some());
+        assert!(job.subtitles && !job.burn);
+        let _ = a.update(Message::Toggle(Output::Burn));
+        let _ = a.update(Message::Toggle(Output::Subtitles));
+        let job = a.job().unwrap();
+        assert!(!job.subtitles && job.burn);
+        // The last output stays on.
+        let _ = a.update(Message::Toggle(Output::Burn));
+        assert!(a.selection().unwrap().outputs.burn);
     }
 
     #[test]
@@ -1221,7 +1431,6 @@ mod tests {
     #[test]
     fn start_asks_before_replacing_an_existing_output() {
         let mut a = chosen("replace");
-        let _ = a.update(Message::Mode(OutputMode::Burn));
         let out = verbacue::pipeline::final_output(&a.job().unwrap()).unwrap();
         std::fs::write(&out, "").unwrap();
         let _ = a.update(Message::Start);
@@ -1232,7 +1441,6 @@ mod tests {
     #[test]
     fn confirm_replace_starts_with_force() {
         let mut a = chosen("force");
-        let _ = a.update(Message::Mode(OutputMode::Burn));
         let out = verbacue::pipeline::final_output(&a.job().unwrap()).unwrap();
         std::fs::write(&out, "").unwrap();
         let _ = a.update(Message::Start);
@@ -1530,26 +1738,55 @@ mod tests {
         let (mut a, _) = queued("own", &["a.mkv", "b.mkv"]);
         let _ = a.update(Message::Target("hu".into()));
         let _ = a.update(Message::Select(1));
-        let _ = a.update(Message::Mode(OutputMode::Srt));
+        let _ = a.update(Message::Toggle(Output::Burn));
         let _ = a.update(Message::Target("de".into()));
         let _ = a.update(Message::Select(0));
         assert_eq!(a.selection().unwrap().target, "hu");
-        assert!(a.selection().unwrap().burn);
+        assert!(a.selection().unwrap().outputs.burn);
         assert_eq!(a.queue[1].selection.target, "de");
-        assert!(!a.queue[1].selection.burn);
+        assert!(!a.queue[1].selection.outputs.burn);
     }
 
     #[test]
     fn apply_to_all_copies_the_options_to_waiting_videos() {
         let (mut a, _) = queued("apply", &["a.mkv", "b.mkv", "c.mkv"]);
-        let _ = a.update(Message::Mode(OutputMode::Srt));
+        let _ = a.update(Message::Toggle(Output::Burn));
         let _ = a.update(Message::Target("hu".into()));
         let _ = a.update(Message::ApplyToAll);
         assert!(
             a.queue
                 .iter()
-                .all(|i| i.selection.target == "hu" && !i.selection.burn)
+                .all(|i| i.selection.target == "hu" && !i.selection.outputs.burn)
         );
+    }
+
+    #[test]
+    fn each_video_has_its_own_subtitle_look() {
+        use crate::settings::{BurnAnimation, BurnStyle};
+        let mut a = app();
+        a.settings.burn_style = BurnStyle::Neon;
+        let base = std::env::temp_dir().join("verbacue-queue-look");
+        let paths = [base.join("a.mkv"), base.join("b.mkv")];
+        for path in &paths {
+            let _ = a.update(Message::FileChosen(path.clone()));
+        }
+        for path in &paths {
+            let _ = a.update(Message::MediaChecked(Ok((path.clone(), info()))));
+        }
+        // New videos start with the default of the settings.
+        assert!(a.queue.iter().all(|i| i.selection.look.style == BurnStyle::Neon));
+        let _ = a.update(Message::BurnStyle(BurnStyle::Highlight));
+        let _ = a.update(Message::BurnAnimation(BurnAnimation::Words));
+        assert_eq!(a.queue[1].selection.look.style, BurnStyle::Neon);
+        // The settings keep their default.
+        assert_eq!(a.settings.burn_style, BurnStyle::Neon);
+        let _ = a.update(Message::Start);
+        let look = a.running_job().unwrap().look;
+        assert_eq!(look.style, verbacue::video::SubtitleStyle::Highlight);
+        assert_eq!(look.animation, verbacue::video::SubtitleAnimation::Words);
+        // The burn option shows a sample over the preview.
+        let _ = a.update(Message::Show(Screen::Choose));
+        assert!(a.sample_frame.is_some());
     }
 
     #[test]
@@ -1658,7 +1895,101 @@ mod tests {
         ));
         let _ = a.update(Message::ReviewDone);
         assert!(a.convert.review.is_none());
-        assert!(replies.try_recv().unwrap().contains("sister"));
+        assert!(
+            matches!(replies.try_recv().unwrap(), Reply::Notes(text) if text.contains("sister"))
+        );
+    }
+
+    #[test]
+    fn the_licence_dialog_sends_the_answer() {
+        let mut a = converting("licence");
+        update(
+            &mut a,
+            Update::Licence {
+                model: "xtts-v2".into(),
+                text: "CPML".into(),
+            },
+        );
+        assert_eq!(a.convert.licence, Some(("xtts-v2".into(), "CPML".into())));
+        let (reply, replies) = std::sync::mpsc::channel();
+        a.convert.reply = Some(reply);
+        let _ = a.update(Message::Licence(true));
+        assert!(a.convert.licence.is_none());
+        assert_eq!(replies.try_recv().unwrap(), Reply::Licence(true));
+        assert!(!a.convert.stopping);
+    }
+
+    #[test]
+    fn declining_the_licence_stops_the_job() {
+        let mut a = converting("decline");
+        update(
+            &mut a,
+            Update::Licence {
+                model: "xtts-v2".into(),
+                text: "CPML".into(),
+            },
+        );
+        let (reply, replies) = std::sync::mpsc::channel();
+        a.convert.reply = Some(reply);
+        let _ = a.update(Message::Licence(false));
+        assert_eq!(replies.try_recv().unwrap(), Reply::Licence(false));
+        assert!(a.convert.stopping);
+        update(
+            &mut a,
+            Update::Finished(Err(Failure::new(ErrorKind::InvalidInput, "not accepted"))),
+        );
+        assert_eq!(a.screen, Screen::Choose);
+        assert!(a.convert.error.is_none());
+    }
+
+    #[test]
+    fn dub_card_is_blocked_without_a_dub_language() {
+        assert!(screens::choose::dub_blocked(KEEP).is_some());
+        if cfg!(feature = "dub") {
+            assert!(screens::choose::dub_blocked("th").is_some());
+            assert!(screens::choose::dub_blocked("hu").is_none());
+        }
+        let mut a = chosen("dub-blocked");
+        let _ = a.update(Message::Target("th".into()));
+        let _ = a.update(Message::Toggle(Output::Dub));
+        assert!(!a.selection().unwrap().outputs.dub);
+    }
+
+    #[cfg(feature = "dub")]
+    #[test]
+    fn dub_card_builds_a_dub_job_from_the_settings() {
+        let mut a = chosen("dub");
+        a.settings.dub_voice = "Ana Florence".into();
+        a.settings.dub_original = settings::DubOriginal::Lower;
+        let _ = a.update(Message::Toggle(Output::Dub));
+        let job = a.job().unwrap();
+        // All three outputs in one job.
+        assert!(job.subtitles && job.burn);
+        let dub = job.dub.unwrap();
+        assert_eq!(
+            dub.voice,
+            verbacue::dub::VoiceChoice::Studio("Ana Florence".into())
+        );
+        assert_eq!(dub.original, verbacue::dub::Original::Lower);
+        assert!(job.translation.is_some());
+        // A language that the voice model cannot speak turns dubbing off.
+        let _ = a.update(Message::Target("th".into()));
+        assert!(a.job().unwrap().dub.is_none());
+        // Without the other outputs, the subtitle files come back on.
+        let _ = a.update(Message::Target("hu".into()));
+        let _ = a.update(Message::Toggle(Output::Dub));
+        let _ = a.update(Message::Toggle(Output::Subtitles));
+        let _ = a.update(Message::Toggle(Output::Burn));
+        assert_eq!(
+            a.selection().unwrap().outputs,
+            Outputs {
+                subtitles: false,
+                burn: false,
+                dub: true
+            }
+        );
+        let _ = a.update(Message::Target("th".into()));
+        assert!(a.selection().unwrap().outputs.subtitles);
     }
 
     #[test]

@@ -14,6 +14,8 @@ macro_rules! out {
 
 #[cfg(windows)]
 mod console;
+#[cfg(feature = "dub")]
+mod dubbing;
 mod launch;
 
 use std::{
@@ -79,7 +81,19 @@ struct Cli {
     burn: bool,
 
     #[command(flatten)]
+    look: LookArgs,
+
+    #[command(flatten)]
     translate: TranslateArgs,
+
+    /// Also write movie.<to>.dub.mkv: a new audio track that speaks the translation.
+    #[cfg(feature = "dub")]
+    #[arg(long)]
+    dub: bool,
+
+    #[cfg(feature = "dub")]
+    #[command(flatten)]
+    dub_args: dubbing::DubArgs,
 
     /// Show debug logs. Repeat for more detail.
     #[arg(short, long, global = true, action = clap::ArgAction::Count)]
@@ -164,6 +178,8 @@ enum Command {
         /// Overwrite the output file if it exists.
         #[arg(long)]
         force: bool,
+        #[command(flatten)]
+        look: LookArgs,
     },
     /// List the language codes for --to and --from.
     Languages,
@@ -185,6 +201,59 @@ enum Command {
         #[command(subcommand)]
         action: ModelsAction,
     },
+    /// Dub a video with an existing subtitle file: a new audio track speaks it.
+    #[cfg(feature = "dub")]
+    Dub {
+        video: PathBuf,
+        subtitles: PathBuf,
+        /// The language of the subtitles. By default it comes from the file name
+        /// (movie.hu.srt).
+        #[arg(long)]
+        to: Option<String>,
+        /// Output file. By default `movie.<lang>.dub.mkv`.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Overwrite the output file if it exists.
+        #[arg(long)]
+        force: bool,
+        /// Audio track to use, as listed by `verbacue tracks`.
+        #[arg(long, default_value_t = 0)]
+        audio_track: usize,
+        #[command(flatten)]
+        args: dubbing::DubArgs,
+    },
+    /// List the studio voices for --dub-voice.
+    #[cfg(feature = "dub")]
+    Voices {
+        /// The voice model: xtts-v2, xtts-v2-int8, or a folder with the model files.
+        #[arg(long)]
+        dub_model: Option<String>,
+        /// Accept the licence of the voice model without a question.
+        #[arg(long)]
+        accept_model_licence: bool,
+    },
+    /// Speak one line with XTTS-v2, to test the voice model.
+    #[cfg(feature = "dub")]
+    #[command(hide = true)]
+    Speak {
+        #[arg(long)]
+        text: String,
+        /// The language code of the text.
+        #[arg(long)]
+        lang: String,
+        /// A studio voice, or a WAV file with a voice sample to clone.
+        #[arg(long, default_value = verbacue::dub::DEFAULT_STUDIO_VOICE)]
+        voice: String,
+        /// xtts-v2, xtts-v2-int8, or a folder with the model files.
+        #[arg(long, default_value = "xtts-v2")]
+        model: String,
+        /// The same seed gives the same speech.
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// The output WAV file (24 kHz mono).
+        #[arg(short, long)]
+        output: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -198,6 +267,8 @@ enum ModelsAction {
 }
 
 fn main() -> Result<()> {
+    #[cfg(feature = "dub")]
+    verbacue::dub::session::fix_argv0();
     let args = std::env::args_os().len().saturating_sub(1);
     let gui_command = std::env::args_os().nth(1).is_some_and(|a| a == "gui");
     match launch::mode(
@@ -237,9 +308,12 @@ fn main() -> Result<()> {
         Some(Command::Models { action }) => match action {
             ModelsAction::List => print_models(),
             ModelsAction::Download { name } => {
-                let spec =
-                    models::find(&name).with_context(|| format!("unknown model {name:?}"))?;
-                let path = ensure_model(spec)?;
+                let path = match models::bundle(&name) {
+                    Some(b) => ensure_bundle(b)?,
+                    None => ensure_model(
+                        models::find(&name).with_context(|| format!("unknown model {name:?}"))?,
+                    )?,
+                };
                 out!("{}", path.display());
                 Ok(())
             }
@@ -250,12 +324,37 @@ fn main() -> Result<()> {
             }
         },
         Some(Command::Translate { inputs, from, args }) => translate_files(&inputs, from, &args),
+        #[cfg(feature = "dub")]
+        Some(Command::Dub {
+            video,
+            subtitles,
+            to,
+            output,
+            force,
+            audio_track,
+            args,
+        }) => dubbing::dub_file(&video, &subtitles, to, output, force, audio_track, &args),
+        #[cfg(feature = "dub")]
+        Some(Command::Voices {
+            dub_model,
+            accept_model_licence,
+        }) => dubbing::print_voices(dub_model.as_deref(), accept_model_licence),
+        #[cfg(feature = "dub")]
+        Some(Command::Speak {
+            text,
+            lang,
+            voice,
+            model,
+            seed,
+            output,
+        }) => dubbing::speak(&text, &lang, &voice, &model, seed, &output),
         Some(Command::Burn {
             video,
             subtitles,
             output,
             force,
-        }) => burn_file(&video, &subtitles, output, force),
+            look,
+        }) => burn_file(&video, &subtitles, output, force, look.look()),
         None if cli.list_tracks => {
             for (i, video) in cli.inputs.iter().enumerate() {
                 if cli.inputs.len() > 1 {
@@ -350,7 +449,15 @@ fn process_videos(cli: &Cli) -> Result<()> {
         if videos.len() > 1 {
             tracing::info!("[{}/{}] {}", i + 1, videos.len(), video.display());
         }
-        let sink = BarSink::new(video);
+        #[cfg_attr(
+            not(feature = "dub"),
+            expect(unused_mut, reason = "set only for dubbing")
+        )]
+        let mut sink = BarSink::new(video);
+        #[cfg(feature = "dub")]
+        {
+            sink.accept_licence = cli.dub_args.accept_model_licence;
+        }
         let result = pipeline.run(&job_for(video, cli), &sink);
         sink.finish();
         if let Err(e) = result {
@@ -389,9 +496,13 @@ fn job_for(video: &Path, cli: &Cli) -> Job {
         format: args.format,
         output: args.output.clone(),
         out_dir: None,
+        subtitles: true,
         embed: cli.embed,
         burn: cli.burn,
+        look: cli.look.look(),
         force: args.force,
+        #[cfg(feature = "dub")]
+        dub: cli.dub.then(|| cli.dub_args.options()),
     }
 }
 
@@ -399,6 +510,9 @@ fn job_for(video: &Path, cli: &Cli) -> Job {
 struct BarSink<'a> {
     video: &'a Path,
     bar: Mutex<Option<Bar>>,
+    /// `--accept-model-licence`.
+    #[cfg(feature = "dub")]
+    accept_licence: bool,
 }
 
 impl<'a> BarSink<'a> {
@@ -406,6 +520,8 @@ impl<'a> BarSink<'a> {
         Self {
             video,
             bar: Mutex::new(None),
+            #[cfg(feature = "dub")]
+            accept_licence: false,
         }
     }
 
@@ -432,6 +548,13 @@ impl Sink for BarSink<'_> {
                     Step::Embed => percent_bar("embedding"),
                     Step::Burn => percent_bar("burning"),
                     Step::Notes => Bar::new("reading", "{msg:>12} {spinner} {elapsed}"),
+                    Step::Separate => percent_bar("audio"),
+                    Step::Speakers => Bar::new("voices", "{msg:>12} {spinner} {elapsed}"),
+                    Step::Speak => Bar::new(
+                        "speaking",
+                        "{msg:>12} [{bar:30}] {pos}/{len} lines eta {eta}",
+                    ),
+                    Step::Mix => percent_bar("mixing"),
                     Step::Save => return,
                 };
                 if let Ok(mut current) = self.bar.lock() {
@@ -458,6 +581,43 @@ impl Sink for BarSink<'_> {
             Event::Cue(_) => {}
         }
     }
+
+    fn accept_licence(&self, model: &str, licence: &str) -> bool {
+        #[cfg(feature = "dub")]
+        {
+            self.accept_licence || dubbing::ask_licence(model, licence)
+        }
+        #[cfg(not(feature = "dub"))]
+        {
+            let _ = (model, licence);
+            false
+        }
+    }
+}
+
+#[cfg(feature = "dub")]
+impl verbacue::dub::Events for BarSink<'_> {
+    fn step(&self, step: verbacue::dub::DubStep) {
+        use verbacue::dub::DubStep;
+        self.event(Event::Step(match step {
+            DubStep::Separate => Step::Separate,
+            DubStep::Speakers => Step::Speakers,
+            DubStep::Speak => Step::Speak,
+            DubStep::Mix => Step::Mix,
+        }));
+    }
+
+    fn progress(&self, done: u64, total: u64) {
+        self.event(Event::Progress { done, total });
+    }
+
+    fn note(&self, text: &str) {
+        self.event(Event::Note(text));
+    }
+
+    fn cancelled(&self) -> bool {
+        false
+    }
 }
 
 fn translate_files(inputs: &[PathBuf], from: Option<String>, args: &TranslateArgs) -> Result<()> {
@@ -478,13 +638,91 @@ fn translate_files(inputs: &[PathBuf], from: Option<String>, args: &TranslateArg
             .with_context(|| format!("cannot read {}", input.display()))?;
         let cues = subtitle::parse_srt(&text)
             .with_context(|| format!("cannot parse {}", input.display()))?;
-        let translated = run_translation(&cues, &source, args, &mut translator)?;
+        let translated = run_translation(&cues, &source, input, args, &mut translator)?;
         write_output(&out, &translated, args.format)?;
     }
     Ok(())
 }
 
-fn burn_file(video: &Path, subtitles: &Path, output: Option<PathBuf>, force: bool) -> Result<()> {
+/// The look of burned-in subtitles.
+#[derive(Args, Clone, Debug)]
+struct LookArgs {
+    /// The style of burned-in subtitles.
+    #[arg(long, value_enum, default_value_t = BurnStyle::Classic)]
+    burn_style: BurnStyle,
+    /// How burned-in subtitles appear.
+    #[arg(long, value_enum, default_value_t = BurnAnimation::None)]
+    burn_animation: BurnAnimation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum BurnStyle {
+    /// White text with a black outline.
+    Classic,
+    /// Yellow text with a black outline.
+    Yellow,
+    /// White text on a dark box.
+    Box,
+    /// Classic, larger.
+    Large,
+    /// Large white capitals with a thick outline and a shadow.
+    Bold,
+    /// Bold, and the spoken word is on a green box.
+    Highlight,
+    /// White capitals with a pink glow.
+    Neon,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum BurnAnimation {
+    None,
+    /// Fade in and out.
+    Fade,
+    /// Grow quickly to full size.
+    Pop,
+    /// The letters appear one after the other.
+    Typewriter,
+    /// The words light up one after the other.
+    Karaoke,
+    /// Grow past full size, then settle.
+    Bounce,
+    /// Up to three words at a time; the spoken word lights up.
+    Words,
+}
+
+impl LookArgs {
+    fn look(&self) -> video::SubtitleLook {
+        use video::{SubtitleAnimation as A, SubtitleStyle as S};
+        video::SubtitleLook {
+            style: match self.burn_style {
+                BurnStyle::Classic => S::Classic,
+                BurnStyle::Yellow => S::Yellow,
+                BurnStyle::Box => S::Box,
+                BurnStyle::Large => S::Large,
+                BurnStyle::Bold => S::Bold,
+                BurnStyle::Highlight => S::Highlight,
+                BurnStyle::Neon => S::Neon,
+            },
+            animation: match self.burn_animation {
+                BurnAnimation::None => A::None,
+                BurnAnimation::Fade => A::Fade,
+                BurnAnimation::Pop => A::Pop,
+                BurnAnimation::Typewriter => A::Typewriter,
+                BurnAnimation::Karaoke => A::Karaoke,
+                BurnAnimation::Bounce => A::Bounce,
+                BurnAnimation::Words => A::Words,
+            },
+        }
+    }
+}
+
+fn burn_file(
+    video: &Path,
+    subtitles: &Path,
+    output: Option<PathBuf>,
+    force: bool,
+    look: video::SubtitleLook,
+) -> Result<()> {
     let out = output.unwrap_or_else(|| burn_output_path(video, subtitles));
     if out.exists() && !force {
         bail!("{} exists; use --force to overwrite it", out.display());
@@ -495,7 +733,7 @@ fn burn_file(video: &Path, subtitles: &Path, output: Option<PathBuf>, force: boo
         .with_context(|| format!("cannot parse {}", subtitles.display()))?;
     video::check_burn(video)?;
     let bar = percent_bar("burning");
-    video::burn(video, &out, &cues, &bar)?;
+    video::burn(video, &out, &cues, look, &bar)?;
     bar.finish();
     tracing::info!("wrote {}", out.display());
     Ok(())
@@ -512,6 +750,7 @@ fn burn_output_path(video: &Path, subtitles: &Path) -> PathBuf {
 fn run_translation(
     cues: &[Cue],
     source_lang: &str,
+    input: &Path,
     args: &TranslateArgs,
     translator: &mut Option<Box<dyn Translator>>,
 ) -> Result<Vec<Cue>> {
@@ -547,6 +786,10 @@ fn run_translation(
     );
     let texts: Vec<String> = cues.iter().map(|c| c.text.clone()).collect();
     let hints = translate::Hints {
+        title: input
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
         notes: args.context.clone().unwrap_or_default(),
         film_notes: String::new(),
         names: translate::proper_names(&texts),
@@ -689,6 +932,17 @@ fn ensure_model(spec: &'static models::ModelSpec) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Like [`models::ensure_bundle`], with one progress bar per file.
+fn ensure_bundle(b: &'static models::Bundle) -> Result<PathBuf> {
+    if let Some(licence) = b.licence {
+        eprintln!("{licence}");
+    }
+    for file in b.files {
+        ensure_model(models::find(file).context("bundle file is not a known model")?)?;
+    }
+    Ok(b.cached_dir()?)
+}
+
 /// Like [`models::resolve`], with a download progress bar.
 fn resolve_model(value: &str, kind: models::Kind) -> Result<PathBuf> {
     match models::find(value) {
@@ -707,10 +961,19 @@ fn print_models() -> Result<()> {
             ""
         };
         out!(
-            "  {:<16} {:<8} {:>9}  {mark}",
+            "  {:<16} {:<10} {:>9}  {mark}",
             m.name,
             m.kind.to_string(),
             models::human_size(m.size)
+        );
+    }
+    for b in models::bundles() {
+        let mark = if b.is_cached() { "downloaded" } else { "" };
+        out!(
+            "  {:<16} {:<10} {:>9}  {mark}",
+            b.name,
+            b.kind.to_string(),
+            models::human_size(b.size())
         );
     }
     Ok(())
@@ -763,5 +1026,35 @@ mod tests {
         let translation = job.translation.unwrap();
         assert_eq!(translation.notes, "Ayşe and Kerem are siblings.");
         assert!(translation.film_notes);
+    }
+
+    #[cfg(feature = "dub")]
+    #[test]
+    fn dub_flags_reach_the_job() {
+        use verbacue::dub::{Original, VoiceChoice};
+        let cli = Cli::parse_from([
+            "verbacue",
+            "movie.mkv",
+            "--to",
+            "hu",
+            "--dub",
+            "--dub-voice",
+            "Ana Florence",
+            "--dub-original",
+            "lower",
+            "--dub-speed-limit",
+            "1.2",
+            "--dub-model",
+            "xtts-v2",
+        ]);
+        let dub = job_for(Path::new("movie.mkv"), &cli).dub.unwrap();
+        assert_eq!(dub.voice, VoiceChoice::Studio("Ana Florence".into()));
+        assert_eq!(dub.original, Original::Lower);
+        assert!((dub.speed_limit - 1.2).abs() < 1e-6);
+        assert_eq!(dub.model, "xtts-v2");
+
+        let plain = Cli::parse_from(["verbacue", "movie.mkv"]);
+        assert!(job_for(Path::new("movie.mkv"), &plain).dub.is_none());
+        assert!(Cli::try_parse_from(["verbacue", "m.mkv", "--dub-speed-limit", "2"]).is_err());
     }
 }

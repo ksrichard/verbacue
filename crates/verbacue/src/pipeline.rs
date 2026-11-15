@@ -37,12 +37,20 @@ pub struct Job {
     pub output: Option<PathBuf>,
     /// The folder for all output files. `None` writes them next to the video.
     pub out_dir: Option<PathBuf>,
+    /// Write the subtitle files (`.srt` or `.vtt`). The video outputs have the
+    /// subtitles in any case.
+    pub subtitles: bool,
     /// Also write an MKV with soft subtitle tracks.
     pub embed: bool,
     /// Also write an MP4 with the subtitles burned into the picture.
     pub burn: bool,
+    /// The style and animation of the burned-in subtitles.
+    pub look: crate::video::SubtitleLook,
     /// Run again even if the output exists.
     pub force: bool,
+    /// Also write an MKV with a new audio track that speaks the translation.
+    #[cfg(feature = "dub")]
+    pub dub: Option<crate::dub::Options>,
 }
 
 impl Job {
@@ -59,9 +67,13 @@ impl Job {
             format: Format::Srt,
             output: None,
             out_dir: None,
+            subtitles: true,
             embed: false,
             burn: false,
+            look: crate::video::SubtitleLook::default(),
             force: false,
+            #[cfg(feature = "dub")]
+            dub: None,
         }
     }
 }
@@ -112,6 +124,14 @@ pub enum Step {
     Burn,
     /// Writing the subtitle files of a job without video output.
     Save,
+    /// Dubbing: decoding the audio, and taking the original voices out.
+    Separate,
+    /// Dubbing: finding the speakers and their voices.
+    Speakers,
+    /// Dubbing: speaking the lines.
+    Speak,
+    /// Dubbing: mixing and writing the video.
+    Mix,
 }
 
 /// What happens during a job.
@@ -147,6 +167,13 @@ pub trait Sink: Sync {
     fn review_notes(&self, notes: &str) -> Option<String> {
         let _ = notes;
         None
+    }
+
+    /// Asks the user to accept the licence of `model` before its first download. The
+    /// default is no.
+    fn accept_licence(&self, model: &str, licence: &str) -> bool {
+        let _ = (model, licence);
+        false
     }
 }
 
@@ -213,13 +240,82 @@ fn video_output(job: &Job, extension: &str) -> PathBuf {
     )
 }
 
+/// The dubbed video: `movie.<lang>.dub.mkv`.
+#[cfg(feature = "dub")]
+pub fn dub_output(job: &Job) -> PathBuf {
+    video_output(job, "dub.mkv")
+}
+
+/// The cues of a subtitle file from an earlier run, if it exists, reads well and the
+/// job does not force a new run.
+fn earlier(path: &Path, job: &Job) -> Option<Vec<Cue>> {
+    if job.force || !path.is_file() {
+        return None;
+    }
+    let text = fs::read_to_string(path).ok()?;
+    // A WebVTT file starts with a header block; the cues after it read like SRT.
+    let text = match job.format {
+        Format::Vtt => text
+            .replace("\r\n", "\n")
+            .split_once("\n\n")
+            .map_or_else(String::new, |(_, cues)| cues.to_string()),
+        Format::Srt => text,
+    };
+    let cues = subtitle::parse_srt(&text).ok()?;
+    (!cues.is_empty()).then_some(cues)
+}
+
+/// The transcript of an earlier run: its language, path and cues. With an unknown
+/// spoken language, exactly one transcript file must exist, so that the language is
+/// clear.
+fn earlier_transcript(job: &Job) -> Option<(String, PathBuf, Vec<Cue>)> {
+    let candidates: Vec<String> = match &job.language {
+        Some(lang) => vec![lang.clone()],
+        None => verbacue_core::languages::languages()
+            .iter()
+            .map(|(code, _)| (*code).to_string())
+            .filter(|code| *code != job.target && output_path(job, code).is_file())
+            .collect(),
+    };
+    let [lang] = candidates.as_slice() else {
+        return None;
+    };
+    // Without a translation, `output` names the transcript.
+    let path = match (&job.output, &job.translation) {
+        (Some(out), None) => out.clone(),
+        _ => output_path(job, lang),
+    };
+    Some((lang.clone(), path.clone(), earlier(&path, job)?))
+}
+
+/// Tells the user that a file of an earlier run is used again.
+fn reused(sink: &dyn Sink, what: &str, path: &Path) {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    sink.event(Event::Note(&format!("reused the {what} {name}")));
+}
+
+/// True when `job` writes a dubbed video.
+fn dubbing(job: &Job) -> bool {
+    #[cfg(feature = "dub")]
+    return job.dub.is_some();
+    #[cfg(not(feature = "dub"))]
+    {
+        let _ = job;
+        false
+    }
+}
+
 /// The last file that `job` writes. If it exists, the job is already done.
 pub fn final_output(job: &Job) -> Option<PathBuf> {
+    #[cfg(feature = "dub")]
+    if job.dub.is_some() {
+        return Some(dub_output(job));
+    }
     if job.burn {
         Some(video_output(job, "mp4"))
     } else if job.embed {
         Some(video_output(job, "mkv"))
-    } else if job.translation.is_some() {
+    } else if job.translation.is_some() && job.subtitles {
         Some(output_path(job, &job.target))
     } else {
         None
@@ -251,7 +347,88 @@ impl Pipeline {
         if job.embed || job.burn {
             check_video_output(job)?;
         }
+        #[cfg(feature = "dub")]
+        let dub_model = dub::check(job, sink)?;
 
+        #[cfg(feature = "dub")]
+        let dub_dirs = dub_model.map(|m| m.download(sink)).transpose()?;
+        #[cfg(feature = "dub")]
+        let dub_dirs = dub_dirs.as_ref();
+        #[cfg(not(feature = "dub"))]
+        let dub_dirs: Option<&DubDirs> = None;
+
+        let mut files = Vec::new();
+        let (source_lang, source_cues) = if let Some((lang, path, cues)) = earlier_transcript(job) {
+            reused(sink, "transcript", &path);
+            if job.subtitles {
+                files.push(path);
+            }
+            (lang, cues)
+        } else {
+            let (lang, cues) = self.transcribe(job, sink)?;
+            // Without a translation, `output` names the original transcript, since
+            // nothing else is written.
+            let source_out = match (&job.output, &job.translation) {
+                (Some(out), None) => out.clone(),
+                _ => output_path(job, &lang),
+            };
+            if job.subtitles {
+                write(&source_out, &cues, job.format, sink, &mut files)?;
+            }
+            (lang, cues)
+        };
+
+        let target_cues = match &job.translation {
+            None => None,
+            Some(_) if source_lang == job.target => {
+                let note = format!(
+                    "source language is already {}; no translation needed",
+                    job.target
+                );
+                sink.event(Event::Note(&note));
+                None
+            }
+            Some(settings) => {
+                let path = output_path(job, &job.target);
+                if let Some(cues) = earlier(&path, job) {
+                    reused(sink, "translation", &path);
+                    if job.subtitles {
+                        files.push(path);
+                    }
+                    Some(cues)
+                } else {
+                    let cues = self.translate(job, settings, &source_cues, &source_lang, sink)?;
+                    if job.subtitles {
+                        if !job.embed && !job.burn && !dubbing(job) {
+                            sink.event(Event::Step(Step::Save));
+                        }
+                        write(&path, &cues, job.format, sink, &mut files)?;
+                    }
+                    Some(cues)
+                }
+            }
+        };
+
+        self.video_outputs(
+            job,
+            &source_lang,
+            &source_cues,
+            target_cues.as_deref(),
+            dub_dirs,
+            sink,
+            &mut files,
+        )?;
+        Ok(Outcome {
+            source_language: source_lang,
+            files,
+            skipped: false,
+        })
+    }
+
+    /// Loads the speech models, decodes the audio and transcribes it. Returns the spoken
+    /// language and the cues.
+    fn transcribe(&mut self, job: &Job, sink: &dyn Sink) -> Result<(String, Vec<Cue>)> {
+        let report = Report(sink);
         let whisper = resolve(&job.whisper_model, models::Kind::Whisper, sink)?;
         let vad = if job.vad {
             let spec = models::find(models::VAD).context("VAD model missing")?;
@@ -259,7 +436,6 @@ impl Pipeline {
         } else {
             None
         };
-
         sink.event(Event::Step(Step::Decode));
         let pcm = audio::decode_pcm(&job.video, job.audio_track, &report)?;
         tracing::info!("decoded {}", audio_length(pcm.len()));
@@ -276,57 +452,10 @@ impl Pipeline {
             transcript.cues.len(),
             transcript.language
         );
-
-        let mut files = Vec::new();
-        let source_lang = transcript.language.clone();
-        let source_cues = subtitle::layout_transcript(&transcript.cues);
-        // Without a translation, `output` names the original transcript, since nothing
-        // else is written.
-        let source_out = match (&job.output, &job.translation) {
-            (Some(out), None) => out.clone(),
-            _ => output_path(job, &source_lang),
-        };
-        write(&source_out, &source_cues, job.format, sink, &mut files)?;
-
-        let target_cues = match &job.translation {
-            None => None,
-            Some(_) if source_lang == job.target => {
-                let note = format!(
-                    "source language is already {}; no translation needed",
-                    job.target
-                );
-                sink.event(Event::Note(&note));
-                None
-            }
-            Some(settings) => {
-                let cues = self.translate(job, settings, &source_cues, &source_lang, sink)?;
-                if !job.embed && !job.burn {
-                    sink.event(Event::Step(Step::Save));
-                }
-                write(
-                    &output_path(job, &job.target),
-                    &cues,
-                    job.format,
-                    sink,
-                    &mut files,
-                )?;
-                Some(cues)
-            }
-        };
-
-        self.video_outputs(
-            job,
-            &source_lang,
-            &source_cues,
-            target_cues.as_deref(),
-            sink,
-            &mut files,
-        )?;
-        Ok(Outcome {
-            source_language: source_lang,
-            files,
-            skipped: false,
-        })
+        Ok((
+            transcript.language,
+            subtitle::layout_transcript(&transcript.cues),
+        ))
     }
 
     /// Translates `cues` and lays out the result. The translator loads on first use and
@@ -369,6 +498,11 @@ impl Pipeline {
         };
         let texts: Vec<String> = cues.iter().map(|c| c.text.clone()).collect();
         let mut hints = translate::Hints {
+            title: job
+                .video
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
             notes: settings.notes.trim().to_string(),
             film_notes: String::new(),
             names: translate::proper_names(&texts),
@@ -459,12 +593,17 @@ fn check_video_output(_job: &Job) -> Result<()> {
 
 impl Pipeline {
     #[cfg(feature = "video")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the results of the earlier steps"
+    )]
     fn video_outputs(
         &mut self,
         job: &Job,
         source_lang: &str,
         source_cues: &[Cue],
         target_cues: Option<&[Cue]>,
+        dub_dirs: Option<&DubDirs>,
         sink: &dyn Sink,
         files: &mut Vec<PathBuf>,
     ) -> Result<()> {
@@ -491,10 +630,41 @@ impl Pipeline {
         if job.burn {
             sink.event(Event::Step(Step::Burn));
             let out = video_output(job, "mp4");
-            video::burn(&job.video, &out, tracks[0].cues, &Report(sink))?;
+            video::burn(&job.video, &out, tracks[0].cues, job.look, &Report(sink))?;
             sink.event(Event::Wrote(&out));
             files.push(out);
         }
+        #[cfg(feature = "dub")]
+        if let (Some(options), Some(dirs)) = (&job.dub, dub_dirs) {
+            let cues = match target_cues {
+                Some(cues) => cues,
+                None if source_lang == job.target => source_cues,
+                None => bail!("dubbing needs a translation to {}", job.target),
+            };
+            let out = dub_output(job);
+            let temp = models::cache_dir()?.join("dub-tmp");
+            crate::dub::dub(
+                crate::dub::DubJob {
+                    video: &job.video,
+                    track: job.audio_track,
+                    cues,
+                    lang: &job.target,
+                    models_dir: &dirs.voice,
+                    separation_model: dirs.separation.as_deref(),
+                    speaker_model: dirs.speakers.as_deref(),
+                    options: options.clone(),
+                    temp_dir: &temp,
+                    output: &out,
+                    subtitle_tracks: &tracks,
+                    show_subtitles: job.burn,
+                },
+                &dub::Events(sink),
+            )?;
+            sink.event(Event::Wrote(&out));
+            files.push(out);
+        }
+        #[cfg(not(feature = "dub"))]
+        let _ = dub_dirs;
         Ok(())
     }
 
@@ -505,10 +675,212 @@ impl Pipeline {
         _source_lang: &str,
         _source_cues: &[Cue],
         _target_cues: Option<&[Cue]>,
+        _dub_dirs: Option<&DubDirs>,
         _sink: &dyn Sink,
         _files: &mut Vec<PathBuf>,
     ) -> Result<()> {
         Ok(())
+    }
+}
+
+/// The model folders of a dub job.
+#[cfg(feature = "dub")]
+type DubDirs = dub::Dirs;
+#[cfg(not(feature = "dub"))]
+type DubDirs = ();
+
+/// The checks and the model of a dub job.
+#[cfg(feature = "dub")]
+mod dub {
+    use std::path::{Path, PathBuf};
+
+    use verbacue_core::{Error, ErrorKind, Result, error::Context as _, models};
+
+    use super::{Event, Job, Sink, Step, ensure};
+    use crate::{audio, dub};
+
+    /// A model of a dub job: a local folder or a known bundle.
+    pub(super) enum Model {
+        Dir(PathBuf),
+        Bundle(&'static models::Bundle),
+    }
+
+    impl Model {
+        /// The folder with the model files. It downloads a missing bundle, one step
+        /// for each file.
+        fn dir(self, sink: &dyn Sink) -> Result<PathBuf> {
+            match self {
+                Model::Dir(dir) => Ok(dir),
+                Model::Bundle(bundle) => {
+                    for file in bundle.files {
+                        ensure(
+                            models::find(file).context("a bundle file is unknown")?,
+                            sink,
+                        )?;
+                    }
+                    bundle.cached_dir()
+                }
+            }
+        }
+    }
+
+    /// The models of a dub job.
+    pub(super) struct Models {
+        voice: Model,
+        /// For `Original::Remove` only.
+        separation: Option<Model>,
+        /// For `VoiceChoice::Clone` and `VoiceChoice::Cast` only.
+        speakers: Option<Model>,
+    }
+
+    /// The model folders of a dub job, after the downloads.
+    pub(super) struct Dirs {
+        pub(super) voice: PathBuf,
+        pub(super) separation: Option<PathBuf>,
+        pub(super) speakers: Option<PathBuf>,
+    }
+
+    impl Models {
+        pub(super) fn download(self, sink: &dyn Sink) -> Result<Dirs> {
+            let voice = self.voice.dir(sink)?;
+            let separation = match self.separation {
+                Some(m) => Some(m.dir(sink)?.join(SEPARATION_FILE)),
+                None => None,
+            };
+            let speakers = match self.speakers {
+                Some(m) => Some(m.dir(sink)?.join(dub::speakers::MODEL_FILE)),
+                None => None,
+            };
+            Ok(Dirs {
+                voice,
+                separation,
+                speakers,
+            })
+        }
+    }
+
+    const SEPARATION_BUNDLE: &str = "htdemucs-vocals";
+    const SEPARATION_FILE: &str = "htdemucs_vocals.onnx";
+    const SPEAKERS_BUNDLE: &str = "campplus";
+
+    /// Checks a dub job before the slow steps: the language, the audio track and the
+    /// licence. It downloads nothing.
+    pub(super) fn check(job: &Job, sink: &dyn Sink) -> Result<Option<Models>> {
+        let Some(options) = &job.dub else {
+            return Ok(None);
+        };
+        if !dub::supports(&job.target) {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "the voice model cannot speak {:?}; it knows {}",
+                    job.target,
+                    dub::LANGUAGES.join(", ")
+                ),
+            ));
+        }
+        let tracks = audio::list_tracks(&job.video)?;
+        if job.audio_track >= tracks.len() {
+            let message = if tracks.is_empty() {
+                format!("{} has no audio to dub", job.video.display())
+            } else {
+                format!(
+                    "{} has no audio track {}; it has {} (see verbacue tracks)",
+                    job.video.display(),
+                    job.audio_track,
+                    tracks.len()
+                )
+            };
+            return Err(Error::new(ErrorKind::InvalidInput, message));
+        }
+        let separation = if options.original == dub::Original::Remove {
+            Some(separation_model(&options.model)?)
+        } else {
+            None
+        };
+        let speakers = if matches!(
+            options.voice,
+            dub::VoiceChoice::Clone | dub::VoiceChoice::Cast
+        ) {
+            Some(local_or_bundle(
+                &options.model,
+                dub::speakers::MODEL_FILE,
+                SPEAKERS_BUNDLE,
+            )?)
+        } else {
+            None
+        };
+        if Path::new(&options.model).is_dir() {
+            return Ok(Some(Models {
+                voice: Model::Dir(PathBuf::from(&options.model)),
+                separation,
+                speakers,
+            }));
+        }
+        let bundle = models::bundle(&options.model)
+            .filter(|b| b.kind == models::Kind::Voice)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::InvalidInput,
+                    format!("unknown voice model {:?}", options.model),
+                )
+            })?;
+        if !bundle.is_cached()
+            && let Some(licence) = bundle.licence
+            && !sink.accept_licence(bundle.name, licence)
+        {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!("the licence of {} was not accepted", bundle.name),
+            ));
+        }
+        Ok(Some(Models {
+            voice: Model::Bundle(bundle),
+            separation,
+            speakers,
+        }))
+    }
+
+    /// The separation model: next to a local voice model folder, else the bundle.
+    fn separation_model(voice_model: &str) -> Result<Model> {
+        local_or_bundle(voice_model, SEPARATION_FILE, SEPARATION_BUNDLE)
+    }
+
+    /// `file` in a local voice model folder, else the bundle `name`.
+    fn local_or_bundle(voice_model: &str, file: &str, name: &str) -> Result<Model> {
+        let dir = Path::new(voice_model);
+        if dir.join(file).is_file() {
+            return Ok(Model::Dir(dir.to_path_buf()));
+        }
+        models::bundle(name)
+            .map(Model::Bundle)
+            .with_context(|| format!("the model {name} is unknown"))
+    }
+
+    /// Shows the dub events as pipeline events.
+    pub(super) struct Events<'a>(pub(super) &'a dyn Sink);
+
+    impl dub::Events for Events<'_> {
+        fn step(&self, step: dub::DubStep) {
+            self.0.event(Event::Step(match step {
+                dub::DubStep::Separate => Step::Separate,
+                dub::DubStep::Speakers => Step::Speakers,
+                dub::DubStep::Speak => Step::Speak,
+                dub::DubStep::Mix => Step::Mix,
+            }));
+        }
+
+        fn progress(&self, done: u64, total: u64) {
+            self.0.event(Event::Progress { done, total });
+        }
+
+        fn note(&self, text: &str) {
+            self.0.event(Event::Note(text));
+        }
+
+        fn cancelled(&self) -> bool {
+            self.0.cancelled()
+        }
     }
 }
 
@@ -550,6 +922,9 @@ mod tests {
         assert_eq!(final_output(&j), None);
         j.translation = Some(Translation::default());
         assert_eq!(final_output(&j), Some(PathBuf::from("/x/m.hu.srt")));
+        j.subtitles = false;
+        assert_eq!(final_output(&j), None);
+        j.subtitles = true;
         j.embed = true;
         assert_eq!(final_output(&j), Some(PathBuf::from("/x/m.hu.mkv")));
         j.burn = true;
@@ -575,6 +950,82 @@ mod tests {
         fn cancelled(&self) -> bool {
             self.cancel
         }
+    }
+
+    const SRT: &str = "1\n00:00:01,000 --> 00:00:02,000\nMerhaba\n\n";
+
+    fn reuse_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("verbacue-pipeline-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn earlier_files_skip_transcription_and_translation() {
+        let dir = reuse_dir("reuse");
+        std::fs::write(dir.join("movie.tr.srt"), SRT).unwrap();
+        std::fs::write(dir.join("movie.hu.srt"), SRT.replace("Merhaba", "Szia")).unwrap();
+        let mut j = Job::new(dir.join("movie.mkv"), "hu");
+        j.translation = Some(Translation::default());
+        // Without subtitle files and videos, the job is not "done", so it runs. It
+        // needs no model, because both files exist.
+        j.subtitles = false;
+        let sink = Record::default();
+        let outcome = Pipeline::new().run(&j, &sink).unwrap();
+        assert_eq!(outcome.source_language, "tr");
+        let events = sink.events.lock().unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.contains("reused the transcript movie.tr.srt")),
+            "{events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| e.contains("reused the translation movie.hu.srt"))
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.contains("Decode") || e.contains("Translate"))
+        );
+    }
+
+    #[test]
+    fn the_transcript_must_be_clear_and_force_ignores_it() {
+        let dir = reuse_dir("reuse-unclear");
+        let mut j = Job::new(dir.join("movie.mkv"), "hu");
+        j.translation = Some(Translation::default());
+        std::fs::write(dir.join("movie.tr.srt"), SRT).unwrap();
+        assert_eq!(earlier_transcript(&j).map(|t| t.0).as_deref(), Some("tr"));
+        // Two transcripts: the spoken language is not clear.
+        std::fs::write(dir.join("movie.de.srt"), SRT).unwrap();
+        assert!(earlier_transcript(&j).is_none());
+        // A given spoken language picks its file.
+        j.language = Some("de".into());
+        assert_eq!(earlier_transcript(&j).map(|t| t.0).as_deref(), Some("de"));
+        j.force = true;
+        assert!(earlier_transcript(&j).is_none());
+    }
+
+    #[test]
+    fn an_earlier_webvtt_file_reads_too() {
+        let dir = reuse_dir("reuse-vtt");
+        let path = dir.join("movie.hu.vtt");
+        std::fs::write(
+            &path,
+            "WEBVTT\n\n1\n00:00:01.000 --> 00:00:02.500\nSzia\n\n",
+        )
+        .unwrap();
+        let mut j = Job::new(dir.join("movie.mkv"), "hu");
+        j.format = subtitle::Format::Vtt;
+        let cues = earlier(&path, &j).unwrap();
+        assert_eq!(cues, [Cue::new(1000, 2500, "Szia")]);
+        // An empty or broken file is not used.
+        std::fs::write(&path, "").unwrap();
+        assert!(earlier(&path, &j).is_none());
     }
 
     #[test]
@@ -609,6 +1060,90 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|e| e == "step Decode")
+        );
+    }
+
+    #[cfg(feature = "dub")]
+    #[test]
+    fn dub_output_path() {
+        let mut j = job("/x/movie.mkv", "hu");
+        j.dub = Some(crate::dub::Options::default());
+        assert_eq!(dub_output(&j), PathBuf::from("/x/movie.hu.dub.mkv"));
+        assert_eq!(final_output(&j), Some(PathBuf::from("/x/movie.hu.dub.mkv")));
+        j.out_dir = Some(PathBuf::from("/out"));
+        assert_eq!(dub_output(&j), PathBuf::from("/out/movie.hu.dub.mkv"));
+    }
+
+    #[cfg(feature = "dub")]
+    #[test]
+    fn dub_refuses_unknown_language() {
+        let mut j = job("/x/missing.mkv", "th");
+        j.dub = Some(crate::dub::Options::default());
+        let sink = Record::default();
+        let err = Pipeline::new().run(&j, &sink).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("hu"), "{err}");
+        assert!(sink.events.lock().unwrap().is_empty());
+    }
+
+    /// A test video with one audio track, made with the ffmpeg command.
+    #[cfg(feature = "dub")]
+    fn one_track_video(name: &str) -> Option<PathBuf> {
+        let path = std::env::temp_dir().join(name);
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i"])
+            .arg("testsrc=size=160x120:rate=25:duration=1")
+            .args([
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=duration=1",
+                "-pix_fmt",
+                "yuv420p",
+            ])
+            .arg(&path)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok {
+            eprintln!("skipped: the ffmpeg command is needed to make the test video");
+        }
+        ok.then_some(path)
+    }
+
+    #[cfg(feature = "dub")]
+    #[test]
+    fn dub_refuses_missing_audio_track() {
+        let Some(video) = one_track_video("verbacue-pipeline-dub-track.mkv") else {
+            return;
+        };
+        let mut j = Job::new(video, "hu");
+        j.audio_track = 5;
+        j.dub = Some(crate::dub::Options::default());
+        let sink = Record::default();
+        let err = Pipeline::new().run(&j, &sink).unwrap_err();
+        assert!(err.to_string().contains("no audio track 5"), "{err}");
+        assert!(sink.events.lock().unwrap().is_empty());
+    }
+
+    #[cfg(feature = "dub")]
+    #[test]
+    fn dub_needs_licence() {
+        let Some(video) = one_track_video("verbacue-pipeline-dub-licence.mkv") else {
+            return;
+        };
+        let options = crate::dub::Options::default();
+        if models::bundle(&options.model).is_some_and(models::Bundle::is_cached) {
+            eprintln!("skipped: the voice model is already downloaded");
+            return;
+        }
+        let mut j = Job::new(video, "hu");
+        j.dub = Some(options);
+        let sink = Record::default();
+        let err = Pipeline::new().run(&j, &sink).unwrap_err();
+        assert!(err.to_string().contains("licence"), "{err}");
+        assert!(
+            sink.events.lock().unwrap().is_empty(),
+            "nothing is downloaded"
         );
     }
 

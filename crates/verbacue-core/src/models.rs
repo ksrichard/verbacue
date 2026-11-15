@@ -23,6 +23,12 @@ pub enum Kind {
     Vad,
     /// A translation model (GGUF).
     Llm,
+    /// A file of the text-to-speech model, for dubbing.
+    Voice,
+    /// A file of the model that takes the voices out of the audio, for dubbing.
+    Separation,
+    /// The model that tells the speakers of a film apart, for dubbing.
+    Speakers,
 }
 
 impl fmt::Display for Kind {
@@ -31,6 +37,9 @@ impl fmt::Display for Kind {
             Kind::Whisper => "whisper",
             Kind::Vad => "vad",
             Kind::Llm => "llm",
+            Kind::Voice => "voice",
+            Kind::Separation => "separation",
+            Kind::Speakers => "speakers",
         })
     }
 }
@@ -145,6 +154,207 @@ const MODELS: &[ModelSpec] = &[
     },
 ];
 
+// The ONNX exports from tools/xtts-export. The cache keeps each bundle in its own folder.
+// TODO: pin the URLs to the upload commit, as publish.md says, when the files are published.
+macro_rules! voice_file {
+    ($kind:expr, $file:literal, $sha:literal, $size:literal) => {
+        ModelSpec {
+            name: $file,
+            kind: $kind,
+            file: $file,
+            url: concat!(
+                "https://huggingface.co/richardbertok/verbacue-voice/resolve/main/",
+                $file
+            ),
+            sha256: $sha,
+            size: $size,
+        }
+    };
+}
+
+const BUNDLE_FILES: &[ModelSpec] = &[
+    voice_file!(
+        Kind::Voice,
+        "xtts-v2/conditioning.onnx",
+        "aff301386f5eb1c54f44bffc5c4d535f330ef82309a3c2743763f30d86afcb26",
+        185360140
+    ),
+    voice_file!(
+        Kind::Voice,
+        "xtts-v2/speaker.onnx",
+        "c2c912737091006adace0e76e4e1831ade0d8b063ffe706dd29a8ae41d200994",
+        32214928
+    ),
+    voice_file!(
+        Kind::Voice,
+        "xtts-v2/gpt.onnx",
+        "4c9bf9662962a84af563fd7cca21e061a020a13365f189229d4b6827ca1dd90d",
+        1516406822
+    ),
+    voice_file!(
+        Kind::Voice,
+        "xtts-v2/gpt_int8.onnx",
+        "854d85e1d492beb03e9af4ce81eb7bcef5e9c3097af4bb3bd6bb9cb52ec84fc8",
+        382595950
+    ),
+    voice_file!(
+        Kind::Voice,
+        "xtts-v2/vocoder.onnx",
+        "6fa9396258f7dd36e26894a1abca36c222e9588118e309fa7824039f0c4cfae2",
+        71335407
+    ),
+    voice_file!(
+        Kind::Voice,
+        "xtts-v2/embeddings.safetensors",
+        "acaa255cb35393bb95d43da38118fba3d382103070c12d1b84f98836a651eed5",
+        35713384
+    ),
+    voice_file!(
+        Kind::Voice,
+        "xtts-v2/speakers.safetensors",
+        "3d02a5681d1b775033a985bb16ab6409c7afe048e489eab35d9a2bd17c7ef521",
+        7731832
+    ),
+    voice_file!(
+        Kind::Voice,
+        "xtts-v2/vocab.json",
+        "928260878a59da8a72a2a5b7687fea29d5106137669d90945430fe17e415304a",
+        361219
+    ),
+    voice_file!(
+        Kind::Voice,
+        "xtts-v2/config.json",
+        "7ff7649f6bb52a0dfff23d5931f05e73d18380302f41eb110f37ed31030b98ac",
+        3210
+    ),
+    voice_file!(
+        Kind::Separation,
+        "htdemucs/htdemucs_vocals.onnx",
+        "acc80e2c5f47c01579f2871f17ef424f3ff4d5fa5aa7963b8c94b9af80d215db",
+        316446953
+    ),
+    // CAM++ from 3D-Speaker (Apache-2.0), trained on VoxCeleb, as the sherpa-onnx ONNX.
+    ModelSpec {
+        name: "campplus/campplus.onnx",
+        kind: Kind::Speakers,
+        file: "campplus/campplus.onnx",
+        url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx",
+        sha256: "357a834f702b80161e5b981182c038e18553c1f2ca752ed6cec2052365d4129b",
+        size: 29596978,
+    },
+];
+
+/// A model that has more than one file. All files are in one cache folder.
+#[derive(Debug)]
+pub struct Bundle {
+    pub name: &'static str,
+    pub kind: Kind,
+    /// The names of the files, as `find` knows them.
+    pub files: &'static [&'static str],
+    /// The licence that the user must accept before the download.
+    pub licence: Option<&'static str>,
+}
+
+pub const XTTS_LICENCE: &str = "XTTS-v2 is under the Coqui Public Model License: \
+non-commercial use only. See https://coqui.ai/cpml";
+
+const BUNDLES: &[Bundle] = &[
+    Bundle {
+        name: "xtts-v2",
+        kind: Kind::Voice,
+        files: &[
+            "xtts-v2/conditioning.onnx",
+            "xtts-v2/speaker.onnx",
+            "xtts-v2/gpt.onnx",
+            "xtts-v2/vocoder.onnx",
+            "xtts-v2/embeddings.safetensors",
+            "xtts-v2/speakers.safetensors",
+            "xtts-v2/vocab.json",
+            "xtts-v2/config.json",
+        ],
+        licence: Some(XTTS_LICENCE),
+    },
+    // About 4 times smaller and faster on a CPU, with a small loss in quality.
+    Bundle {
+        name: "xtts-v2-int8",
+        kind: Kind::Voice,
+        files: &[
+            "xtts-v2/conditioning.onnx",
+            "xtts-v2/speaker.onnx",
+            "xtts-v2/gpt_int8.onnx",
+            "xtts-v2/vocoder.onnx",
+            "xtts-v2/embeddings.safetensors",
+            "xtts-v2/speakers.safetensors",
+            "xtts-v2/vocab.json",
+            "xtts-v2/config.json",
+        ],
+        licence: Some(XTTS_LICENCE),
+    },
+    Bundle {
+        name: "htdemucs-vocals",
+        kind: Kind::Separation,
+        files: &["htdemucs/htdemucs_vocals.onnx"],
+        licence: None,
+    },
+    Bundle {
+        name: "campplus",
+        kind: Kind::Speakers,
+        files: &["campplus/campplus.onnx"],
+        licence: None,
+    },
+];
+
+impl Bundle {
+    /// The total size of all files in bytes.
+    pub fn size(&self) -> u64 {
+        self.specs().map(|s| s.size).sum()
+    }
+
+    fn specs(&self) -> impl Iterator<Item = &'static ModelSpec> + '_ {
+        self.files
+            .iter()
+            .map(|f| find(f).expect("bundle file is in BUNDLE_FILES"))
+    }
+
+    /// The cache folder of the bundle. The files may not exist yet.
+    ///
+    /// # Errors
+    /// Returns an error if the OS has no cache directory.
+    pub fn cached_dir(&self) -> Result<PathBuf> {
+        let first = self.files[0];
+        let folder = first.split_once('/').map_or(first, |(d, _)| d);
+        Ok(cache_dir()?.join(folder))
+    }
+
+    /// True if all files are in the cache.
+    pub fn is_cached(&self) -> bool {
+        self.specs()
+            .all(|s| cached_path(s).is_ok_and(|p| p.is_file()))
+    }
+}
+
+/// The bundle with this name.
+pub fn bundle(name: &str) -> Option<&'static Bundle> {
+    BUNDLES.iter().find(|b| b.name == name)
+}
+
+/// All known bundles.
+pub fn bundles() -> &'static [Bundle] {
+    BUNDLES
+}
+
+/// Downloads the missing files of a bundle and returns its cache folder. `progress`
+/// receives bytes for each file in turn.
+///
+/// # Errors
+/// Returns an error if a download or a checksum check fails.
+pub fn ensure_bundle(b: &'static Bundle, progress: &dyn Progress) -> Result<PathBuf> {
+    for spec in b.specs() {
+        ensure(spec, progress)?;
+    }
+    b.cached_dir()
+}
+
 // large-v3 is about 2.5 times slower than large-v3-turbo, but it makes fewer errors in
 // languages other than English.
 pub const DEFAULT_WHISPER: &str = "large-v3";
@@ -161,12 +371,12 @@ pub fn cache_dir() -> Result<PathBuf> {
         .join("verbacue/models"))
 }
 
-/// The model with this name.
+/// The model or bundle file with this name.
 pub fn find(name: &str) -> Option<&'static ModelSpec> {
-    MODELS.iter().find(|m| m.name == name)
+    MODELS.iter().chain(BUNDLE_FILES).find(|m| m.name == name)
 }
 
-/// All known models.
+/// All known single-file models. `bundles` lists the models that have more files.
 pub fn known() -> &'static [ModelSpec] {
     MODELS
 }
@@ -223,7 +433,9 @@ pub fn ensure(spec: &'static ModelSpec, progress: &dyn Progress) -> Result<PathB
     }
     #[cfg(feature = "download")]
     {
-        fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
+        let parent = path.parent().unwrap_or(&dir);
+        fs::create_dir_all(parent)
+            .with_context(|| format!("cannot create {}", parent.display()))?;
         download::download(spec, &path, progress)?;
         Ok(path)
     }
@@ -245,7 +457,7 @@ mod download {
     use reqwest::{StatusCode, header};
     use sha2::{Digest, Sha256};
 
-    use super::{ModelSpec, human_size};
+    use super::{Kind, ModelSpec, human_size};
     use crate::{
         Progress, check_cancel,
         error::{Context as _, Result, bail},
@@ -275,6 +487,14 @@ mod download {
         let status = response.status();
         let append =
             status == StatusCode::PARTIAL_CONTENT || status == StatusCode::RANGE_NOT_SATISFIABLE;
+        // The voice models are not on Hugging Face yet, and a missing repository gives 401.
+        if spec.kind == Kind::Voice
+            && (status == StatusCode::NOT_FOUND || status == StatusCode::UNAUTHORIZED)
+        {
+            bail!(Network;
+                "the voice model is not published yet (HTTP {status}); choose a local model \
+                 folder in Settings, or use --dub-model <folder>");
+        }
         if !append && !status.is_success() {
             bail!(Network; "download of {} failed: HTTP {status}", spec.url);
         }
@@ -339,24 +559,31 @@ mod download {
     }
 }
 
-/// Deletes a cached model, and its partial download if one exists.
+/// Deletes a cached model or bundle, and the partial downloads if they exist.
+///
+/// A bundle shares files with other bundles (`xtts-v2` and `xtts-v2-int8`), so removing
+/// one bundle also removes the shared files.
 ///
 /// # Errors
-/// Returns an error for an unknown name, if the model is not in the cache, or if the
+/// Returns an error for an unknown name, if the model is not in the cache, or if a
 /// file cannot be removed.
 pub fn remove(name: &str) -> Result<()> {
-    let Some(spec) = find(name) else {
-        bail!(NotFound; "unknown model {name:?}");
+    let specs: Vec<&ModelSpec> = match (find(name), bundle(name)) {
+        (Some(spec), _) => vec![spec],
+        (None, Some(b)) => b.specs().collect(),
+        (None, None) => bail!(NotFound; "unknown model {name:?}"),
     };
-    let path = cached_path(spec)?;
     let mut removed = false;
-    for p in [
-        path.clone(),
-        PathBuf::from(format!("{}.part", path.display())),
-    ] {
-        if p.is_file() {
-            fs::remove_file(&p).with_context(|| format!("cannot remove {}", p.display()))?;
-            removed = true;
+    for spec in specs {
+        let path = cached_path(spec)?;
+        for p in [
+            path.clone(),
+            PathBuf::from(format!("{}.part", path.display())),
+        ] {
+            if p.is_file() {
+                fs::remove_file(&p).with_context(|| format!("cannot remove {}", p.display()))?;
+                removed = true;
+            }
         }
     }
     if !removed {
@@ -405,18 +632,61 @@ mod tests {
 
     #[test]
     fn model_names_are_unique_and_hashes_look_valid() {
-        for (i, m) in MODELS.iter().enumerate() {
+        let all: Vec<&ModelSpec> = MODELS.iter().chain(BUNDLE_FILES).collect();
+        for (i, m) in all.iter().enumerate() {
             assert!(
-                MODELS[i + 1..].iter().all(|o| o.name != m.name),
+                all[i + 1..].iter().all(|o| o.name != m.name),
                 "duplicate {}",
                 m.name
             );
             assert_eq!(m.sha256.len(), 64);
-            assert!(m.url.ends_with(m.file));
+            // The speaker model keeps its upstream file name in the URL.
+            assert!(m.url.ends_with(m.file) || m.kind == Kind::Speakers);
         }
         assert!(find(DEFAULT_WHISPER).is_some());
         assert!(find(DEFAULT_LLM).is_some());
         assert!(find(VAD).is_some());
+    }
+
+    #[test]
+    fn xtts_bundle_lists_all_files() {
+        let names = |b: &Bundle| -> Vec<&str> {
+            b.files
+                .iter()
+                .map(|f| f.rsplit('/').next().unwrap())
+                .collect()
+        };
+        let fp32 = bundle("xtts-v2").unwrap();
+        let int8 = bundle("xtts-v2-int8").unwrap();
+        let common = [
+            "conditioning.onnx",
+            "speaker.onnx",
+            "vocoder.onnx",
+            "embeddings.safetensors",
+            "speakers.safetensors",
+            "vocab.json",
+            "config.json",
+        ];
+        for f in common {
+            assert!(names(fp32).contains(&f), "{f}");
+            assert!(names(int8).contains(&f), "{f}");
+        }
+        assert!(names(fp32).contains(&"gpt.onnx"));
+        assert!(!names(int8).contains(&"gpt.onnx"));
+        assert!(names(int8).contains(&"gpt_int8.onnx"));
+        for b in [
+            fp32,
+            int8,
+            bundle("htdemucs-vocals").unwrap(),
+            bundle("campplus").unwrap(),
+        ] {
+            for f in b.files {
+                assert!(find(f).is_some(), "{f}");
+            }
+        }
+        assert!(fp32.licence.is_some());
+        assert!(int8.licence.is_some());
+        assert!(bundle("htdemucs-vocals").unwrap().licence.is_none());
     }
 
     #[test]

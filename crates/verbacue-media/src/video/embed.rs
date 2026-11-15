@@ -57,7 +57,7 @@ pub(super) fn write_embedded(
         }
     }
 
-    write_header(&mut octx)?;
+    write_header(&mut octx, true)?;
     let offset_ms = audio_start_ms(&ictx);
     let mut subs = SubtitleQueue::new(&octx, tracks, &sub_streams, offset_ms);
     let total = duration_secs(&ictx);
