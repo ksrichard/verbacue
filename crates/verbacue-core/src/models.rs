@@ -27,6 +27,8 @@ pub enum Kind {
     Voice,
     /// A file of the model that takes the voices out of the audio, for dubbing.
     Separation,
+    /// The model that tells the speakers of a film apart, for dubbing.
+    Speakers,
 }
 
 impl fmt::Display for Kind {
@@ -37,6 +39,7 @@ impl fmt::Display for Kind {
             Kind::Llm => "llm",
             Kind::Voice => "voice",
             Kind::Separation => "separation",
+            Kind::Speakers => "speakers",
         })
     }
 }
@@ -230,6 +233,15 @@ const BUNDLE_FILES: &[ModelSpec] = &[
         "acc80e2c5f47c01579f2871f17ef424f3ff4d5fa5aa7963b8c94b9af80d215db",
         316446953
     ),
+    // CAM++ from 3D-Speaker (Apache-2.0), trained on VoxCeleb, as the sherpa-onnx ONNX.
+    ModelSpec {
+        name: "campplus/campplus.onnx",
+        kind: Kind::Speakers,
+        file: "campplus/campplus.onnx",
+        url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx",
+        sha256: "357a834f702b80161e5b981182c038e18553c1f2ca752ed6cec2052365d4129b",
+        size: 29596978,
+    },
 ];
 
 /// A model that has more than one file. All files are in one cache folder.
@@ -282,6 +294,12 @@ const BUNDLES: &[Bundle] = &[
         name: "htdemucs-vocals",
         kind: Kind::Separation,
         files: &["htdemucs/htdemucs_vocals.onnx"],
+        licence: None,
+    },
+    Bundle {
+        name: "campplus",
+        kind: Kind::Speakers,
+        files: &["campplus/campplus.onnx"],
         licence: None,
     },
 ];
@@ -622,7 +640,8 @@ mod tests {
                 m.name
             );
             assert_eq!(m.sha256.len(), 64);
-            assert!(m.url.ends_with(m.file));
+            // The speaker model keeps its upstream file name in the URL.
+            assert!(m.url.ends_with(m.file) || m.kind == Kind::Speakers);
         }
         assert!(find(DEFAULT_WHISPER).is_some());
         assert!(find(DEFAULT_LLM).is_some());
@@ -655,7 +674,12 @@ mod tests {
         assert!(names(fp32).contains(&"gpt.onnx"));
         assert!(!names(int8).contains(&"gpt.onnx"));
         assert!(names(int8).contains(&"gpt_int8.onnx"));
-        for b in [fp32, int8, bundle("htdemucs-vocals").unwrap()] {
+        for b in [
+            fp32,
+            int8,
+            bundle("htdemucs-vocals").unwrap(),
+            bundle("campplus").unwrap(),
+        ] {
             for f in b.files {
                 assert!(find(f).is_some(), "{f}");
             }

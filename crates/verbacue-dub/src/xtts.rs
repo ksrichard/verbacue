@@ -214,33 +214,40 @@ impl Xtts {
         self.voices.get(name).cloned()
     }
 
-    /// Makes a voice from a sample of clean speech at 24 kHz. The GPT conditioning uses
-    /// the first 6 seconds and the speaker embedding the first 30 seconds.
+    /// Makes a voice from a sample of clean speech at 24 kHz, up to 30 s. As in
+    /// coqui, the GPT conditioning is the mean over the 6 s pieces of the sample, and
+    /// the speaker embedding uses the whole sample.
     ///
     /// # Errors
     /// Returns an error if the sample is shorter than 0.33 seconds or a model fails.
     pub fn clone_voice(&mut self, audio_24k: &[f32]) -> Result<Voice> {
-        let a22 = resample::resample(
-            &audio_24k[..audio_24k.len().min(24_000 * 6)],
-            24_000,
-            22_050,
-        );
+        let audio_24k = &audio_24k[..audio_24k.len().min(24_000 * 30)];
+        let a22 = resample::resample(audio_24k, 24_000, 22_050);
         if a22.len() < 22_050 / 3 {
             return Err(Error::new(
                 ErrorKind::InvalidInput,
                 "the voice sample is shorter than 0.33 s",
             ));
         }
-        let m = mel::cond_mel(&a22, &self.mel_stats);
-        let cond_latents = run_one(
-            &mut self.conditioning,
-            "mel",
-            Tensor::from_array(([1, m.n_mels, m.frames], m.data)).map_err(model_error)?,
-            COND_LEN * DIM,
-        )?;
-        let speaker_emb = self
-            .speaker_embedding(&audio_24k[..audio_24k.len().min(24_000 * 30)])?
-            .to_vec();
+        let mut cond_latents = vec![0.0f32; COND_LEN * DIM];
+        let pieces = cond_pieces(a22.len());
+        for &(from, to) in &pieces {
+            let m = mel::cond_mel(&a22[from..to], &self.mel_stats);
+            let latents = run_one(
+                &mut self.conditioning,
+                "mel",
+                Tensor::from_array(([1, m.n_mels, m.frames], m.data)).map_err(model_error)?,
+                COND_LEN * DIM,
+            )?;
+            cond_latents
+                .iter_mut()
+                .zip(latents)
+                .for_each(|(s, x)| *s += x);
+        }
+        #[expect(clippy::cast_precision_loss, reason = "at most 5 pieces")]
+        let n = pieces.len() as f32;
+        cond_latents.iter_mut().for_each(|x| *x /= n);
+        let speaker_emb = self.speaker_embedding(audio_24k)?.to_vec();
         Ok(Voice {
             cond_latents,
             speaker_emb,
@@ -410,8 +417,31 @@ impl Xtts {
     }
 }
 
+/// The 6 s pieces of a 22.05 kHz sample of `len` values. A last piece under 2 s joins
+/// the piece before it.
+fn cond_pieces(len: usize) -> Vec<(usize, usize)> {
+    const PIECE: usize = 22_050 * 6;
+    const MIN_LAST: usize = 22_050 * 2;
+    let mut out: Vec<(usize, usize)> = (0..len)
+        .step_by(PIECE)
+        .map(|s| (s, (s + PIECE).min(len)))
+        .collect();
+    if out.len() > 1 && out.last().is_some_and(|&(s, e)| e - s < MIN_LAST) {
+        out.pop();
+        if let Some(last) = out.last_mut() {
+            last.1 = len;
+        }
+    }
+    out
+}
+
 /// Runs a graph with one input and returns its one output, which must have `len` values.
-fn run_one(session: &mut Session, input: &str, value: Tensor<f32>, len: usize) -> Result<Vec<f32>> {
+pub(crate) fn run_one(
+    session: &mut Session,
+    input: &str,
+    value: Tensor<f32>,
+    len: usize,
+) -> Result<Vec<f32>> {
     let out = session
         .run(vec![(input, SessionInputValue::from(value))])
         .map_err(model_error)?;
@@ -438,6 +468,17 @@ fn add<'a>(a: &'a [f32], b: &'a [f32]) -> impl Iterator<Item = f32> + 'a {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sample_splits_into_6_s_pieces() {
+        let s = 22_050;
+        assert_eq!(cond_pieces(3 * s), [(0, 3 * s)]);
+        assert_eq!(cond_pieces(13 * s), [(0, 6 * s), (6 * s, 13 * s)]);
+        assert_eq!(
+            cond_pieces(15 * s),
+            [(0, 6 * s), (6 * s, 12 * s), (12 * s, 15 * s)]
+        );
+    }
 
     fn frames(n: usize) -> Latents {
         #[expect(clippy::cast_precision_loss, reason = "test")]

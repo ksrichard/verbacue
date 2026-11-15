@@ -114,6 +114,8 @@ pub struct DubJob<'a> {
     pub models_dir: &'a Path,
     /// `htdemucs_vocals.onnx`. [`Original::Remove`] needs it.
     pub separation_model: Option<&'a Path>,
+    /// `campplus.onnx`, the speaker model. [`VoiceChoice::Clone`] needs it.
+    pub speaker_model: Option<&'a Path>,
     pub options: Options,
     /// The folder for the temporary audio files.
     pub temp_dir: &'a Path,
@@ -192,7 +194,21 @@ pub fn dub(job: DubJob<'_>, sink: &dyn Events) -> Result<()> {
         }
         VoiceChoice::Clone => {
             sink.step(DubStep::Speakers);
-            clone_speakers(&mut xtts, &slots, &reference, &default_voice, sink)?
+            let model = job.speaker_model.ok_or_else(|| {
+                Error::new(
+                    ErrorKind::InvalidInput,
+                    "cloning the voices needs the campplus speaker model",
+                )
+            })?;
+            let mut model = speakers::SpeakerModel::open(model)?;
+            clone_speakers(
+                &mut xtts,
+                &mut model,
+                &slots,
+                &reference,
+                &default_voice,
+                sink,
+            )?
         }
     };
 
@@ -266,23 +282,25 @@ pub fn dub(job: DubJob<'_>, sink: &dyn Events) -> Result<()> {
 /// no speaker, get the default studio voice.
 fn clone_speakers(
     xtts: &mut Xtts,
+    model: &mut speakers::SpeakerModel,
     slots: &[fit::Slot],
     speech: &RawAudio,
     default_voice: &Voice,
     sink: &dyn Events,
 ) -> Result<(Vec<Voice>, Vec<usize>)> {
-    let groups = speakers::find(xtts, slots, speech, sink)?;
-    let count = groups.iter().flatten().max().map_or(0, |&g| g + 1);
+    let found = speakers::find(model, slots, speech, sink)?;
+    let (groups, count) = (&found.of_slot, found.count);
     // Index 0 is the default voice; speaker g has index g + 1.
     let mut voices = vec![default_voice.clone()];
     for g in 0..count {
-        let lines: Vec<(u64, u64)> = slots
+        let lines: Vec<(u64, u64, f32)> = slots
             .iter()
-            .zip(&groups)
-            .filter(|(_, group)| **group == Some(g))
-            .map(|(s, _)| (s.start_ms, s.end_ms))
+            .zip(groups)
+            .zip(&found.typical)
+            .filter(|((_, group), _)| **group == Some(g))
+            .map(|((s, _), &typical)| (s.start_ms, s.end_ms, typical))
             .collect();
-        let speech_ms: u64 = lines.iter().map(|(a, b)| b - a).sum();
+        let speech_ms: u64 = lines.iter().map(|(a, b, _)| b - a).sum();
         let voice = if speech_ms < MIN_SPEAKER_MS {
             sink.note(&format!(
                 "speaker {} has only {:.1} s of speech; the studio voice speaks their lines",
@@ -440,6 +458,7 @@ mod tests {
             lang: "hu",
             models_dir: models,
             separation_model: None,
+            speaker_model: None,
             options: Options {
                 voice: VoiceChoice::Studio(DEFAULT_STUDIO_VOICE.into()),
                 original: Original::Lower,

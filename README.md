@@ -523,9 +523,10 @@ verbacue voices                         # list the studio voices
   0.55 s per second of audio on an Apple Silicon CPU. `lower` keeps the original
   audio and makes it quieter while a new line plays; it is much faster.
 - `--dub-voice clone` (default) finds the speakers and speaks each line in the voice
-  of its speaker. The XTTS-v2 speaker encoder groups the lines by voice, and the
-  loudest 10 seconds of each speaker become the voice sample. A speaker with less
-  than 3 seconds of speech gets the studio voice. `--dub-voice <name>` uses one
+  of its speaker. The CAM++ speaker model makes a voiceprint for each 1.5-second
+  window of each line, and verbacue groups the windows by voice. A group with less
+  than 8 seconds of speech joins the nearest speaker. Up to 30 seconds of the most
+  typical lines of each speaker become the voice sample. `--dub-voice <name>` uses one
   studio voice for all lines.
 - A line that is longer than its cue plays faster, up to `--dub-speed-limit`
   (default 1.3). Then it may use the silence before the next line. Above that, it
@@ -556,4 +557,5 @@ texts, also those of the Rust crates, and each release archive includes it. Run
 - whisper.cpp and llama.cpp (MIT)
 - DejaVu Sans Bold font (free license, see `crates/verbacue-media/assets/DejaVu-LICENSE.txt`)
 - Model weights have their own licenses: Whisper (MIT), Silero VAD (MIT), Gemma 3 and
-  TranslateGemma (Gemma Terms of Use), Gemma 4 (Apache 2.0)
+  TranslateGemma (Gemma Terms of Use), Gemma 4 (Apache 2.0), CAM++ from 3D-Speaker
+  (Apache 2.0)

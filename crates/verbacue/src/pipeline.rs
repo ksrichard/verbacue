@@ -648,6 +648,7 @@ impl Pipeline {
                     lang: &job.target,
                     models_dir: &dirs.voice,
                     separation_model: dirs.separation.as_deref(),
+                    speaker_model: dirs.speakers.as_deref(),
                     options: options.clone(),
                     temp_dir: &temp,
                     output: &out,
@@ -724,12 +725,15 @@ mod dub {
         voice: Model,
         /// For `Original::Remove` only.
         separation: Option<Model>,
+        /// For `VoiceChoice::Clone` only.
+        speakers: Option<Model>,
     }
 
     /// The model folders of a dub job, after the downloads.
     pub(super) struct Dirs {
         pub(super) voice: PathBuf,
         pub(super) separation: Option<PathBuf>,
+        pub(super) speakers: Option<PathBuf>,
     }
 
     impl Models {
@@ -739,12 +743,21 @@ mod dub {
                 Some(m) => Some(m.dir(sink)?.join(SEPARATION_FILE)),
                 None => None,
             };
-            Ok(Dirs { voice, separation })
+            let speakers = match self.speakers {
+                Some(m) => Some(m.dir(sink)?.join(dub::speakers::MODEL_FILE)),
+                None => None,
+            };
+            Ok(Dirs {
+                voice,
+                separation,
+                speakers,
+            })
         }
     }
 
     const SEPARATION_BUNDLE: &str = "htdemucs-vocals";
     const SEPARATION_FILE: &str = "htdemucs_vocals.onnx";
+    const SPEAKERS_BUNDLE: &str = "campplus";
 
     /// Checks a dub job before the slow steps: the language, the audio track and the
     /// licence. It downloads nothing.
@@ -781,10 +794,20 @@ mod dub {
         } else {
             None
         };
+        let speakers = if options.voice == dub::VoiceChoice::Clone {
+            Some(local_or_bundle(
+                &options.model,
+                dub::speakers::MODEL_FILE,
+                SPEAKERS_BUNDLE,
+            )?)
+        } else {
+            None
+        };
         if Path::new(&options.model).is_dir() {
             return Ok(Some(Models {
                 voice: Model::Dir(PathBuf::from(&options.model)),
                 separation,
+                speakers,
             }));
         }
         let bundle = models::bundle(&options.model)
@@ -807,18 +830,24 @@ mod dub {
         Ok(Some(Models {
             voice: Model::Bundle(bundle),
             separation,
+            speakers,
         }))
     }
 
     /// The separation model: next to a local voice model folder, else the bundle.
     fn separation_model(voice_model: &str) -> Result<Model> {
+        local_or_bundle(voice_model, SEPARATION_FILE, SEPARATION_BUNDLE)
+    }
+
+    /// `file` in a local voice model folder, else the bundle `name`.
+    fn local_or_bundle(voice_model: &str, file: &str, name: &str) -> Result<Model> {
         let dir = Path::new(voice_model);
-        if dir.join(SEPARATION_FILE).is_file() {
+        if dir.join(file).is_file() {
             return Ok(Model::Dir(dir.to_path_buf()));
         }
-        models::bundle(SEPARATION_BUNDLE)
+        models::bundle(name)
             .map(Model::Bundle)
-            .context("the separation model is unknown")
+            .with_context(|| format!("the model {name} is unknown"))
     }
 
     /// Shows the dub events as pipeline events.
