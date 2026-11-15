@@ -1,11 +1,12 @@
 //! Finds fonts for the subtitle text and shapes the text into placed glyphs.
 
+use crate::error::Result;
 use ab_glyph::{Font, FontVec, GlyphId, PxScale, ScaleFont};
 use rustybuzz::{Direction, UnicodeBuffer, ttf_parser};
 use unicode_bidi::BidiInfo;
 
 use verbacue_core::{
-    error::{Context as _, ErrorKind, Result, WithKind as _, bail},
+    error::{Context as _, bail},
     subtitle::Cue,
 };
 
@@ -127,9 +128,7 @@ impl Fonts {
     /// Returns an error if no font has some letters of the cues, because those would
     /// be blank in the video.
     pub(super) fn for_cues(cues: &[Cue]) -> Result<Self> {
-        let main = FontVec::try_from_vec(FONT.to_vec())
-            .with_kind(ErrorKind::Other)
-            .context("the embedded font is invalid")?;
+        let main = FontVec::try_from_vec(FONT.to_vec()).context("the embedded font is invalid")?;
         let mut fonts = Self(vec![LoadedFont::new(main, 0, None)]);
         let mut missing = fonts.missing(cues);
         let noto = NOTO_DIRS.iter().flat_map(|dir| {

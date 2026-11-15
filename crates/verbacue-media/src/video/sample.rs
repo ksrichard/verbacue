@@ -1,7 +1,8 @@
 //! A short subtitle sample that loops, so that the app can show a style and an
 //! animation before a video is burned.
 
-use verbacue_core::{error::Result, look::display_text};
+use crate::error::Result;
+use verbacue_core::look::display_text;
 
 use super::{
     PreviewFrame, SubtitleLook,

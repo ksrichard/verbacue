@@ -60,5 +60,5 @@ pub mod pipeline;
 pub use verbacue_translate as translate;
 
 pub use verbacue_core::{
-    Error, ErrorKind, Progress, Result, check_cancel, config_dir, models, subtitle,
+    Error, ErrorKind, Progress, Result, check_cancel, config_dir, error, models, subtitle,
 };

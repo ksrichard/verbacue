@@ -14,8 +14,8 @@ use reqwest::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{Backend, Batch, Register, Translator};
-use verbacue_core::error::{Context as _, Error, ErrorKind, Result, bail};
+use super::{Backend, Batch, Register, Translator, error::Error as ServiceError};
+use verbacue_core::error::{Context as _, Result, bail};
 
 const ATTEMPTS: u32 = 4;
 
@@ -68,27 +68,17 @@ impl OnlineTranslator {
             }
         };
         let (var, file) = service.key_source();
-        let key = setting(var, file)?.ok_or_else(|| {
-            Error::new(
-                ErrorKind::MissingKey,
-                format!(
-                    "{} needs a key: set {var} or write it to {}",
-                    service.name(),
-                    shown(file)
-                ),
-            )
+        let key = setting(var, file)?.ok_or_else(|| ServiceError::MissingKey {
+            service: service.name(),
+            var,
+            file: shown(file),
         })?;
         let region = if service == Service::Azure {
             Some(
                 setting("AZURE_TRANSLATOR_REGION", "azure.region")?.ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::MissingKey,
-                        format!(
-                            "Azure Translator needs the resource region: set \
-                             AZURE_TRANSLATOR_REGION or write it to {}",
-                            shown("azure.region")
-                        ),
-                    )
+                    ServiceError::MissingRegion {
+                        file: shown("azure.region"),
+                    }
                 })?,
             )
         } else {
@@ -197,13 +187,21 @@ impl OnlineTranslator {
                 continue;
             }
             let text = response.text().unwrap_or_default();
-            match (self.service, status.as_u16()) {
-                (_, 401 | 403) => bail!(KeyRefused; "{name} refused the key ({status}): {text}"),
-                (Service::Deepl, 456) => {
-                    bail!(QuotaExceeded; "the DeepL character quota is used up (456)")
-                }
-                _ => bail!("{name} answered {status}: {text}"),
+            let (service, status, body) = (name, status.as_u16(), text);
+            return Err(match (self.service, status) {
+                (_, 401 | 403) => ServiceError::KeyRefused {
+                    service,
+                    status,
+                    body,
+                },
+                (Service::Deepl, 456) => ServiceError::QuotaExceeded,
+                _ => ServiceError::Status {
+                    service,
+                    status,
+                    body,
+                },
             }
+            .into());
         }
         unreachable!("the loop returns on the last attempt")
     }

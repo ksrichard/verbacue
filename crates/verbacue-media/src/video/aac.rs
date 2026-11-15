@@ -3,13 +3,14 @@
 //! The encoder needs frames of exactly `frame_size` samples, so the samples go
 //! through a buffer for each channel first.
 
+use crate::error::Result;
 use ffmpeg_next::{
     ChannelLayout, Dictionary, Packet, Rational, codec, encoder,
     format::{self, Sample, sample::Type as SampleType},
     frame,
 };
 
-use verbacue_core::error::{Context as _, ErrorKind, Result, WithKind as _};
+use verbacue_core::error::Context as _;
 
 pub(super) struct AacEncoder {
     encoder: encoder::audio::Encoder,
@@ -37,8 +38,7 @@ impl AacEncoder {
         let rate_i32 = i32::try_from(rate).unwrap_or(48_000);
         let mut enc = codec::context::Context::new_with_codec(codec)
             .encoder()
-            .audio()
-            .with_kind(ErrorKind::Other)?;
+            .audio()?;
         enc.set_rate(rate_i32);
         enc.set_channel_layout(layout);
         enc.set_format(Sample::F32(SampleType::Planar));
@@ -47,12 +47,9 @@ impl AacEncoder {
         if octx.format().flags().contains(format::Flags::GLOBAL_HEADER) {
             enc.set_flags(codec::Flags::GLOBAL_HEADER);
         }
-        let encoder = enc
-            .open_as(codec)
-            .with_kind(ErrorKind::Other)
-            .context("cannot open the AAC encoder")?;
+        let encoder = enc.open_as(codec).context("cannot open the AAC encoder")?;
 
-        let mut ost = octx.add_stream(codec).with_kind(ErrorKind::Other)?;
+        let mut ost = octx.add_stream(codec)?;
         ost.set_parameters(&encoder);
         ost.set_metadata(metadata);
         let out_index = ost.index();
@@ -96,9 +93,7 @@ impl AacEncoder {
             let pts = self.next_pts.unwrap_or(0);
             frame.set_pts(Some(pts));
             self.next_pts = Some(pts + size as i64);
-            self.encoder
-                .send_frame(&frame)
-                .with_kind(ErrorKind::Other)?;
+            self.encoder.send_frame(&frame)?;
             self.drain(octx, out_tb)?;
         }
         Ok(())
@@ -111,7 +106,7 @@ impl AacEncoder {
         out_tb: &[Rational],
     ) -> Result<()> {
         self.encode_full_frames(octx, out_tb, true)?;
-        self.encoder.send_eof().with_kind(ErrorKind::Other)?;
+        self.encoder.send_eof()?;
         self.drain(octx, out_tb)
     }
 
@@ -121,7 +116,7 @@ impl AacEncoder {
         while self.encoder.receive_packet(&mut packet).is_ok() {
             packet.set_stream(self.out_index);
             packet.rescale_ts(tb, out_tb[self.out_index]);
-            packet.write_interleaved(octx).with_kind(ErrorKind::Other)?;
+            packet.write_interleaved(octx)?;
         }
         Ok(())
     }

@@ -4,6 +4,7 @@
 //! Both run as ONNX graphs with ONNX Runtime. `tools/xtts-export` makes the graphs.
 
 pub mod bpe;
+pub mod error;
 pub mod fbank;
 pub mod fit;
 #[cfg(old_glibc)]

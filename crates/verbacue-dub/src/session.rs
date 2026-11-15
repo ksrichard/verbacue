@@ -85,8 +85,9 @@ pub fn fix_argv0() {
     }
 }
 
-pub(crate) fn model_error<R>(e: ort::Error<R>) -> Error {
-    Error::new(ErrorKind::Model, e.to_string())
+/// Drops the value that some ort errors carry, so that the error can be stored.
+pub(crate) fn model_error<R>(e: ort::Error<R>) -> crate::error::Error {
+    ort::Error::new_with_code(e.code(), e.message()).into()
 }
 
 /// Opens an ONNX graph. It uses CUDA in a `cuda` build, else the CPU. ONNX Runtime

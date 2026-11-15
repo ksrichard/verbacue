@@ -1,12 +1,10 @@
 //! Draws subtitle text with an outline into video frames.
 
+use crate::error::Result;
 use ab_glyph::{Font, point};
 use ffmpeg_next::{Rational, format::Pixel, frame, software::scaling};
 
-use verbacue_core::{
-    error::{Context as _, ErrorKind, Result, WithKind as _},
-    subtitle::Cue,
-};
+use verbacue_core::{error::Context as _, subtitle::Cue};
 
 use verbacue_core::look::{
     BOUNCE_MS, FADE_MS, POP_MS, bounce, display_text, groups, typewriter_span, word_starts,
@@ -66,25 +64,21 @@ impl<'a> Painter<'a> {
             s.input().format != decoded.format() || s.input().width != w || s.input().height != h
         });
         if rebuild {
-            *scaler = Some(
-                scaling::Context::get(
-                    decoded.format(),
-                    w,
-                    h,
-                    Pixel::YUV420P,
-                    w,
-                    h,
-                    scaling::Flags::BILINEAR,
-                )
-                .with_kind(ErrorKind::Other)?,
-            );
+            *scaler = Some(scaling::Context::get(
+                decoded.format(),
+                w,
+                h,
+                Pixel::YUV420P,
+                w,
+                h,
+                scaling::Flags::BILINEAR,
+            )?);
         }
         let mut out = frame::Video::empty();
         scaler
             .as_mut()
             .context("missing scaler")?
-            .run(decoded, &mut out)
-            .with_kind(ErrorKind::Other)?;
+            .run(decoded, &mut out)?;
         let pts = decoded.timestamp();
         out.set_pts(pts);
 

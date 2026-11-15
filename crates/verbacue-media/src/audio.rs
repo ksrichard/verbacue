@@ -4,6 +4,7 @@
 //! AC3, E-AC3, DTS, AAC, Opus, ...). The resampler converts the selected track to the
 //! format that Whisper needs (16 kHz, mono, f32), or to stereo for the dub mix.
 
+use crate::error::Result;
 use std::{
     borrow::Cow,
     fs::File,
@@ -20,7 +21,7 @@ use ffmpeg_next::{
 
 use verbacue_core::{
     Progress, check_cancel,
-    error::{Context as _, Error, ErrorKind, Result, WithKind as _, bail},
+    error::{Context as _, Error, ErrorKind, bail},
 };
 
 pub const SAMPLE_RATE: u32 = 16_000;
@@ -46,7 +47,7 @@ pub(crate) fn init() -> Result<()> {
         Ok(())
     })
     .clone()
-    .map_err(|e| Error::new(ErrorKind::Other, format!("cannot start FFmpeg: {e}")))
+    .map_err(|e| Error::new(ErrorKind::Other, format!("cannot start FFmpeg: {e}")).into())
 }
 
 /// Lists the audio streams of a media file.
@@ -55,19 +56,16 @@ pub(crate) fn init() -> Result<()> {
 /// Returns an error if the file cannot be opened or a stream has no usable decoder.
 pub fn list_tracks(path: &Path) -> Result<Vec<AudioTrack>> {
     init()?;
-    let input = ffmpeg::format::input(path)
-        .with_kind(ErrorKind::Other)
-        .with_context(|| format!("cannot open {}", path.display()))?;
+    let input =
+        ffmpeg::format::input(path).with_context(|| format!("cannot open {}", path.display()))?;
     let mut tracks = Vec::new();
     for stream in input.streams() {
         if stream.parameters().medium() != media::Type::Audio {
             continue;
         }
-        let decoder = codec::context::Context::from_parameters(stream.parameters())
-            .with_kind(ErrorKind::Other)?
+        let decoder = codec::context::Context::from_parameters(stream.parameters())?
             .decoder()
-            .audio()
-            .with_kind(ErrorKind::Other)?;
+            .audio()?;
         let metadata = stream.metadata();
         tracks.push(AudioTrack {
             index: tracks.len(),
@@ -133,9 +131,7 @@ pub fn decode_to_file(
     progress: &dyn Progress,
 ) -> Result<u64> {
     let result = (|| {
-        let file = File::create(out)
-            .with_kind(ErrorKind::Other)
-            .with_context(|| format!("cannot create {}", out.display()))?;
+        let file = File::create(out).with_context(|| format!("cannot create {}", out.display()))?;
         let mut writer = BufWriter::new(file);
         let mut samples = 0u64;
         decode(
@@ -146,9 +142,7 @@ pub fn decode_to_file(
             progress,
             &mut |s| {
                 for v in s {
-                    writer
-                        .write_all(&v.to_le_bytes())
-                        .with_kind(ErrorKind::Other)?;
+                    writer.write_all(&v.to_le_bytes())?;
                 }
                 samples += s.len() as u64;
                 Ok(())
@@ -156,7 +150,6 @@ pub fn decode_to_file(
         )?;
         writer
             .flush()
-            .with_kind(ErrorKind::Other)
             .with_context(|| format!("cannot write {}", out.display()))?;
         Ok(samples / 2)
     })();
@@ -176,9 +169,8 @@ fn decode(
     sink: &mut dyn FnMut(&[f32]) -> Result<()>,
 ) -> Result<()> {
     init()?;
-    let mut input = ffmpeg::format::input(path)
-        .with_kind(ErrorKind::Other)
-        .with_context(|| format!("cannot open {}", path.display()))?;
+    let mut input =
+        ffmpeg::format::input(path).with_context(|| format!("cannot open {}", path.display()))?;
 
     let stream = input
         .streams()
@@ -187,11 +179,9 @@ fn decode(
         .with_context(|| format!("{} has no audio track {track}", path.display()))?;
     let stream_index = stream.index();
     let time_base = f64::from(stream.time_base());
-    let mut decoder = codec::context::Context::from_parameters(stream.parameters())
-        .with_kind(ErrorKind::Other)?
+    let mut decoder = codec::context::Context::from_parameters(stream.parameters())?
         .decoder()
         .audio()
-        .with_kind(ErrorKind::Other)
         .context("cannot create the audio decoder")?;
 
     // The container duration is in AV_TIME_BASE units (microseconds).
@@ -206,7 +196,7 @@ fn decode(
         if stream.index() != stream_index {
             continue;
         }
-        decoder.send_packet(&packet).with_kind(ErrorKind::Other)?;
+        decoder.send_packet(&packet)?;
         while decoder.receive_frame(&mut decoded).is_ok() {
             resample_frame(&mut resampler, target, &decoded, sink)?;
         }
@@ -218,7 +208,7 @@ fn decode(
         }
     }
 
-    decoder.send_eof().with_kind(ErrorKind::Other)?;
+    decoder.send_eof()?;
     while decoder.receive_frame(&mut decoded).is_ok() {
         resample_frame(&mut resampler, target, &decoded, sink)?;
     }
@@ -257,7 +247,6 @@ impl Resampler {
             target.layout,
             target.rate,
         )
-        .with_kind(ErrorKind::Other)
         .context("cannot create the audio resampler")?;
         Ok(Self {
             ctx,
@@ -287,7 +276,6 @@ impl Resampler {
         let mut converted = output_frame(capacity, self.target);
         self.ctx
             .run(frame, &mut converted)
-            .with_kind(ErrorKind::Other)
             .context("resampling failed")?;
         send_samples(&converted, sink)
     }
@@ -298,7 +286,6 @@ impl Resampler {
             let more = self
                 .ctx
                 .flush(&mut converted)
-                .with_kind(ErrorKind::Other)
                 .context("resampler flush failed")?;
             send_samples(&converted, sink)?;
             if more.is_none() || converted.samples() == 0 {

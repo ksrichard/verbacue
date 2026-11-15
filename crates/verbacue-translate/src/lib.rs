@@ -11,6 +11,7 @@
 mod script;
 
 pub mod claude;
+pub mod error;
 
 #[cfg(feature = "local")]
 pub mod local;

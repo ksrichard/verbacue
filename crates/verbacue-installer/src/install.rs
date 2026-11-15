@@ -4,6 +4,7 @@
 //! - Linux: puts the AppImage in ~/Applications, with a menu entry and an icon, and
 //!   links ~/.local/bin/verbacue to it. The command-line build goes to ~/.local/bin.
 
+use crate::error::{Error, Result};
 use std::{
     path::{Path, PathBuf},
     process::Command,
@@ -25,7 +26,7 @@ pub enum Installed {
 ///
 /// # Errors
 /// Returns an error if a step fails; the text says which one.
-pub fn install(file: &Path) -> Result<Installed, String> {
+pub fn install(file: &Path) -> Result<Installed> {
     let name = file
         .file_name()
         .map_or_else(String::new, |n| n.to_string_lossy().to_lowercase());
@@ -38,7 +39,7 @@ pub fn install(file: &Path) -> Result<Installed, String> {
     } else if name.ends_with(".tar.gz") {
         command_line(file)
     } else {
-        Err(format!("cannot install {name}"))
+        Err(format!("cannot install {name}").into())
     }
 }
 
@@ -54,25 +55,28 @@ pub fn open(app: &Path) {
     }
 }
 
-fn run(program: &str, args: &[&std::ffi::OsStr]) -> Result<(), String> {
+fn run(program: &str, args: &[&std::ffi::OsStr]) -> Result<()> {
     let status = Command::new(program)
         .args(args)
         .status()
-        .map_err(|e| format!("cannot run {program}: {e}"))?;
+        .map_err(|e| Error::context(format!("cannot run {program}"), e))?;
     if status.success() {
         Ok(())
     } else {
-        Err(format!("{program} failed ({status})"))
+        Err(Error::Failed {
+            program: program.to_string(),
+            status,
+        })
     }
 }
 
-fn home() -> Result<PathBuf, String> {
+fn home() -> Result<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
-        .ok_or_else(|| "HOME is not set".to_string())
+        .ok_or_else(|| "HOME is not set".into())
 }
 
-fn mac(dmg: &Path) -> Result<Installed, String> {
+fn mac(dmg: &Path) -> Result<Installed> {
     let mount = std::env::temp_dir().join("verbacue-installer-dmg");
     let _ = std::fs::create_dir_all(&mount);
     run(
@@ -87,8 +91,7 @@ fn mac(dmg: &Path) -> Result<Installed, String> {
         ],
     )?;
     let result = (|| {
-        let app = std::fs::read_dir(&mount)
-            .map_err(|e| e.to_string())?
+        let app = std::fs::read_dir(&mount)?
             .filter_map(Result::ok)
             .map(|e| e.path())
             .find(|p| p.extension().is_some_and(|e| e == "app"))
@@ -101,7 +104,7 @@ fn mac(dmg: &Path) -> Result<Installed, String> {
         } else {
             home()?.join("Applications")
         };
-        std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&folder)?;
         let target = folder.join(name);
         if target.exists() {
             std::fs::remove_dir_all(&target)
@@ -122,15 +125,18 @@ fn writable(dir: &Path) -> bool {
     ok
 }
 
-fn windows(setup: &Path) -> Result<Installed, String> {
+fn windows(setup: &Path) -> Result<Installed> {
     // Inno Setup: install for the current user only (no admin rights), show only the
     // progress, and do not restart Windows.
     let status = Command::new(setup)
         .args(["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER"])
         .status()
-        .map_err(|e| format!("cannot run the setup: {e}"))?;
+        .map_err(|e| Error::context("cannot run the setup", e))?;
     if !status.success() {
-        return Err(format!("the setup failed ({status})"));
+        return Err(Error::Failed {
+            program: "the setup".into(),
+            status,
+        });
     }
     // The default folder of a per-user Inno Setup install ({autopf}).
     let folder = std::env::var_os("LOCALAPPDATA")
@@ -141,19 +147,18 @@ fn windows(setup: &Path) -> Result<Installed, String> {
     Ok(Installed::App(folder.join("verbacue.exe")))
 }
 
-fn app_image(file: &Path) -> Result<Installed, String> {
+fn app_image(file: &Path) -> Result<Installed> {
     let home = home()?;
     let target = home.join("Applications").join("verbacue.AppImage");
     copy_executable(file, &target)?;
 
     let icons = home.join(".local/share/icons/hicolor/256x256/apps");
-    std::fs::create_dir_all(&icons).map_err(|e| e.to_string())?;
-    std::fs::write(icons.join("verbacue.png"), ICON).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&icons)?;
+    std::fs::write(icons.join("verbacue.png"), ICON)?;
 
     let menu = home.join(".local/share/applications");
-    std::fs::create_dir_all(&menu).map_err(|e| e.to_string())?;
-    std::fs::write(menu.join("verbacue.desktop"), desktop_entry(&target))
-        .map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&menu)?;
+    std::fs::write(menu.join("verbacue.desktop"), desktop_entry(&target))?;
 
     link_command(&home, &target)?;
     Ok(Installed::App(target))
@@ -175,11 +180,11 @@ pub fn desktop_entry(app_image: &Path) -> String {
         + "\n"
 }
 
-fn command_line(archive: &Path) -> Result<Installed, String> {
+fn command_line(archive: &Path) -> Result<Installed> {
     let home = home()?;
     let unpacked = std::env::temp_dir().join("verbacue-installer-unpacked");
     let _ = std::fs::remove_dir_all(&unpacked);
-    std::fs::create_dir_all(&unpacked).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&unpacked)?;
     run(
         "tar",
         &[
@@ -197,30 +202,29 @@ fn command_line(archive: &Path) -> Result<Installed, String> {
 
 /// Copies `from` to `to` and makes it executable. A running old copy is replaced, not
 /// overwritten, so it keeps working.
-fn copy_executable(from: &Path, to: &Path) -> Result<(), String> {
+fn copy_executable(from: &Path, to: &Path) -> Result<()> {
     if let Some(dir) = to.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(dir)?;
     }
     let temp = to.with_extension("new");
     std::fs::copy(from, &temp).map_err(|e| format!("cannot copy to {}: {e}", to.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| e.to_string())?;
+        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o755))?;
     }
-    std::fs::rename(&temp, to).map_err(|e| e.to_string())
+    Ok(std::fs::rename(&temp, to)?)
 }
 
 /// Links ~/.local/bin/verbacue to the AppImage, so `verbacue` works in a terminal.
-fn link_command(home: &Path, target: &Path) -> Result<(), String> {
+fn link_command(home: &Path, target: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         let bin = home.join(".local/bin");
-        std::fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&bin)?;
         let link = bin.join("verbacue");
         let _ = std::fs::remove_file(&link);
-        std::os::unix::fs::symlink(target, &link).map_err(|e| e.to_string())?;
+        std::os::unix::fs::symlink(target, &link)?;
     }
     #[cfg(not(unix))]
     let _ = (home, target);

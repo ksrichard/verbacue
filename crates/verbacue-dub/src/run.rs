@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use verbacue_core::{
-    Error, ErrorKind, Progress, Result, check_cancel, languages::language_name, subtitle::Cue,
+    Error, ErrorKind, Progress, check_cancel, languages::language_name, subtitle::Cue,
 };
 use verbacue_media::{
     audio::{self, RawAudio},
@@ -11,6 +11,7 @@ use verbacue_media::{
 };
 
 use crate::{
+    error::Result,
     fit,
     mix::{self, Mixer},
     separate, speakers, tone,
@@ -327,7 +328,8 @@ pub fn dub(job: DubJob<'_>, sink: &dyn Events) -> Result<()> {
         job.subtitle_tracks,
         job.show_subtitles,
         &progress,
-    )
+    )?;
+    Ok(())
 }
 
 /// Finds the speakers and gives each one a voice: a clone of the speaker, or with
@@ -492,7 +494,7 @@ fn speak_line(
             }
             Ok(_) => {}
             Err(e) if e.kind() == ErrorKind::Other => {}
-            Err(e) => return Err(e),
+            Err(e) => return Err(e.into()),
         }
     }
     sink.note(&format!(

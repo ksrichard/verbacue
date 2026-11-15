@@ -106,7 +106,7 @@ impl Worker {
                     };
                     let result = pipeline
                         .run(&job, &sink)
-                        .map_err(|e| Failure::new(e.kind(), format!("{e:#}")));
+                        .map_err(|e| Failure::new(e.kind(), verbacue::error::report(&e)));
                     let _ = updates.send(Update::Finished(result));
                 }
             })

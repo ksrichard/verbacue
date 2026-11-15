@@ -1,6 +1,7 @@
 //! MKV output with a new audio track: copies all streams, adds the dubbed audio as
 //! AAC, and adds the subtitles as SRT tracks.
 
+use crate::error::Result;
 use std::{
     fs::File,
     io::{BufReader, Read as _},
@@ -9,10 +10,7 @@ use std::{
 
 use ffmpeg_next::{Dictionary, Rational, format, media};
 
-use verbacue_core::{
-    Progress, check_cancel,
-    error::{Context as _, ErrorKind, Result, WithKind as _},
-};
+use verbacue_core::{Progress, check_cancel, error::Context as _};
 
 use super::{
     StreamMap, SubtitleTrack,
@@ -41,7 +39,6 @@ pub(super) fn write_dubbed(
 ) -> Result<()> {
     let mut ictx = open_input(input)?;
     let mut octx = format::output_as(output, "matroska")
-        .with_kind(ErrorKind::Other)
         .with_context(|| format!("cannot create {}", output.display()))?;
     let mut map = StreamMap::new(&ictx);
 
@@ -99,14 +96,12 @@ pub(super) fn write_dubbed(
         packet.rescale_ts(tb, out_tb[oi]);
         packet.set_position(-1);
         packet.set_stream(oi);
-        packet
-            .write_interleaved(&mut octx)
-            .with_kind(ErrorKind::Other)?;
+        packet.write_interleaved(&mut octx)?;
     }
     raw.feed_until(i64::MAX, &mut aac, &mut octx, &out_tb)?;
     aac.finish(&mut octx, &out_tb)?;
     subs.write_until(i64::MAX, &mut octx)?;
-    octx.write_trailer().with_kind(ErrorKind::Other)?;
+    octx.write_trailer()?;
     Ok(())
 }
 
@@ -123,7 +118,6 @@ struct RawReader {
 impl RawReader {
     fn open(audio: &RawAudio) -> Result<Self> {
         let file = File::open(&audio.path)
-            .with_kind(ErrorKind::Other)
             .with_context(|| format!("cannot read {}", audio.path.display()))?;
         Ok(Self {
             reader: BufReader::new(file),
@@ -172,7 +166,7 @@ impl RawReader {
 fn read_full(reader: &mut BufReader<File>, buf: &mut [u8]) -> Result<usize> {
     let mut n = 0;
     while n < buf.len() {
-        match reader.read(&mut buf[n..]).with_kind(ErrorKind::Other)? {
+        match reader.read(&mut buf[n..])? {
             0 => break,
             k => n += k,
         }

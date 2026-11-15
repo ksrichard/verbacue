@@ -11,5 +11,6 @@
 mod hwdecode;
 
 pub mod audio;
+pub mod error;
 #[cfg(feature = "video")]
 pub mod video;
