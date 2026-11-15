@@ -39,6 +39,7 @@ pub enum SettingChange {
     DubVoice(String),
     DubOriginal(DubOriginal),
     DubSpeedLimit(f32),
+    DubLipsync(bool),
     DubModel(String),
 }
 
@@ -61,6 +62,7 @@ impl SettingChange {
             Self::DubVoice(v) => s.dub_voice = v,
             Self::DubOriginal(v) => s.dub_original = v,
             Self::DubSpeedLimit(v) => s.dub_speed_limit = v.clamp(1.0, 1.5),
+            Self::DubLipsync(v) => s.dub_lipsync = v,
             Self::DubModel(v) => s.dub_model = v,
         }
     }
@@ -466,6 +468,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 Kind::Voice => "Voice",
                 Kind::Separation => "Voice separation",
                 Kind::Speakers => "Speaker recognition",
+                Kind::LipSync => "Lip sync",
             };
             let hint = format!("{kind} · {}", models::human_size(m.size));
             let control: Element<'_, Message> = match app.downloads.get(m.name) {
@@ -618,6 +621,15 @@ fn dubbing_card<'a>(s: &'a Settings, studio_voices: &'a [String]) -> Element<'a,
                     ],
                     &s.dub_original,
                     SettingChange::DubOriginal,
+                ),
+            ),
+            setting_row(
+                "Lip sync",
+                "The speaking actor's mouth follows the new line. Slow on a CPU.",
+                switch::view(
+                    s.dub_lipsync,
+                    10.0,
+                    Message::Setting(SettingChange::DubLipsync(!s.dub_lipsync)),
                 ),
             ),
             setting_row(

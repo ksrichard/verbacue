@@ -83,6 +83,7 @@ pub(super) fn write_burned(
                 cues,
                 offset_ms,
                 global_header,
+                None,
             )?)))
         } else if params.medium() != media::Type::Audio {
             None
@@ -164,6 +165,8 @@ pub(super) struct VideoTranscoder<'a> {
     decoder: ffmpeg::decoder::Video,
     encoder: encoder::video::Encoder,
     painter: Painter<'a>,
+    editor: Option<&'a mut dyn super::FrameEditor>,
+    offset_ms: i64,
     scaler: Option<scaling::Context>,
     time_base: Rational,
     out_index: usize,
@@ -176,6 +179,7 @@ impl<'a> VideoTranscoder<'a> {
         cues: &'a [Cue],
         offset_ms: i64,
         global_header: bool,
+        editor: Option<&'a mut dyn super::FrameEditor>,
     ) -> Result<Self> {
         let time_base = ist.time_base();
         let decoder = open_video_decoder(ist)?;
@@ -216,6 +220,8 @@ impl<'a> VideoTranscoder<'a> {
             decoder,
             encoder,
             painter: Painter::new(cues, offset_ms, time_base)?,
+            editor,
+            offset_ms,
             scaler: None,
             time_base,
             out_index,
@@ -240,7 +246,11 @@ impl<'a> VideoTranscoder<'a> {
             #[cfg(not(any(target_os = "macos", windows)))]
             let downloaded: Option<frame::Video> = None;
             let source = downloaded.as_ref().unwrap_or(&decoded);
-            let frame = self.painter.paint(source, &mut self.scaler)?;
+            let mut frame = self.painter.paint(source, &mut self.scaler)?;
+            if let (Some(editor), Some(pts)) = (self.editor.as_deref_mut(), frame.pts()) {
+                let ms = rescale_ms(pts, self.time_base) - self.offset_ms;
+                super::frames::apply(editor, ms, &mut frame)?;
+            }
             self.encoder
                 .send_frame(&frame)
                 .with_kind(ErrorKind::Other)?;

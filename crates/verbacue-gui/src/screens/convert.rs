@@ -211,6 +211,9 @@ fn output_steps(job: &Job) -> Vec<StepView> {
         }
         steps.push(view(Step::Speak, "Speak"));
         steps.push(view(Step::Mix, "Mix"));
+        if options.lipsync {
+            steps.push(view(Step::LipSync, "Move the lips"));
+        }
     }
     if steps.is_empty() {
         steps.push(view(Step::Save, "Save"));

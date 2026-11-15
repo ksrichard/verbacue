@@ -994,6 +994,7 @@ impl App {
                 settings::DubOriginal::Lower => Original::Lower,
             },
             speed_limit: s.dub_speed_limit.clamp(1.0, 1.5),
+            lipsync: s.dub_lipsync,
             model: s.dub_model.clone(),
         }
     }

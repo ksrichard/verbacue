@@ -129,6 +129,9 @@ pub enum Step {
     Speak,
     /// Dubbing: mixing and writing the video.
     Mix,
+    /// Dubbing: finding the speaking faces, then giving them new mouths while the
+    /// video is encoded again.
+    LipSync,
 }
 
 /// What happens during a job.
@@ -649,6 +652,7 @@ impl Pipeline {
                     models_dir: &dirs.voice,
                     separation_model: dirs.separation.as_deref(),
                     speaker_model: dirs.speakers.as_deref(),
+                    lipsync_models: dirs.lipsync.as_deref(),
                     options: options.clone(),
                     temp_dir: &temp,
                     output: &out,
@@ -728,6 +732,8 @@ mod dub {
         separation: Option<Model>,
         /// For `VoiceChoice::Clone` and `VoiceChoice::Cast` only.
         speakers: Option<Model>,
+        /// With `Options::lipsync` only.
+        lipsync: Option<Model>,
     }
 
     /// The model folders of a dub job, after the downloads.
@@ -735,6 +741,8 @@ mod dub {
         pub(super) voice: PathBuf,
         pub(super) separation: Option<PathBuf>,
         pub(super) speakers: Option<PathBuf>,
+        /// The folder with the lip sync graphs.
+        pub(super) lipsync: Option<PathBuf>,
     }
 
     impl Models {
@@ -748,10 +756,15 @@ mod dub {
                 Some(m) => Some(m.dir(sink)?.join(dub::speakers::MODEL_FILE)),
                 None => None,
             };
+            let lipsync = match self.lipsync {
+                Some(m) => Some(m.dir(sink)?),
+                None => None,
+            };
             Ok(Dirs {
                 voice,
                 separation,
                 speakers,
+                lipsync,
             })
         }
     }
@@ -759,6 +772,7 @@ mod dub {
     const SEPARATION_BUNDLE: &str = "htdemucs-vocals";
     const SEPARATION_FILE: &str = "htdemucs_vocals.onnx";
     const SPEAKERS_BUNDLE: &str = "campplus";
+    const LIPSYNC_BUNDLE: &str = "lipsync";
 
     /// Checks a dub job before the slow steps: the language, the audio track and the
     /// licence. It downloads nothing.
@@ -807,11 +821,21 @@ mod dub {
         } else {
             None
         };
+        let lipsync = if options.lipsync {
+            Some(local_or_bundle(
+                &options.model,
+                dub::lipsync::UNET_FILE,
+                LIPSYNC_BUNDLE,
+            )?)
+        } else {
+            None
+        };
         if Path::new(&options.model).is_dir() {
             return Ok(Some(Models {
                 voice: Model::Dir(PathBuf::from(&options.model)),
                 separation,
                 speakers,
+                lipsync,
             }));
         }
         let bundle = models::bundle(&options.model)
@@ -835,6 +859,7 @@ mod dub {
             voice: Model::Bundle(bundle),
             separation,
             speakers,
+            lipsync,
         }))
     }
 
@@ -864,6 +889,7 @@ mod dub {
                 dub::DubStep::Speakers => Step::Speakers,
                 dub::DubStep::Speak => Step::Speak,
                 dub::DubStep::Mix => Step::Mix,
+                dub::DubStep::LipSync => Step::LipSync,
             }));
         }
 

@@ -40,6 +40,11 @@ pub struct DubArgs {
     #[arg(long, default_value_t = 1.3, value_parser = speed_limit)]
     pub dub_speed_limit: f32,
 
+    /// Move the speaking actor's mouth with the new line ("true" or "false"). The video
+    /// is encoded again; on a CPU this takes hours for a film.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    pub dub_lipsync: bool,
+
     /// The voice model: xtts-v2, xtts-v2-int8, or a folder with the model files. The
     /// default is xtts-v2 in a CUDA build, else xtts-v2-int8.
     #[arg(long)]
@@ -77,6 +82,7 @@ impl DubArgs {
                 DubOriginal::Lower => Original::Lower,
             },
             speed_limit: self.dub_speed_limit,
+            lipsync: self.dub_lipsync,
             model: self
                 .dub_model
                 .clone()
@@ -187,6 +193,12 @@ pub fn dub_file(
     } else {
         None
     };
+    let lipsync = if options.lipsync {
+        let unet = local_or_bundle(&dir, dub::lipsync::UNET_FILE, "lipsync")?;
+        unet.parent().map(Path::to_path_buf)
+    } else {
+        None
+    };
     let sink = BarSink::new(video);
     let result = dub::dub(
         dub::DubJob {
@@ -197,6 +209,7 @@ pub fn dub_file(
             models_dir: &dir,
             separation_model: separation.as_deref(),
             speaker_model: speakers.as_deref(),
+            lipsync_models: lipsync.as_deref(),
             options,
             temp_dir: &models::cache_dir()?.join("dub-tmp"),
             output: &out,

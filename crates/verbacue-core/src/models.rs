@@ -29,6 +29,8 @@ pub enum Kind {
     Separation,
     /// The model that tells the speakers of a film apart, for dubbing.
     Speakers,
+    /// A file of the lip sync models (MuseTalk 1.5, TAESD, Whisper-tiny, YuNet).
+    LipSync,
 }
 
 impl fmt::Display for Kind {
@@ -40,6 +42,7 @@ impl fmt::Display for Kind {
             Kind::Voice => "voice",
             Kind::Separation => "separation",
             Kind::Speakers => "speakers",
+            Kind::LipSync => "lipsync",
         })
     }
 }
@@ -233,6 +236,43 @@ const BUNDLE_FILES: &[ModelSpec] = &[
         "acc80e2c5f47c01579f2871f17ef424f3ff4d5fa5aa7963b8c94b9af80d215db",
         316446953
     ),
+    // The lip sync graphs from tools/lipsync-export (all MIT).
+    voice_file!(
+        Kind::LipSync,
+        "lipsync/lipsync_faces.onnx",
+        "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+        232589
+    ),
+    voice_file!(
+        Kind::LipSync,
+        "lipsync/lipsync_whisper.onnx",
+        "42e04557511f96cfa9e9dec8f41bc3ebf2868f73f966f9eba406f72fe8e01127",
+        32871941
+    ),
+    voice_file!(
+        Kind::LipSync,
+        "lipsync/lipsync_vae_encoder.onnx",
+        "525046802c170aadc372e797464362527066f8d2170a6874bd256a7cbe309bd3",
+        4911012
+    ),
+    voice_file!(
+        Kind::LipSync,
+        "lipsync/lipsync_vae_decoder.onnx",
+        "3a8046774d1512e79d2a01cfba81556f9ba550ebff5fcf19316ccf2cef994255",
+        4913424
+    ),
+    voice_file!(
+        Kind::LipSync,
+        "lipsync/lipsync_unet.onnx",
+        "3e675c3d55f837c9fb31e3a8e9de614acb85bfc37ba0a6170fb11e9fdeff2c95",
+        2053579
+    ),
+    voice_file!(
+        Kind::LipSync,
+        "lipsync/lipsync_unet.onnx.data",
+        "004a7eb0906829c9f7802446cd6a0624b201e8ee3e73aabeaf0cd3b00da38df8",
+        851356160
+    ),
     // CAM++ from 3D-Speaker (Apache-2.0), trained on VoxCeleb, as the sherpa-onnx ONNX.
     ModelSpec {
         name: "campplus/campplus.onnx",
@@ -294,6 +334,19 @@ const BUNDLES: &[Bundle] = &[
         name: "htdemucs-vocals",
         kind: Kind::Separation,
         files: &["htdemucs/htdemucs_vocals.onnx"],
+        licence: None,
+    },
+    Bundle {
+        name: "lipsync",
+        kind: Kind::LipSync,
+        files: &[
+            "lipsync/lipsync_faces.onnx",
+            "lipsync/lipsync_whisper.onnx",
+            "lipsync/lipsync_vae_encoder.onnx",
+            "lipsync/lipsync_vae_decoder.onnx",
+            "lipsync/lipsync_unet.onnx",
+            "lipsync/lipsync_unet.onnx.data",
+        ],
         licence: None,
     },
     Bundle {
@@ -679,6 +732,7 @@ mod tests {
             int8,
             bundle("htdemucs-vocals").unwrap(),
             bundle("campplus").unwrap(),
+            bundle("lipsync").unwrap(),
         ] {
             for f in b.files {
                 assert!(find(f).is_some(), "{f}");
