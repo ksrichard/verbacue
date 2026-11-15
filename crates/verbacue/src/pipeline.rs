@@ -4,10 +4,11 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use verbacue_core::{
-    Progress, Result, check_cancel,
+    Error, ErrorKind, Progress, Result, check_cancel,
     error::{Context as _, bail},
     models,
     subtitle::{self, Cue, Format},
@@ -167,7 +168,7 @@ pub enum Event<'a> {
 }
 
 /// Receives the events of a job, and can stop it.
-pub trait Sink: Sync {
+pub trait Sink: Send + Sync {
     fn event(&self, event: Event<'_>);
 
     /// True when the job must stop.
@@ -336,9 +337,8 @@ impl Pipeline {
     ///
     /// # Errors
     /// Returns an error if a step fails, and a `Cancelled` error if `sink` stops the job.
-    pub fn run(&mut self, job: &Job, sink: &dyn Sink) -> Result<Outcome> {
-        let report = Report(sink);
-        check_cancel(&report)?;
+    pub async fn run(&mut self, job: &Job, sink: Arc<dyn Sink>) -> Result<Outcome> {
+        check_cancel(&Report(&*sink))?;
         if let Some(done) = final_output(job)
             && done.exists()
             && job.redo == Redo::Nothing
@@ -352,25 +352,33 @@ impl Pipeline {
         if job.embed || job.burn {
             check_video_output(job)?;
         }
+        // The licence question and the model downloads wait for the user and the network.
         #[cfg(feature = "dub")]
-        let dub_model = dub::check(job, sink)?;
-
-        #[cfg(feature = "dub")]
-        let dub_dirs = dub_model.map(|m| m.download(sink)).transpose()?;
-        #[cfg(feature = "dub")]
-        let dub_dirs = dub_dirs.as_ref();
+        let dub_dirs = blocking({
+            let (job, sink) = (job.clone(), Arc::clone(&sink));
+            move || {
+                dub::check(&job, &*sink)?
+                    .map(|m| m.download(&*sink))
+                    .transpose()
+            }
+        })
+        .await?;
         #[cfg(not(feature = "dub"))]
-        let dub_dirs: Option<&DubDirs> = None;
+        let dub_dirs: Option<DubDirs> = None;
 
         let mut files = Vec::new();
         let (source_lang, source_cues) = if let Some((lang, path, cues)) = earlier_transcript(job) {
-            reused(sink, "transcript", &path);
+            reused(&*sink, "transcript", &path);
             if job.subtitles {
                 files.push(path);
             }
             (lang, cues)
         } else {
-            let (lang, cues) = transcribe(job, sink)?;
+            let (lang, cues) = blocking({
+                let (job, sink) = (job.clone(), Arc::clone(&sink));
+                move || transcribe(&job, &*sink)
+            })
+            .await?;
             // Without a translation, `output` names the original transcript, since
             // nothing else is written.
             let source_out = match (&job.output, &job.translation) {
@@ -378,7 +386,7 @@ impl Pipeline {
                 _ => output_path(job, &lang),
             };
             if job.subtitles {
-                write(&source_out, &cues, &lang, job, sink, &mut files)?;
+                write(&source_out, &cues, &lang, job, &*sink, &mut files)?;
             }
             (lang, cues)
         };
@@ -396,33 +404,58 @@ impl Pipeline {
             Some(settings) => {
                 let path = output_path(job, &job.target);
                 if let Some(cues) = earlier(&path, job) {
-                    reused(sink, "translation", &path);
+                    reused(&*sink, "translation", &path);
                     if job.subtitles {
                         files.push(path);
                     }
                     Some(cues)
                 } else {
-                    let cues = self.translate(job, settings, &source_cues, &source_lang, sink)?;
+                    // The translator moves to the blocking thread and back, so it stays
+                    // loaded for the next job.
+                    let mut inner = Pipeline {
+                        translator: self.translator.take(),
+                    };
+                    let (inner, cues) = blocking({
+                        let (job, settings, sink) =
+                            (job.clone(), settings.clone(), Arc::clone(&sink));
+                        let (cues, lang) = (source_cues.clone(), source_lang.clone());
+                        move || {
+                            let result = inner.translate(&job, &settings, &cues, &lang, &*sink);
+                            Ok((inner, result))
+                        }
+                    })
+                    .await?;
+                    self.translator = inner.translator;
+                    let cues = cues?;
                     if job.subtitles {
                         if !job.embed && !job.burn && !dubbing(job) {
                             sink.event(Event::Step(Step::Save));
                         }
-                        write(&path, &cues, &job.target, job, sink, &mut files)?;
+                        write(&path, &cues, &job.target, job, &*sink, &mut files)?;
                     }
                     Some(cues)
                 }
             }
         };
 
-        video_outputs(
-            job,
-            &source_lang,
-            &source_cues,
-            target_cues.as_deref(),
-            dub_dirs,
-            sink,
-            &mut files,
-        )?;
+        let (source_lang, written) = blocking({
+            let (job, sink) = (job.clone(), Arc::clone(&sink));
+            move || {
+                let mut written = Vec::new();
+                video_outputs(
+                    &job,
+                    &source_lang,
+                    &source_cues,
+                    target_cues.as_deref(),
+                    dub_dirs.as_ref(),
+                    &*sink,
+                    &mut written,
+                )?;
+                Ok((source_lang, written))
+            }
+        })
+        .await?;
+        files.extend(written);
         Ok(Outcome {
             source_language: source_lang,
             files,
@@ -532,6 +565,15 @@ fn transcribe(job: &Job, sink: &dyn Sink) -> Result<(String, Vec<Cue>)> {
         transcript.language,
         subtitle::layout_transcript(&transcript.cues),
     ))
+}
+
+/// Runs a CPU-heavy or blocking step on tokio's blocking threads.
+async fn blocking<T: Send + 'static>(
+    step: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    tokio::task::spawn_blocking(step)
+        .await
+        .map_err(|e| Error::new(ErrorKind::Other, format!("a pipeline step stopped: {e}")))?
 }
 
 fn same_translator(a: &Translation, b: &Translation) -> bool {
@@ -945,6 +987,15 @@ mod tests {
         cancel: bool,
     }
 
+    /// Runs `job` to the end on a small runtime, as the app and the CLI do.
+    fn run_blocking(job: &Job, sink: &Arc<Record>) -> Result<Outcome> {
+        let sink: Arc<dyn Sink> = sink.clone();
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(Pipeline::new().run(job, sink))
+    }
+
     impl Sink for Record {
         fn event(&self, event: Event<'_>) {
             let text = match event {
@@ -979,8 +1030,8 @@ mod tests {
         // Without subtitle files and videos, the job is not "done", so it runs. It
         // needs no model, because both files exist.
         j.subtitles = false;
-        let sink = Record::default();
-        let outcome = Pipeline::new().run(&j, &sink).unwrap();
+        let sink = Arc::new(Record::default());
+        let outcome = run_blocking(&j, &sink).unwrap();
         assert_eq!(outcome.source_language, "tr");
         let events = sink.events.lock().unwrap();
         assert!(
@@ -1064,8 +1115,8 @@ mod tests {
         std::fs::write(dir.join("movie.hu.srt"), "").unwrap();
         let mut j = Job::new(video, "hu");
         j.translation = Some(Translation::default());
-        let sink = Record::default();
-        let outcome = Pipeline::new().run(&j, &sink).unwrap();
+        let sink = Arc::new(Record::default());
+        let outcome = run_blocking(&j, &sink).unwrap();
         assert!(outcome.skipped);
         let events = sink.events.lock().unwrap();
         assert_eq!(events.len(), 1);
@@ -1094,8 +1145,8 @@ mod tests {
         j.translation = Some(Translation::default());
         j.burn = true;
         j.redo = Redo::Videos;
-        let sink = Record::default();
-        let outcome = Pipeline::new().run(&j, &sink).unwrap();
+        let sink = Arc::new(Record::default());
+        let outcome = run_blocking(&j, &sink).unwrap();
         assert!(!outcome.skipped);
         let events = sink.events.lock().unwrap().join("\n");
         assert!(events.contains("transcript") && events.contains("translation"));
@@ -1106,11 +1157,11 @@ mod tests {
     #[test]
     fn cancelled_sink_stops_before_decoding() {
         let j = job("/x/missing.mkv", "hu");
-        let sink = Record {
+        let sink = Arc::new(Record {
             cancel: true,
             ..Record::default()
-        };
-        let err = Pipeline::new().run(&j, &sink).unwrap_err();
+        });
+        let err = run_blocking(&j, &sink).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::Cancelled);
         assert!(
             !sink
@@ -1138,8 +1189,8 @@ mod tests {
     fn dub_refuses_unknown_language() {
         let mut j = job("/x/missing.mkv", "th");
         j.dub = Some(crate::dub::Options::default());
-        let sink = Record::default();
-        let err = Pipeline::new().run(&j, &sink).unwrap_err();
+        let sink = Arc::new(Record::default());
+        let err = run_blocking(&j, &sink).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert!(err.to_string().contains("hu"), "{err}");
         assert!(sink.events.lock().unwrap().is_empty());
@@ -1178,8 +1229,8 @@ mod tests {
         let mut j = Job::new(video, "hu");
         j.audio_track = 5;
         j.dub = Some(crate::dub::Options::default());
-        let sink = Record::default();
-        let err = Pipeline::new().run(&j, &sink).unwrap_err();
+        let sink = Arc::new(Record::default());
+        let err = run_blocking(&j, &sink).unwrap_err();
         assert!(err.to_string().contains("no audio track 5"), "{err}");
         assert!(sink.events.lock().unwrap().is_empty());
     }
@@ -1197,8 +1248,8 @@ mod tests {
         }
         let mut j = Job::new(video, "hu");
         j.dub = Some(options);
-        let sink = Record::default();
-        let err = Pipeline::new().run(&j, &sink).unwrap_err();
+        let sink = Arc::new(Record::default());
+        let err = run_blocking(&j, &sink).unwrap_err();
         assert!(err.to_string().contains("licence"), "{err}");
         assert!(
             sink.events.lock().unwrap().is_empty(),

@@ -126,7 +126,7 @@ pub const NO_HINTS: Hints = Hints {
 };
 
 /// A translation backend. It returns one translated text per input line, in order.
-pub trait Translator {
+pub trait Translator: Send {
     /// # Errors
     /// Returns an error if the backend fails in a way that a retry cannot fix.
     fn translate(&mut self, batch: &Batch) -> Result<Vec<String>>;
@@ -176,7 +176,7 @@ pub struct Prompt<'a> {
 
 /// A chat model that answers one prompt. A model can use the grammar to force the
 /// shape of the answer; [`LlmTranslator`] checks the answer in any case.
-pub trait ChatModel {
+pub trait ChatModel: Send {
     /// # Errors
     /// Returns an error if inference fails.
     fn complete(&mut self, prompt: &Prompt) -> Result<String>;
