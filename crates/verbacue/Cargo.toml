@@ -33,11 +33,11 @@ vulkan = ["verbacue-transcribe?/vulkan", "verbacue-translate/vulkan"]
 clap = ["verbacue-core/clap", "verbacue-translate/clap"]
 
 [dependencies]
-verbacue-core = { path = "../verbacue-core", version = "0.1.0" }
-verbacue-dub = { path = "../verbacue-dub", version = "0.1.0", optional = true }
-verbacue-media = { path = "../verbacue-media", version = "0.1.0", default-features = false, optional = true }
-verbacue-transcribe = { path = "../verbacue-transcribe", version = "0.1.0", optional = true }
-verbacue-translate = { path = "../verbacue-translate", version = "0.1.0", default-features = false }
+verbacue-core = { path = "../verbacue-core", version = "0.2.0" }
+verbacue-dub = { path = "../verbacue-dub", version = "0.2.0", optional = true }
+verbacue-media = { path = "../verbacue-media", version = "0.2.0", default-features = false, optional = true }
+verbacue-transcribe = { path = "../verbacue-transcribe", version = "0.2.0", optional = true }
+verbacue-translate = { path = "../verbacue-translate", version = "0.2.0", default-features = false }
 tracing = { version = "0.1.44" }
 
 [lints]

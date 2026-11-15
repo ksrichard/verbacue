@@ -22,8 +22,8 @@ pinyin = { version = "0.11.0", default-features = false, features = ["with_tone_
 rustfft = { version = "6.4.1" }
 serde_json = { version = "1.0.154" }
 tracing = { version = "0.1.44" }
-verbacue-core = { path = "../verbacue-core", version = "0.1.0" }
-verbacue-media = { path = "../verbacue-media", version = "0.1.0" }
+verbacue-core = { path = "../verbacue-core", version = "0.2.0" }
+verbacue-media = { path = "../verbacue-media", version = "0.2.0" }
 
 # On macOS and Linux: a static ONNX Runtime, so the binary needs no libonnxruntime at
 # run time. tls-rustls is for the build script, which downloads ONNX Runtime.
