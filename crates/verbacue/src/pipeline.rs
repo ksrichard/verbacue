@@ -385,29 +385,24 @@ impl Pipeline {
                 sink.event(Event::Note(&note));
                 None
             }
-            Some(_) if let Some(cues) = earlier(&output_path(job, &job.target), job) => {
-                let path = output_path(job, &job.target);
-                reused(sink, "translation", &path);
-                if job.subtitles {
-                    files.push(path);
-                }
-                Some(cues)
-            }
             Some(settings) => {
-                let cues = self.translate(job, settings, &source_cues, &source_lang, sink)?;
-                if job.subtitles {
-                    if !job.embed && !job.burn && !dubbing(job) {
-                        sink.event(Event::Step(Step::Save));
+                let path = output_path(job, &job.target);
+                if let Some(cues) = earlier(&path, job) {
+                    reused(sink, "translation", &path);
+                    if job.subtitles {
+                        files.push(path);
                     }
-                    write(
-                        &output_path(job, &job.target),
-                        &cues,
-                        job.format,
-                        sink,
-                        &mut files,
-                    )?;
+                    Some(cues)
+                } else {
+                    let cues = self.translate(job, settings, &source_cues, &source_lang, sink)?;
+                    if job.subtitles {
+                        if !job.embed && !job.burn && !dubbing(job) {
+                            sink.event(Event::Step(Step::Save));
+                        }
+                        write(&path, &cues, job.format, sink, &mut files)?;
+                    }
+                    Some(cues)
                 }
-                Some(cues)
             }
         };
 
