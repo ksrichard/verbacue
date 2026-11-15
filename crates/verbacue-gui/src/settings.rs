@@ -41,6 +41,9 @@ pub struct Settings {
     pub format: Format,
     /// `None` saves next to the video.
     pub out_dir: Option<PathBuf>,
+    /// The look of burned-in subtitles.
+    pub burn_style: BurnStyle,
+    pub burn_animation: BurnAnimation,
     /// The last target language.
     pub target: String,
     /// "cast" for a studio voice for each speaker, "clone" for the voice of each speaker,
@@ -71,6 +74,29 @@ pub struct Recent {
 
 fn yes() -> bool {
     true
+}
+
+/// The style of burned-in subtitles.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BurnStyle {
+    #[default]
+    Classic,
+    Yellow,
+    Box,
+    Large,
+}
+
+/// How burned-in subtitles appear.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BurnAnimation {
+    #[default]
+    None,
+    Fade,
+    Pop,
+    Typewriter,
+    Karaoke,
 }
 
 /// What dubbing does with the original speech.
@@ -107,6 +133,8 @@ impl Default for Settings {
             review_notes: true,
             format: Format::Srt,
             out_dir: None,
+            burn_style: BurnStyle::Classic,
+            burn_animation: BurnAnimation::None,
             target: "en".to_string(),
             dub_voice: "cast".to_string(),
             dub_original: DubOriginal::Remove,
@@ -234,6 +262,8 @@ mod tests {
             review_notes: false,
             format: Format::Vtt,
             out_dir: Some(PathBuf::from("/out")),
+            burn_style: BurnStyle::Box,
+            burn_animation: BurnAnimation::Karaoke,
             target: "hu".into(),
             dub_voice: "Ana Florence".into(),
             dub_original: DubOriginal::Lower,

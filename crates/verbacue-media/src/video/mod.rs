@@ -89,14 +89,56 @@ pub fn dub(
     )
 }
 
+/// The look of burned-in subtitles.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SubtitleStyle {
+    /// White text with a black outline.
+    #[default]
+    Classic,
+    /// Yellow text with a black outline.
+    Yellow,
+    /// White text on a dark, half-transparent box.
+    Box,
+    /// Classic, about 1.4 times larger.
+    Large,
+}
+
+/// How burned-in subtitles appear.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SubtitleAnimation {
+    #[default]
+    None,
+    /// The line fades in and out.
+    Fade,
+    /// The line grows quickly to its size.
+    Pop,
+    /// The letters appear one after the other.
+    Typewriter,
+    /// The words light up one after the other, in time with the speech.
+    Karaoke,
+}
+
+/// The style and the animation of burned-in subtitles.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SubtitleLook {
+    pub style: SubtitleStyle,
+    pub animation: SubtitleAnimation,
+}
+
 /// Re-encodes the main video stream of `input` with `cues` drawn into the picture, and
 /// writes MP4. Input subtitle streams are dropped, so the burned text is the only one.
 ///
 /// # Errors
 /// Returns an error if the video cannot be decoded or encoded.
-pub fn burn(input: &Path, output: &Path, cues: &[Cue], progress: &dyn Progress) -> Result<()> {
+pub fn burn(
+    input: &Path,
+    output: &Path,
+    cues: &[Cue],
+    look: SubtitleLook,
+    progress: &dyn Progress,
+) -> Result<()> {
     crate::audio::init()?;
-    remove_on_error(output, write_burned(input, output, cues, progress))
+    remove_on_error(output, write_burned(input, output, cues, look, progress))
 }
 
 /// Checks before the slow steps that `burn` can decode the video of `input`. It
@@ -290,7 +332,7 @@ mod tests {
         };
         let output = std::env::temp_dir().join("verbacue-burn-cancel-out.mp4");
         let cues = [Cue::new(0, 1500, "hello")];
-        let err = burn(&input, &output, &cues, &Stopped).unwrap_err();
+        let err = burn(&input, &output, &cues, SubtitleLook::default(), &Stopped).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::Cancelled);
         assert!(!output.exists());
     }

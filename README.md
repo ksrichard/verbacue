@@ -233,6 +233,9 @@ verbacue translate movie.en.srt --to de
 # Burn an existing (for example hand-corrected) SRT file into the video: movie.hu.mp4
 verbacue burn movie.mkv movie.hu.srt
 
+# Subtitles in the language of the video, without translation, burned in with a style
+verbacue movie.mkv --translator none --burn --burn-style box --burn-animation karaoke
+
 # WebVTT output, and a chosen output file
 verbacue movie.mkv --to hu --format vtt -o subtitles.vtt
 
@@ -286,6 +289,8 @@ Night's Watch = Éjjeli Őrség
 | `-o`, `--output` | | Output file for the translation (one input only) |
 | `--embed` | | Also write `movie.<to>.mkv` with soft subtitle tracks |
 | `--burn` | | Also write `movie.<to>.mp4` with burned-in subtitles |
+| `--burn-style` | `classic` | `classic` (white, outline), `yellow` (yellow, outline), `box` (white on a dark box) or `large` |
+| `--burn-animation` | `none` | `none`, `fade` (in and out), `pop` (grows in), `typewriter` (letter by letter) or `karaoke` (the words light up as they are spoken) |
 | `--no-vad` | | Do not skip silence with voice activity detection |
 | `--force` | | Process files that already have an output, and make the subtitle files of an earlier run again |
 | `-v` | | Debug logs; `-vv` for more |

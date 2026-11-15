@@ -36,6 +36,8 @@ pub enum SettingChange {
     ReviewNotes(bool),
     Format(Format),
     OutDir(Option<PathBuf>),
+    BurnStyle(crate::settings::BurnStyle),
+    BurnAnimation(crate::settings::BurnAnimation),
     DubVoice(String),
     DubOriginal(DubOriginal),
     DubSpeedLimit(f32),
@@ -58,6 +60,8 @@ impl SettingChange {
             Self::ReviewNotes(v) => s.review_notes = v,
             Self::Format(v) => s.format = v,
             Self::OutDir(v) => s.out_dir = v,
+            Self::BurnStyle(v) => s.burn_style = v,
+            Self::BurnAnimation(v) => s.burn_animation = v,
             Self::DubVoice(v) => s.dub_voice = v,
             Self::DubOriginal(v) => s.dub_original = v,
             Self::DubSpeedLimit(v) => s.dub_speed_limit = v.clamp(1.0, 1.5),
@@ -449,6 +453,53 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 "Save to",
                 "Next to the video, or a folder you choose.",
                 save_to,
+            ),
+            setting_row(
+                "Subtitle style",
+                "For subtitles burned into the picture.",
+                list(
+                    {
+                        use crate::settings::BurnStyle as B;
+                        [
+                            (B::Classic, "White with outline"),
+                            (B::Yellow, "Yellow with outline"),
+                            (B::Box, "White on a dark box"),
+                            (B::Large, "Large white"),
+                        ]
+                        .into_iter()
+                        .map(|(value, label)| Choice {
+                            value,
+                            label: label.into(),
+                        })
+                        .collect()
+                    },
+                    &s.burn_style,
+                    SettingChange::BurnStyle,
+                ),
+            ),
+            setting_row(
+                "Animation",
+                "How burned-in subtitles appear.",
+                list(
+                    {
+                        use crate::settings::BurnAnimation as A;
+                        [
+                            (A::None, "None"),
+                            (A::Fade, "Fade in and out"),
+                            (A::Pop, "Pop in"),
+                            (A::Typewriter, "Typewriter"),
+                            (A::Karaoke, "Karaoke (words light up)"),
+                        ]
+                        .into_iter()
+                        .map(|(value, label)| Choice {
+                            value,
+                            label: label.into(),
+                        })
+                        .collect()
+                    },
+                    &s.burn_animation,
+                    SettingChange::BurnAnimation,
+                ),
             ),
         ],
     );

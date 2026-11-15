@@ -148,7 +148,7 @@ impl std::fmt::Display for Language {
     }
 }
 
-/// "Keep the original language" first, then every language Whisper knows, by name.
+/// "Original language (no translation)" first, then every language Whisper knows, by name.
 pub fn languages() -> Vec<Language> {
     let mut list: Vec<Language> = verbacue::translate::languages()
         .iter()
@@ -162,7 +162,7 @@ pub fn languages() -> Vec<Language> {
         0,
         Language {
             code: KEEP.to_string(),
-            name: "Keep the original language".to_string(),
+            name: "Original language (no translation)".to_string(),
         },
     );
     list

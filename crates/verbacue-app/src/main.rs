@@ -81,6 +81,9 @@ struct Cli {
     burn: bool,
 
     #[command(flatten)]
+    look: LookArgs,
+
+    #[command(flatten)]
     translate: TranslateArgs,
 
     /// Also write movie.<to>.dub.mkv: a new audio track that speaks the translation.
@@ -175,6 +178,8 @@ enum Command {
         /// Overwrite the output file if it exists.
         #[arg(long)]
         force: bool,
+        #[command(flatten)]
+        look: LookArgs,
     },
     /// List the language codes for --to and --from.
     Languages,
@@ -348,7 +353,8 @@ fn main() -> Result<()> {
             subtitles,
             output,
             force,
-        }) => burn_file(&video, &subtitles, output, force),
+            look,
+        }) => burn_file(&video, &subtitles, output, force, look.look()),
         None if cli.list_tracks => {
             for (i, video) in cli.inputs.iter().enumerate() {
                 if cli.inputs.len() > 1 {
@@ -493,6 +499,7 @@ fn job_for(video: &Path, cli: &Cli) -> Job {
         subtitles: true,
         embed: cli.embed,
         burn: cli.burn,
+        look: cli.look.look(),
         force: args.force,
         #[cfg(feature = "dub")]
         dub: cli.dub.then(|| cli.dub_args.options()),
@@ -637,7 +644,70 @@ fn translate_files(inputs: &[PathBuf], from: Option<String>, args: &TranslateArg
     Ok(())
 }
 
-fn burn_file(video: &Path, subtitles: &Path, output: Option<PathBuf>, force: bool) -> Result<()> {
+/// The look of burned-in subtitles.
+#[derive(Args, Clone, Debug)]
+struct LookArgs {
+    /// The style of burned-in subtitles.
+    #[arg(long, value_enum, default_value_t = BurnStyle::Classic)]
+    burn_style: BurnStyle,
+    /// How burned-in subtitles appear.
+    #[arg(long, value_enum, default_value_t = BurnAnimation::None)]
+    burn_animation: BurnAnimation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum BurnStyle {
+    /// White text with a black outline.
+    Classic,
+    /// Yellow text with a black outline.
+    Yellow,
+    /// White text on a dark box.
+    Box,
+    /// Classic, larger.
+    Large,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum BurnAnimation {
+    None,
+    /// Fade in and out.
+    Fade,
+    /// Grow quickly to full size.
+    Pop,
+    /// The letters appear one after the other.
+    Typewriter,
+    /// The words light up one after the other.
+    Karaoke,
+}
+
+impl LookArgs {
+    fn look(&self) -> video::SubtitleLook {
+        use video::{SubtitleAnimation as A, SubtitleStyle as S};
+        video::SubtitleLook {
+            style: match self.burn_style {
+                BurnStyle::Classic => S::Classic,
+                BurnStyle::Yellow => S::Yellow,
+                BurnStyle::Box => S::Box,
+                BurnStyle::Large => S::Large,
+            },
+            animation: match self.burn_animation {
+                BurnAnimation::None => A::None,
+                BurnAnimation::Fade => A::Fade,
+                BurnAnimation::Pop => A::Pop,
+                BurnAnimation::Typewriter => A::Typewriter,
+                BurnAnimation::Karaoke => A::Karaoke,
+            },
+        }
+    }
+}
+
+fn burn_file(
+    video: &Path,
+    subtitles: &Path,
+    output: Option<PathBuf>,
+    force: bool,
+    look: video::SubtitleLook,
+) -> Result<()> {
     let out = output.unwrap_or_else(|| burn_output_path(video, subtitles));
     if out.exists() && !force {
         bail!("{} exists; use --force to overwrite it", out.display());
@@ -648,7 +718,7 @@ fn burn_file(video: &Path, subtitles: &Path, output: Option<PathBuf>, force: boo
         .with_context(|| format!("cannot parse {}", subtitles.display()))?;
     video::check_burn(video)?;
     let bar = percent_bar("burning");
-    video::burn(video, &out, &cues, &bar)?;
+    video::burn(video, &out, &cues, look, &bar)?;
     bar.finish();
     tracing::info!("wrote {}", out.display());
     Ok(())

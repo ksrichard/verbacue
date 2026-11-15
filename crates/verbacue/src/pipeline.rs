@@ -44,6 +44,8 @@ pub struct Job {
     pub embed: bool,
     /// Also write an MP4 with the subtitles burned into the picture.
     pub burn: bool,
+    /// The style and animation of the burned-in subtitles.
+    pub look: crate::video::SubtitleLook,
     /// Run again even if the output exists.
     pub force: bool,
     /// Also write an MKV with a new audio track that speaks the translation.
@@ -68,6 +70,7 @@ impl Job {
             subtitles: true,
             embed: false,
             burn: false,
+            look: crate::video::SubtitleLook::default(),
             force: false,
             #[cfg(feature = "dub")]
             dub: None,
@@ -627,7 +630,7 @@ impl Pipeline {
         if job.burn {
             sink.event(Event::Step(Step::Burn));
             let out = video_output(job, "mp4");
-            video::burn(&job.video, &out, tracks[0].cues, &Report(sink))?;
+            video::burn(&job.video, &out, tracks[0].cues, job.look, &Report(sink))?;
             sink.event(Event::Wrote(&out));
             files.push(out);
         }

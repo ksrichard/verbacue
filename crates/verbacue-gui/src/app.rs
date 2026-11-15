@@ -60,7 +60,7 @@ pub struct Selection {
 /// How long iced may still report sizes with the old scale after a change.
 const SETTLE: std::time::Duration = std::time::Duration::from_millis(400);
 
-/// The target value for "Keep the original language".
+/// The target value for "Original language (no translation)".
 pub const KEEP: &str = "";
 
 /// The language code in output file names when the video keeps its language.
@@ -958,6 +958,25 @@ impl App {
         job.out_dir = settings.out_dir.clone();
         job.subtitles = s.outputs.subtitles;
         job.burn = s.outputs.burn;
+        job.look = {
+            use crate::settings::{BurnAnimation as A, BurnStyle as B};
+            use verbacue::video::{SubtitleAnimation, SubtitleStyle};
+            verbacue::video::SubtitleLook {
+                style: match settings.burn_style {
+                    B::Classic => SubtitleStyle::Classic,
+                    B::Yellow => SubtitleStyle::Yellow,
+                    B::Box => SubtitleStyle::Box,
+                    B::Large => SubtitleStyle::Large,
+                },
+                animation: match settings.burn_animation {
+                    A::None => SubtitleAnimation::None,
+                    A::Fade => SubtitleAnimation::Fade,
+                    A::Pop => SubtitleAnimation::Pop,
+                    A::Typewriter => SubtitleAnimation::Typewriter,
+                    A::Karaoke => SubtitleAnimation::Karaoke,
+                },
+            }
+        };
         #[cfg(feature = "dub")]
         if s.outputs.dub {
             job.dub = Some(self.dub_options());
