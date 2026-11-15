@@ -15,7 +15,7 @@ vulkan = ["whisper-rs/vulkan"]
 
 [dependencies]
 tracing = { version = "0.1.44" }
-verbacue-core = { path = "../verbacue-core", version = "0.3.0" }
+verbacue-core = { path = "../verbacue-core", version = "0.3.1" }
 whisper-rs = { version = "0.16", features = ["tracing_backend"] }
 
 # On macOS: Metal, which uses only system frameworks.
