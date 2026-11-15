@@ -470,7 +470,8 @@ fn process_videos(cli: &Cli) -> Result<()> {
         sink.finish();
         if let Err(e) = result {
             if videos.len() == 1 {
-                return Err(e.into());
+                // The report has the whole chain once; anyhow would repeat messages.
+                return Err(anyhow::Error::msg(verbacue::error::report(&e)));
             }
             tracing::error!("{}: {}", video.display(), verbacue::error::report(&e));
             failed += 1;

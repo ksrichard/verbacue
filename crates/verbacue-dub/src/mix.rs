@@ -98,7 +98,7 @@ impl Mixer {
         let mut bytes = vec![0u8; CHUNK_FRAMES * channels * 4];
         let mut frame = 0u64;
         loop {
-            let n = read_full(&mut reader, &mut bytes)?;
+            let n = read_full(&mut reader, &mut bytes).context("cannot read the audio")?;
             let frames = n / (channels * 4);
             if frames == 0 {
                 break;
@@ -215,7 +215,7 @@ pub fn read_mono(audio: &RawAudio, start_ms: u64, end_ms: u64) -> Result<Vec<f32
         .with_context(|| format!("cannot read {}", audio.path.display()))?;
     let frames = usize::try_from(to_frame(end_ms).saturating_sub(to_frame(start_ms))).unwrap_or(0);
     let mut bytes = vec![0u8; frames * channels * 4];
-    let n = read_full(&mut BufReader::new(file), &mut bytes)?;
+    let n = read_full(&mut BufReader::new(file), &mut bytes).context("cannot read the audio")?;
     #[expect(clippy::cast_precision_loss, reason = "a channel count")]
     let mono = bytes[..n - n % (channels * 4)]
         .chunks_exact(channels * 4)

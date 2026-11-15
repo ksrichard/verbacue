@@ -354,15 +354,19 @@ impl Pipeline {
         }
         // The licence question and the model downloads wait for the user and the network.
         #[cfg(feature = "dub")]
-        let dub_dirs = blocking({
-            let (job, sink) = (job.clone(), Arc::clone(&sink));
-            move || {
-                dub::check(&job, &*sink)?
-                    .map(|m| m.download(&*sink))
-                    .transpose()
-            }
-        })
-        .await?;
+        let dub_dirs = if job.dub.is_none() {
+            None
+        } else {
+            blocking({
+                let (job, sink) = (job.clone(), Arc::clone(&sink));
+                move || {
+                    dub::check(&job, &*sink)?
+                        .map(|m| m.download(&*sink))
+                        .transpose()
+                }
+            })
+            .await?
+        };
         #[cfg(not(feature = "dub"))]
         let dub_dirs: Option<DubDirs> = None;
 
@@ -411,7 +415,8 @@ impl Pipeline {
                     Some(cues)
                 } else {
                     // The translator moves to the blocking thread and back, so it stays
-                    // loaded for the next job.
+                    // loaded for the next job. After a panic it is dropped, and the next
+                    // job loads it again.
                     let mut inner = Pipeline {
                         translator: self.translator.take(),
                     };
@@ -567,7 +572,8 @@ fn transcribe(job: &Job, sink: &dyn Sink) -> Result<(String, Vec<Cue>)> {
     ))
 }
 
-/// Runs a CPU-heavy or blocking step on tokio's blocking threads.
+/// Runs a CPU-heavy or blocking step on tokio's blocking threads. Small subtitle files
+/// are read and written on the task itself.
 async fn blocking<T: Send + 'static>(
     step: impl FnOnce() -> Result<T> + Send + 'static,
 ) -> Result<T> {

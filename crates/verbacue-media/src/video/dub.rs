@@ -134,7 +134,8 @@ impl RawReader {
     ) -> Result<()> {
         let mut bytes = vec![0u8; CHUNK_FRAMES * self.channels * 4];
         while !self.done && (self.frames * 1000 / u64::from(self.rate)) as i64 <= ms {
-            let n = read_full(&mut self.reader, &mut bytes)?;
+            let n =
+                read_full(&mut self.reader, &mut bytes).context("cannot read the dubbed audio")?;
             let frames = n / (self.channels * 4);
             if frames < CHUNK_FRAMES {
                 self.done = true;
