@@ -59,6 +59,8 @@ pub struct Selection {
     pub track: usize,
     /// What the user wrote about this video, for the translator.
     pub notes: String,
+    /// The style and the animation of the burned-in subtitles.
+    pub look: crate::settings::Look,
 }
 
 /// How long iced may still report sizes with the old scale after a change.
@@ -98,6 +100,10 @@ pub enum Message {
     Toggle(Output),
     Target(String),
     Track(usize),
+    /// The subtitle style of the shown video.
+    BurnStyle(crate::settings::BurnStyle),
+    /// The subtitle animation of the shown video.
+    BurnAnimation(crate::settings::BurnAnimation),
     /// The notes about the shown video.
     Notes(String),
     PlayVideo,
@@ -366,18 +372,43 @@ impl App {
         self.now.duration_since(self.opened).as_secs_f32()
     }
 
+    /// The look and the size of the subtitle sample on the current screen: the default
+    /// look in Settings, and the look of the shown video, at its shape, in Choose.
+    fn sample_target(&self) -> Option<(verbacue::video::SubtitleLook, (u32, u32))> {
+        match self.screen {
+            Screen::Settings => Some((
+                self.settings.default_look().video(),
+                (SAMPLE_WIDTH, SAMPLE_HEIGHT),
+            )),
+            Screen::Choose => {
+                let s = self.selection()?;
+                let (w, h) = (s.info.width, s.info.height);
+                (s.outputs.burn && w > 0 && h > 0)
+                    .then(|| (s.look.video(), (SAMPLE_HEIGHT * w / h, SAMPLE_HEIGHT)))
+            }
+            _ => None,
+        }
+    }
+
     /// Starts the subtitle sample from the beginning and draws its first picture.
     fn restart_sample(&mut self) {
-        if self.sample.is_none() {
-            // A failed font load only hides the sample.
-            self.sample = verbacue::video::SubtitleSample::new(SAMPLE_WIDTH, SAMPLE_HEIGHT).ok();
-        }
         self.sample_started = Instant::now();
+        self.sample_frame = None;
+        if let Some(sample) = &mut self.sample {
+            // A new start must draw again, even if the look is the same.
+            sample.forget();
+        }
         self.draw_sample(self.sample_started);
     }
 
     fn draw_sample(&mut self, now: Instant) {
-        let look = self.settings.look();
+        let Some((look, size)) = self.sample_target() else {
+            return;
+        };
+        if self.sample.as_ref().is_none_or(|s| s.size() != size) {
+            // A failed font load only hides the sample.
+            self.sample = verbacue::video::SubtitleSample::new(size.0, size.1).ok();
+        }
         let ms = now
             .saturating_duration_since(self.sample_started)
             .as_millis() as u64;
@@ -391,13 +422,13 @@ impl App {
     fn show(&mut self, screen: Screen) {
         if screen == Screen::Settings {
             self.read_studio_voices();
-            self.restart_sample();
         }
         if self.screen != screen {
             self.screen = screen;
             self.opened = Instant::now();
             self.now = self.opened;
         }
+        self.restart_sample();
     }
 
     /// Reads the studio voices of the voice model, if it is on this computer.
@@ -426,9 +457,7 @@ impl App {
             }
             Message::Tick(now) => {
                 self.now = now;
-                if self.screen == Screen::Settings {
-                    self.draw_sample(now);
-                }
+                self.draw_sample(now);
                 Task::none()
             }
             Message::Resized(size) => {
@@ -545,6 +574,7 @@ impl App {
                         if item.status == Status::Waiting {
                             item.selection.outputs = shown.outputs;
                             item.selection.target.clone_from(&shown.target);
+                            item.selection.look = shown.look;
                             item.selection.outputs.fit(&item.selection.target);
                             if shown.track < item.selection.info.audio.len() {
                                 item.selection.track = shown.track;
@@ -568,6 +598,20 @@ impl App {
                     s.target = code;
                     s.outputs.fit(&s.target);
                 }
+                Task::none()
+            }
+            Message::BurnStyle(style) => {
+                if let Some(s) = self.selection_mut() {
+                    s.look.style = style;
+                }
+                self.restart_sample();
+                Task::none()
+            }
+            Message::BurnAnimation(animation) => {
+                if let Some(s) = self.selection_mut() {
+                    s.look.animation = animation;
+                }
+                self.restart_sample();
                 Task::none()
             }
             Message::Track(index) => {
@@ -939,6 +983,7 @@ impl App {
                     target,
                     track: 0,
                     notes: String::new(),
+                    look: self.settings.default_look(),
                 },
                 frames: Vec::new(),
                 status: Status::Waiting,
@@ -1003,7 +1048,7 @@ impl App {
         job.out_dir = settings.out_dir.clone();
         job.subtitles = s.outputs.subtitles;
         job.burn = s.outputs.burn;
-        job.look = settings.look();
+        job.look = s.look.video();
         #[cfg(feature = "dub")]
         if s.outputs.dub {
             job.dub = Some(self.dub_options());
@@ -1713,6 +1758,35 @@ mod tests {
                 .iter()
                 .all(|i| i.selection.target == "hu" && !i.selection.outputs.burn)
         );
+    }
+
+    #[test]
+    fn each_video_has_its_own_subtitle_look() {
+        use crate::settings::{BurnAnimation, BurnStyle};
+        let mut a = app();
+        a.settings.burn_style = BurnStyle::Neon;
+        let base = std::env::temp_dir().join("verbacue-queue-look");
+        let paths = [base.join("a.mkv"), base.join("b.mkv")];
+        for path in &paths {
+            let _ = a.update(Message::FileChosen(path.clone()));
+        }
+        for path in &paths {
+            let _ = a.update(Message::MediaChecked(Ok((path.clone(), info()))));
+        }
+        // New videos start with the default of the settings.
+        assert!(a.queue.iter().all(|i| i.selection.look.style == BurnStyle::Neon));
+        let _ = a.update(Message::BurnStyle(BurnStyle::Highlight));
+        let _ = a.update(Message::BurnAnimation(BurnAnimation::Words));
+        assert_eq!(a.queue[1].selection.look.style, BurnStyle::Neon);
+        // The settings keep their default.
+        assert_eq!(a.settings.burn_style, BurnStyle::Neon);
+        let _ = a.update(Message::Start);
+        let look = a.running_job().unwrap().look;
+        assert_eq!(look.style, verbacue::video::SubtitleStyle::Highlight);
+        assert_eq!(look.animation, verbacue::video::SubtitleAnimation::Words);
+        // The burn option shows a sample over the preview.
+        let _ = a.update(Message::Show(Screen::Choose));
+        assert!(a.sample_frame.is_some());
     }
 
     #[test]

@@ -263,7 +263,7 @@ impl Frame {
     }
 
     /// True if both states give the same bitmap; only the opacity may differ.
-    fn same_drawing(&self, o: &Frame) -> bool {
+    pub(super) fn same_drawing(&self, o: &Frame) -> bool {
         (self.cue, self.scale, self.words, self.letters, self.lit)
             == (o.cue, o.scale, o.words, o.letters, o.lit)
     }
@@ -573,6 +573,53 @@ impl Overlay {
             }
         }
     }
+}
+
+impl Overlay {
+    /// Draws the overlay into a transparent RGBA picture of `frame_w` x `frame_h`, with
+    /// the same layers and order as [`Overlay::blend`].
+    pub(super) fn to_rgba(&self, frame_w: u32, frame_h: u32, opacity: u8) -> Vec<u8> {
+        let (fw, fh) = (frame_w as usize, frame_h as usize);
+        let mut out = vec![0u8; fw * fh * 4];
+        let layers = [
+            (&self.back, rgb(self.back_color)),
+            (&self.boxes, rgb(GREEN)),
+            (&self.fill, rgb(self.color)),
+            (&self.lit, rgb(self.lit_color)),
+        ];
+        let opacity = f32::from(opacity) / 255.0;
+        for row in 0..self.height.min(fh.saturating_sub(self.y)) {
+            for col in 0..self.width.min(fw.saturating_sub(self.x)) {
+                let i = row * self.width + col;
+                // Premultiplied colour and alpha, each layer over the ones before it.
+                let (mut c, mut a) = ([0f32; 3], 0f32);
+                for (mask, color) in &layers {
+                    let la = f32::from(mask[i]) / 255.0 * opacity;
+                    for k in 0..3 {
+                        c[k] = color[k] * la + c[k] * (1.0 - la);
+                    }
+                    a = la + a * (1.0 - la);
+                }
+                let o = ((self.y + row) * fw + self.x + col) * 4;
+                for k in 0..3 {
+                    out[o + k] = if a > 0.0 { (c[k] / a).round() as u8 } else { 0 };
+                }
+                out[o + 3] = (a * 255.0).round() as u8;
+            }
+        }
+        out
+    }
+}
+
+/// Converts a colour to RGB (BT.601, limited range).
+fn rgb((y, u, v): Yuv) -> [f32; 3] {
+    let l = 1.164 * (f32::from(y) - 16.0);
+    let (u, v) = (f32::from(u) - 128.0, f32::from(v) - 128.0);
+    [
+        (l + 1.596 * v).clamp(0.0, 255.0),
+        (l - 0.392 * u - 0.813 * v).clamp(0.0, 255.0),
+        (l + 2.017 * u).clamp(0.0, 255.0),
+    ]
 }
 
 /// Grows a mask by `radius` pixels in all directions (a square max filter).

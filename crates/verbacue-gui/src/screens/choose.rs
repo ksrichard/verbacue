@@ -18,6 +18,7 @@ use crate::{
     anim::{cycle, wave},
     app::{App, KEEP, Message},
     queue::Status,
+    screens::settings::{animation_choices, style_choices},
     theme,
 };
 
@@ -304,8 +305,20 @@ pub fn view(app: &App) -> Element<'_, Message> {
         ..button::Style::default()
     })
     .on_press(Message::PlayVideo);
+    // With "Burned in", a sample line plays over the frames in the chosen look.
+    let sample = app
+        .sample_frame
+        .clone()
+        .filter(|_| selection.outputs.burn)
+        .map(|handle| {
+            image(handle)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .content_fit(iced::ContentFit::Cover)
+        });
     let preview = container(stack![
         preview,
+        stack![].extend(sample.map(Element::from)),
         canvas(Scan { t }).width(Length::Fill).height(Length::Fill),
         container(play).center(Length::Fill),
     ])
@@ -460,6 +473,38 @@ pub fn view(app: &App) -> Element<'_, Message> {
         ),
     ]
     .spacing(14);
+    let look = selection.outputs.burn.then(|| {
+        let styles = style_choices();
+        let style = styles
+            .iter()
+            .find(|c| c.value == selection.look.style)
+            .cloned();
+        let animations = animation_choices();
+        let animation = animations
+            .iter()
+            .find(|c| c.value == selection.look.animation)
+            .cloned();
+        row![
+            labelled(
+                "Subtitle style",
+                pick_list(styles, style, |c| Message::BurnStyle(c.value))
+                    .width(Length::Fill)
+                    .padding([12, 14])
+                    .style(theme::pick)
+                    .into(),
+            ),
+            labelled(
+                "Animation",
+                pick_list(animations, animation, |c| Message::BurnAnimation(c.value))
+                    .width(Length::Fill)
+                    .padding([12, 14])
+                    .style(theme::pick)
+                    .into(),
+            ),
+        ]
+        .spacing(14)
+    });
+    let pickers = column![pickers].extend(look.map(Element::from)).spacing(14);
 
     let pulse = wave(t, 2.4, 0.0);
     let waiting = app

@@ -32,12 +32,15 @@ on the binary also opens it.
 1. Pick a video: drop it on the grill, or click "Choose a video".
 2. Look at the preview, and tick one or more outputs: "Subtitle file" (an SRT next to
    the video), "Burned in" (a new MP4) and "Dubbed voice" (a new MKV that speaks the
-   translation). Choose the target language and the audio track.
+   translation). Choose the target language and the audio track. With "Burned in",
+   also choose the subtitle style and the animation. A sample line plays over the
+   preview in this style.
 3. Click "Start grilling", and watch the barbecue while verbacue works.
 
 All the options of the command line that make sense in the app are on the Settings
 page: the models, the spoken language, the translator, the form of address, the
-glossary, the subtitle format and the output folder. The app saves them in `gui.toml`
+glossary, the subtitle format, the output folder, and the default subtitle style and
+animation for new videos. The app saves them in `gui.toml`
 in the config folder (`~/.config/verbacue` on macOS and Linux, `%APPDATA%\verbacue` on
 Windows). Keys for online services stay where the command line reads them.
 

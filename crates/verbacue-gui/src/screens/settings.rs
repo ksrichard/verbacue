@@ -95,15 +95,55 @@ fn key_found(var: &str, file: &str) -> bool {
 
 /// A choice in a list, shown with a friendly name.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Choice<T> {
-    value: T,
-    label: String,
+pub(crate) struct Choice<T> {
+    pub(crate) value: T,
+    pub(crate) label: String,
 }
 
 impl<T> std::fmt::Display for Choice<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.label)
     }
+}
+
+/// The subtitle styles, with the names that the lists show.
+pub(crate) fn style_choices() -> Vec<Choice<crate::settings::BurnStyle>> {
+    use crate::settings::BurnStyle as B;
+    [
+        (B::Classic, "White with outline"),
+        (B::Yellow, "Yellow with outline"),
+        (B::Box, "White on a dark box"),
+        (B::Large, "Large white"),
+        (B::Bold, "Bold capitals with shadow"),
+        (B::Highlight, "Bold, spoken word on a green box"),
+        (B::Neon, "Neon glow"),
+    ]
+    .into_iter()
+    .map(|(value, label)| Choice {
+        value,
+        label: label.into(),
+    })
+    .collect()
+}
+
+/// The subtitle animations, with the names that the lists show.
+pub(crate) fn animation_choices() -> Vec<Choice<crate::settings::BurnAnimation>> {
+    use crate::settings::BurnAnimation as A;
+    [
+        (A::None, "None"),
+        (A::Fade, "Fade in and out"),
+        (A::Pop, "Pop in"),
+        (A::Typewriter, "Typewriter"),
+        (A::Karaoke, "Karaoke (words light up)"),
+        (A::Bounce, "Bounce in"),
+        (A::Words, "Word groups (short-video style)"),
+    ]
+    .into_iter()
+    .map(|(value, label)| Choice {
+        value,
+        label: label.into(),
+    })
+    .collect()
 }
 
 fn model_choices(kind: Kind) -> Vec<Choice<String>> {
@@ -457,53 +497,15 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 save_to,
             ),
             setting_row(
-                "Subtitle style",
-                "For subtitles burned into the picture.",
-                list(
-                    {
-                        use crate::settings::BurnStyle as B;
-                        [
-                            (B::Classic, "White with outline"),
-                            (B::Yellow, "Yellow with outline"),
-                            (B::Box, "White on a dark box"),
-                            (B::Large, "Large white"),
-                            (B::Bold, "Bold capitals with shadow"),
-                            (B::Highlight, "Bold, spoken word on a green box"),
-                            (B::Neon, "Neon glow"),
-                        ]
-                        .into_iter()
-                        .map(|(value, label)| Choice {
-                            value,
-                            label: label.into(),
-                        })
-                        .collect()
-                    },
-                    &s.burn_style,
-                    SettingChange::BurnStyle,
-                ),
+                "Default subtitle style",
+                "For subtitles burned into the picture. Each video can change it.",
+                list(style_choices(), &s.burn_style, SettingChange::BurnStyle),
             ),
             setting_row(
-                "Animation",
-                "How burned-in subtitles appear.",
+                "Default animation",
+                "How burned-in subtitles appear. Each video can change it.",
                 list(
-                    {
-                        use crate::settings::BurnAnimation as A;
-                        [
-                            (A::None, "None"),
-                            (A::Fade, "Fade in and out"),
-                            (A::Pop, "Pop in"),
-                            (A::Typewriter, "Typewriter"),
-                            (A::Karaoke, "Karaoke (words light up)"),
-                            (A::Bounce, "Bounce in"),
-                            (A::Words, "Word groups (short-video style)"),
-                        ]
-                        .into_iter()
-                        .map(|(value, label)| Choice {
-                            value,
-                            label: label.into(),
-                        })
-                        .collect()
-                    },
+                    animation_choices(),
                     &s.burn_animation,
                     SettingChange::BurnAnimation,
                 ),
@@ -515,7 +517,14 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 "Preview",
                 "A sample line with this style and animation.",
                 container(image(handle).width(280).height(158))
-                    .style(theme::card(10.0))
+                    .style(|_| container::Style {
+                        background: Some(theme::SAMPLE_BACKGROUND.into()),
+                        border: iced::Border {
+                            radius: 10.0.into(),
+                            ..iced::Border::default()
+                        },
+                        ..container::Style::default()
+                    })
                     .clip(true),
             )
         }))

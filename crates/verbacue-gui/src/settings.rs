@@ -105,11 +105,27 @@ pub enum BurnAnimation {
 }
 
 impl Settings {
-    /// The look of burned-in subtitles.
-    pub fn look(&self) -> verbacue::video::SubtitleLook {
+    /// The look that new videos start with.
+    pub fn default_look(&self) -> Look {
+        Look {
+            style: self.burn_style,
+            animation: self.burn_animation,
+        }
+    }
+}
+
+/// The style and the animation of burned-in subtitles for one video.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Look {
+    pub style: BurnStyle,
+    pub animation: BurnAnimation,
+}
+
+impl Look {
+    pub fn video(self) -> verbacue::video::SubtitleLook {
         use verbacue::video::{SubtitleAnimation as SA, SubtitleStyle as SS};
         verbacue::video::SubtitleLook {
-            style: match self.burn_style {
+            style: match self.style {
                 BurnStyle::Classic => SS::Classic,
                 BurnStyle::Yellow => SS::Yellow,
                 BurnStyle::Box => SS::Box,
@@ -118,7 +134,7 @@ impl Settings {
                 BurnStyle::Highlight => SS::Highlight,
                 BurnStyle::Neon => SS::Neon,
             },
-            animation: match self.burn_animation {
+            animation: match self.animation {
                 BurnAnimation::None => SA::None,
                 BurnAnimation::Fade => SA::Fade,
                 BurnAnimation::Pop => SA::Pop,
