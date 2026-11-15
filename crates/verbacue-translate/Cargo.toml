@@ -31,7 +31,7 @@ serde_json = { version = "1.0.154" }
 thiserror = { version = "2.0.21" }
 tracing = { version = "0.1.44" }
 unicode-script = { version = "0.5.9" }
-verbacue-core = { path = "../verbacue-core", version = "0.3.0" }
+verbacue-core = { path = "../verbacue-core", version = "0.3.1" }
 
 # On macOS: Metal, which uses only system frameworks.
 [target.'cfg(target_os = "macos")'.dependencies]
