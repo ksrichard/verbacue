@@ -96,16 +96,24 @@ impl Worker {
         std::thread::Builder::new()
             .name("verbacue-pipeline".into())
             .spawn(move || {
+                // The pipeline thread runs one job at a time on its own runtime. The
+                // steps of a job run on the runtime's blocking threads.
+                let runtime = match tokio::runtime::Builder::new_current_thread().build() {
+                    Ok(runtime) => runtime,
+                    Err(e) => {
+                        tracing::error!("cannot start the pipeline runtime: {e}");
+                        return;
+                    }
+                };
                 let mut pipeline = Pipeline::new();
                 for (job, cancel, updates, replies) in requests {
-                    let replies = Mutex::new(replies);
-                    let sink = Forward {
-                        updates: &updates,
-                        cancel: &cancel,
-                        replies: &replies,
-                    };
-                    let result = pipeline
-                        .run(&job, &sink)
+                    let sink = Arc::new(Forward {
+                        updates: updates.clone(),
+                        cancel,
+                        replies: Mutex::new(replies),
+                    });
+                    let result = runtime
+                        .block_on(pipeline.run(&job, sink))
                         .map_err(|e| Failure::new(e.kind(), verbacue::error::report(&e)));
                     let _ = updates.send(Update::Finished(result));
                 }
@@ -136,14 +144,14 @@ impl Worker {
 }
 
 /// Sends the pipeline events to the app.
-struct Forward<'a> {
-    updates: &'a UnboundedSender<Update>,
-    cancel: &'a AtomicBool,
+struct Forward {
+    updates: UnboundedSender<Update>,
+    cancel: Arc<AtomicBool>,
     /// In a mutex, because a sink must be `Sync`.
-    replies: &'a Mutex<mpsc::Receiver<Reply>>,
+    replies: Mutex<mpsc::Receiver<Reply>>,
 }
 
-impl Sink for Forward<'_> {
+impl Sink for Forward {
     fn event(&self, event: Event<'_>) {
         let update = match event {
             Event::Step(step) => Update::Step(step),
@@ -175,7 +183,7 @@ impl Sink for Forward<'_> {
     }
 }
 
-impl Forward<'_> {
+impl Forward {
     /// Sends `question` to the app and waits for the answer. Stops waiting when the
     /// job is cancelled or the app is gone.
     fn ask(&self, question: Update) -> Option<Reply> {
@@ -201,13 +209,12 @@ mod tests {
     #[test]
     fn notes_review_waits_for_the_answer() {
         let (updates, mut sent) = unbounded_channel();
-        let cancel = AtomicBool::new(false);
+        let cancel = Arc::new(AtomicBool::new(false));
         let (reply, replies) = mpsc::channel();
-        let replies = Mutex::new(replies);
         let sink = Forward {
-            updates: &updates,
-            cancel: &cancel,
-            replies: &replies,
+            updates,
+            cancel,
+            replies: Mutex::new(replies),
         };
         reply.send(Reply::Notes("edited".to_string())).unwrap();
         assert_eq!(sink.review_notes("automatic"), Some("edited".to_string()));
@@ -217,13 +224,12 @@ mod tests {
     #[test]
     fn notes_review_stops_waiting_when_cancelled() {
         let (updates, _sent) = unbounded_channel();
-        let cancel = AtomicBool::new(true);
+        let cancel = Arc::new(AtomicBool::new(true));
         let (_reply, replies) = mpsc::channel::<Reply>();
-        let replies = Mutex::new(replies);
         let sink = Forward {
-            updates: &updates,
-            cancel: &cancel,
-            replies: &replies,
+            updates,
+            cancel,
+            replies: Mutex::new(replies),
         };
         assert_eq!(sink.review_notes("automatic"), None);
     }
@@ -231,13 +237,12 @@ mod tests {
     #[test]
     fn licence_waits_for_the_answer() {
         let (updates, mut sent) = unbounded_channel();
-        let cancel = AtomicBool::new(false);
+        let cancel = Arc::new(AtomicBool::new(false));
         let (reply, replies) = mpsc::channel();
-        let replies = Mutex::new(replies);
         let sink = Forward {
-            updates: &updates,
-            cancel: &cancel,
-            replies: &replies,
+            updates,
+            cancel,
+            replies: Mutex::new(replies),
         };
         reply.send(Reply::Licence(true)).unwrap();
         assert!(sink.accept_licence("xtts-v2", "CPML"));

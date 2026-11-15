@@ -21,7 +21,7 @@ mod launch;
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -450,6 +450,7 @@ fn process_videos(cli: &Cli) -> Result<()> {
     // One pipeline for all videos keeps the translator loaded. It loads after the first
     // transcription, when Whisper has been unloaded.
     let mut pipeline = Pipeline::new();
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
     let mut failed = 0;
     for (i, video) in videos.iter().enumerate() {
         if videos.len() > 1 {
@@ -464,7 +465,8 @@ fn process_videos(cli: &Cli) -> Result<()> {
         {
             sink.accept_licence = cli.dub_args.accept_model_licence;
         }
-        let result = pipeline.run(&job_for(video, cli), &sink);
+        let sink = Arc::new(sink);
+        let result = runtime.block_on(pipeline.run(&job_for(video, cli), sink.clone()));
         sink.finish();
         if let Err(e) = result {
             if videos.len() == 1 {
@@ -519,18 +521,18 @@ fn job_for(video: &Path, cli: &Cli) -> Job {
 }
 
 /// Shows the pipeline steps as progress bars on stderr.
-struct BarSink<'a> {
-    video: &'a Path,
+struct BarSink {
+    video: PathBuf,
     bar: Mutex<Option<Bar>>,
     /// `--accept-model-licence`.
     #[cfg(feature = "dub")]
     accept_licence: bool,
 }
 
-impl<'a> BarSink<'a> {
-    fn new(video: &'a Path) -> Self {
+impl BarSink {
+    fn new(video: &Path) -> Self {
         Self {
-            video,
+            video: video.to_path_buf(),
             bar: Mutex::new(None),
             #[cfg(feature = "dub")]
             accept_licence: false,
@@ -544,7 +546,7 @@ impl<'a> BarSink<'a> {
     }
 }
 
-impl Sink for BarSink<'_> {
+impl Sink for BarSink {
     fn event(&self, event: Event<'_>) {
         match event {
             Event::Step(step) => {
@@ -608,7 +610,7 @@ impl Sink for BarSink<'_> {
 }
 
 #[cfg(feature = "dub")]
-impl verbacue::dub::Events for BarSink<'_> {
+impl verbacue::dub::Events for BarSink {
     fn step(&self, step: verbacue::dub::DubStep) {
         use verbacue::dub::DubStep;
         self.event(Event::Step(match step {
