@@ -155,7 +155,7 @@ const MODELS: &[ModelSpec] = &[
 ];
 
 // The ONNX exports from tools/xtts-export. The cache keeps each bundle in its own folder.
-// TODO: pin the URLs to the upload commit, as publish.md says, when the files are published.
+// The URLs are pinned to the upload commit from publish.py, so a later upload cannot change them.
 macro_rules! voice_file {
     ($kind:expr, $file:literal, $sha:literal, $size:literal) => {
         ModelSpec {
@@ -163,7 +163,7 @@ macro_rules! voice_file {
             kind: $kind,
             file: $file,
             url: concat!(
-                "https://huggingface.co/richardbertok/verbacue-voice/resolve/main/",
+                "https://huggingface.co/richardbertok/verbacue-voice/resolve/55918b685e8e6515e19cf0676db18e0f991e31f2/",
                 $file
             ),
             sha256: $sha,
@@ -182,7 +182,7 @@ const BUNDLE_FILES: &[ModelSpec] = &[
     voice_file!(
         Kind::Voice,
         "xtts-v2/speaker.onnx",
-        "c2c912737091006adace0e76e4e1831ade0d8b063ffe706dd29a8ae41d200994",
+        "1b37166edd475150b30b3d32a087260005abfc97baa25f82e105393ec6da8c18",
         32214928
     ),
     voice_file!(
@@ -200,7 +200,7 @@ const BUNDLE_FILES: &[ModelSpec] = &[
     voice_file!(
         Kind::Voice,
         "xtts-v2/vocoder.onnx",
-        "6fa9396258f7dd36e26894a1abca36c222e9588118e309fa7824039f0c4cfae2",
+        "90a9cea6181b80ba23aef32235418fb03529b1dc158254277c57f028221e57ae",
         71335407
     ),
     voice_file!(
@@ -230,7 +230,7 @@ const BUNDLE_FILES: &[ModelSpec] = &[
     voice_file!(
         Kind::Separation,
         "htdemucs/htdemucs_vocals.onnx",
-        "acc80e2c5f47c01579f2871f17ef424f3ff4d5fa5aa7963b8c94b9af80d215db",
+        "64b15995e8ccef7c81e51e373ed4da88c40c33795c930bccd3c390d25af6895d",
         316446953
     ),
     // CAM++ from 3D-Speaker (Apache-2.0), trained on VoxCeleb, as the sherpa-onnx ONNX.
@@ -487,14 +487,6 @@ mod download {
         let status = response.status();
         let append =
             status == StatusCode::PARTIAL_CONTENT || status == StatusCode::RANGE_NOT_SATISFIABLE;
-        // The voice models are not on Hugging Face yet, and a missing repository gives 401.
-        if spec.kind == Kind::Voice
-            && (status == StatusCode::NOT_FOUND || status == StatusCode::UNAUTHORIZED)
-        {
-            bail!(Network;
-                "the voice model is not published yet (HTTP {status}); choose a local model \
-                 folder in Settings, or use --dub-model <folder>");
-        }
         if !append && !status.is_success() {
             bail!(Network; "download of {} failed: HTTP {status}", spec.url);
         }
