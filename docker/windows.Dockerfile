@@ -36,14 +36,15 @@ RUN git clone --depth 1 --branch release/9.0 https://github.com/FFmpeg/FFmpeg /f
     && rm -rf /ffmpeg-src
 
 # Dubbing loads Microsoft's onnxruntime.dll at run time (its C API works from MinGW).
-# The version must match the ort crate.
+# The version must match the ort crate. The DLLs come from Microsoft's NuGet package,
+# because the microsoft/onnxruntime GitHub repository and its release zips are gone.
 ARG ORT_VERSION=1.31.0
-ARG ORT_SHA256=3958d8a44984160692c1b4ffd0de3cb48f8c39f9d34bb31e433db06e30b82195
-RUN curl -fsSL -o /tmp/ort.zip \
-        "https://github.com/microsoft/onnxruntime/releases/download/v$ORT_VERSION/onnxruntime-win-x64-$ORT_VERSION.zip" \
-    && echo "$ORT_SHA256  /tmp/ort.zip" | sha256sum -c - \
-    && unzip -q -j /tmp/ort.zip '*/lib/*.dll' -d /opt/onnxruntime \
-    && rm /tmp/ort.zip
+ARG ORT_SHA256=7e35fdb4f5adb62f01e60798e2e5ed05108f5fbbe1cca03fbcc37903cf7c5e3b
+RUN curl -fsSL -o /tmp/ort.nupkg \
+        "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/$ORT_VERSION/microsoft.ml.onnxruntime.$ORT_VERSION.nupkg" \
+    && echo "$ORT_SHA256  /tmp/ort.nupkg" | sha256sum -c - \
+    && unzip -q -j /tmp/ort.nupkg 'runtimes/win-x64/native/*.dll' -d /opt/onnxruntime \
+    && rm /tmp/ort.nupkg
 
 # Do not tune the code for the CPU of the build machine; x86-64-v3 needs AVX2.
 # llama-cpp-sys-2 links advapi32 (registry calls of ggml) only for MSVC.

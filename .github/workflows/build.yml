@@ -146,22 +146,25 @@ jobs:
             "ffmpeg[core,avcodec,avdevice,avfilter,avformat,swresample,swscale]:x64-windows-static"
           echo "VCPKG_ROOT=$VCPKG_INSTALLATION_ROOT" >> "$GITHUB_ENV"
       # There is no prebuilt static ONNX Runtime for Windows, so verbacue loads
-      # Microsoft's DLLs at run time. The CUDA build takes the CUDA 13 package.
+      # Microsoft's DLLs at run time. They come from Microsoft's NuGet packages,
+      # because the microsoft/onnxruntime GitHub repository and its release zips are
+      # gone. The CUDA build takes the GPU package, which is built for CUDA 13.
       - name: Get ONNX Runtime
         run: |
           if [ "${{ matrix.gpu }}" = cuda ]; then
-            name="onnxruntime-win-x64-gpu_cuda13-$ORT_VERSION"
-            sha=d332ccf84acb769a11364cddd4e8d2992a168d16be472d5ba70b279b644552f5
+            name="microsoft.ml.onnxruntime.gpu.windows"
+            sha=6ef71832859a6fa1cdbd51d36be301641b6de609c72a2ab206b32f6cc209959d
           else
-            name="onnxruntime-win-x64-$ORT_VERSION"
-            sha=3958d8a44984160692c1b4ffd0de3cb48f8c39f9d34bb31e433db06e30b82195
+            name="microsoft.ml.onnxruntime"
+            sha=7e35fdb4f5adb62f01e60798e2e5ed05108f5fbbe1cca03fbcc37903cf7c5e3b
           fi
-          curl -fsSL -o "$RUNNER_TEMP/ort.zip" \
-            "https://github.com/microsoft/onnxruntime/releases/download/v$ORT_VERSION/$name.zip"
-          echo "$sha  $RUNNER_TEMP/ort.zip" | sha256sum -c -
-          7z x -o"$RUNNER_TEMP" "$RUNNER_TEMP/ort.zip" > /dev/null
-          echo "ORT_DIR=$RUNNER_TEMP/$name/lib" >> "$GITHUB_ENV"
-          echo "ORT_DYLIB_PATH=$(cygpath -w "$RUNNER_TEMP/$name/lib/onnxruntime.dll")" >> "$GITHUB_ENV"
+          curl -fsSL -o "$RUNNER_TEMP/ort.nupkg" \
+            "https://api.nuget.org/v3-flatcontainer/$name/$ORT_VERSION/$name.$ORT_VERSION.nupkg"
+          echo "$sha  $RUNNER_TEMP/ort.nupkg" | sha256sum -c -
+          7z x -o"$RUNNER_TEMP/ort" "$RUNNER_TEMP/ort.nupkg" "runtimes/win-x64/native/*" > /dev/null
+          dir="$RUNNER_TEMP/ort/runtimes/win-x64/native"
+          echo "ORT_DIR=$dir" >> "$GITHUB_ENV"
+          echo "ORT_DYLIB_PATH=$(cygpath -w "$dir/onnxruntime.dll")" >> "$GITHUB_ENV"
       # GPU builds skip the tests, because the runner has no GPU.
       - name: Test
         if: matrix.gpu == 'cpu'
