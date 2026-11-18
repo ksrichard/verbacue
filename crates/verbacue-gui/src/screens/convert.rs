@@ -11,7 +11,7 @@ use iced::{
     widget::{
         button, canvas,
         canvas::{Frame, Geometry, Path, gradient::Linear},
-        column, container, row, scrollable, text, text_editor,
+        column, container, responsive, row, scrollable, space, text, text_editor,
     },
 };
 use verbacue::{
@@ -26,6 +26,19 @@ use crate::{
     theme,
     worker::{Failure, Update, friendly},
 };
+
+/// The narrowest a step may get: wide enough for its longest word.
+const STEP_MIN_WIDTH: f32 = 120.0;
+/// The gap between the steps.
+const STEP_GAP: f32 = 8.0;
+
+/// How many steps of `count` fit side by side in `width`. Rows are filled evenly, so
+/// that the last row is not much shorter than the others.
+fn steps_per_row(width: f32, count: usize) -> usize {
+    let fit = (((width + STEP_GAP) / (STEP_MIN_WIDTH + STEP_GAP)).floor() as usize).max(1);
+    let rows = count.max(1).div_ceil(fit);
+    count.max(1).div_ceil(rows)
+}
 
 /// The funny lines; one shows at a time, in turn.
 const QUIPS: [&str; 8] = [
@@ -121,6 +134,10 @@ impl Convert {
             let line = (self.done + 1).min(self.total);
             return format!("Speaking line {line} of {}", self.total);
         }
+        // The steps row says only "Download models"; the bar names the file.
+        if let Step::Download(name) = step.step {
+            return format!("Download {name}");
+        }
         step.label.clone()
     }
 
@@ -139,10 +156,21 @@ impl Convert {
             Update::Step(step) => {
                 let index = match self.steps.iter().position(|s| s.step == step) {
                     Some(i) => i,
+                    // Downloads one after the other share one step: a model of
+                    // several files would else fill the row with file names.
+                    None if matches!(step, Step::Download(_))
+                        && self
+                            .current
+                            .is_some_and(|c| matches!(self.steps[c].step, Step::Download(_))) =>
+                    {
+                        let c = self.current.unwrap_or_default();
+                        self.steps[c].step = step;
+                        c
+                    }
                     None => {
                         let at = self.current.map_or(0, |c| c + 1);
                         let label = match step {
-                            Step::Download(name) => format!("Download {name}"),
+                            Step::Download(_) => "Download models".to_string(),
                             other => format!("{other:?}"),
                         };
                         self.steps.insert(at, StepView { step, label });
@@ -284,30 +312,56 @@ pub fn view_screen(app: &App) -> Element<'_, Message> {
     })
     .width(Length::Fill)
     .height(14);
-    let steps = row(c.steps.iter().enumerate().map(|(i, s)| {
-        let (mark, color, background) = match c.current {
-            Some(cur) if i < cur => ("✓", theme::SUCCESS_TEXT, Color::TRANSPARENT),
-            Some(cur) if i == cur => (
-                "●",
-                theme::ACCENT_TEXT,
-                Color::from_rgba8(0xe8, 0x62, 0x2a, 0.16),
-            ),
-            _ => ("○", theme::FAINT, Color::TRANSPARENT),
-        };
-        container(text(format!("{mark} {}", s.label)).size(13).color(color))
-            .padding([8, 10])
-            .width(Length::Fill)
-            .style(move |_| container::Style {
-                background: Some(background.into()),
-                border: Border {
-                    radius: 10.0.into(),
-                    ..Border::default()
-                },
-                ..container::Style::default()
-            })
-            .into()
-    }))
-    .spacing(8);
+    // The steps fill the width: as many side by side as fit, each at least
+    // STEP_MIN_WIDTH wide, so that a label never gets narrower than its longest word.
+    let cells: Vec<(String, Color, Color)> = c
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let (mark, color, background) = match c.current {
+                Some(cur) if i < cur => ("✓", theme::SUCCESS_TEXT, Color::TRANSPARENT),
+                Some(cur) if i == cur => (
+                    "●",
+                    theme::ACCENT_TEXT,
+                    Color::from_rgba8(0xe8, 0x62, 0x2a, 0.16),
+                ),
+                _ => ("○", theme::FAINT, Color::TRANSPARENT),
+            };
+            (format!("{mark} {}", s.label), color, background)
+        })
+        .collect();
+    let steps = responsive(move |size| {
+        let per_row = steps_per_row(size.width, cells.len());
+        column(cells.chunks(per_row).map(|line| {
+            let mut items: Vec<Element<'_, Message>> = line
+                .iter()
+                .map(|(label, color, background)| {
+                    let background = *background;
+                    container(text(label.clone()).size(13).color(*color))
+                        .padding([8, 10])
+                        .width(Length::Fill)
+                        .style(move |_| container::Style {
+                            background: Some(background.into()),
+                            border: Border {
+                                radius: 10.0.into(),
+                                ..Border::default()
+                            },
+                            ..container::Style::default()
+                        })
+                        .into()
+                })
+                .collect();
+            // The last row keeps the column widths of the rows above it.
+            while items.len() < per_row {
+                items.push(space().width(Length::Fill).into());
+            }
+            row(items).spacing(STEP_GAP).into()
+        }))
+        .spacing(STEP_GAP)
+        .into()
+    })
+    .height(Length::Shrink);
     let progress = column![
         row![
             text(step_name)
@@ -320,7 +374,7 @@ pub fn view_screen(app: &App) -> Element<'_, Message> {
         steps,
     ]
     .spacing(10)
-    .max_width(640);
+    .width(Length::Fill);
 
     // The newest lines; the last one slides in.
     let live = column![
@@ -363,7 +417,6 @@ pub fn view_screen(app: &App) -> Element<'_, Message> {
     let live = container(live)
         .padding([16, 18])
         .width(Length::Fill)
-        .max_width(640)
         .style(theme::card(18.0));
 
     let mut actions = row![].spacing(12);
@@ -400,10 +453,11 @@ pub fn view_screen(app: &App) -> Element<'_, Message> {
         queue_panel(app),
     ]
     .spacing(26)
+    .width(Length::Fill)
     .align_x(Alignment::Center);
     container(scrollable(content))
         .padding([40, 56])
-        .center_x(Length::Fill)
+        .width(Length::Fill)
         .into()
 }
 
@@ -465,7 +519,6 @@ fn queue_panel(app: &App) -> Element<'_, Message> {
     )
     .padding([14, 18])
     .width(Length::Fill)
-    .max_width(640)
     .style(theme::card(18.0))
     .into()
 }
@@ -652,5 +705,60 @@ impl canvas::Program<Message> for Bar {
             );
         }
         vec![frame.into_geometry()]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    fn labels(c: &Convert) -> Vec<&str> {
+        c.steps.iter().map(|s| s.label.as_str()).collect()
+    }
+
+    #[test]
+    fn downloads_in_a_row_share_one_step() {
+        let mut c = Convert::for_job(&Job::new(PathBuf::new(), "hu"), String::new());
+        c.apply(Update::Step(Step::Download("xtts-v2/conditioning.onnx")));
+        c.apply(Update::Step(Step::Download("xtts-v2/speaker.onnx")));
+        assert_eq!(c.step_name(), "Download xtts-v2/speaker.onnx");
+        c.apply(Update::Step(Step::Download("xtts-v2/gpt.onnx")));
+        assert_eq!(c.step_name(), "Download xtts-v2/gpt.onnx");
+        assert_eq!(labels(&c)[0], "Download models");
+        assert_eq!(labels(&c).iter().filter(|l| l.starts_with("Download")).count(), 1);
+        c.apply(Update::Step(Step::Decode));
+        assert_eq!(c.step_name(), "Read audio");
+        assert_eq!(c.current, Some(1));
+    }
+
+    #[test]
+    fn steps_fill_the_rows_evenly() {
+        // A narrow window: 2 fit, 5 steps make rows of 2, 2 and 1.
+        assert_eq!(steps_per_row(250.0, 5), 2);
+        // 640 px fit 5; 10 steps make two rows of 5.
+        assert_eq!(steps_per_row(640.0, 10), 5);
+        // 640 px fit 5; 6 steps make two rows of 3, not 5 and 1.
+        assert_eq!(steps_per_row(640.0, 6), 3);
+        // A wide window shows all steps in one row.
+        assert_eq!(steps_per_row(1600.0, 10), 10);
+        // Never zero, even without room or steps.
+        assert_eq!(steps_per_row(10.0, 3), 1);
+        assert_eq!(steps_per_row(640.0, 0), 1);
+    }
+
+    #[test]
+    fn a_later_download_gets_its_own_step() {
+        let mut c = Convert::for_job(&Job::new(PathBuf::new(), "hu"), String::new());
+        c.apply(Update::Step(Step::Download("large-v3")));
+        c.apply(Update::Step(Step::Decode));
+        c.apply(Update::Step(Step::Transcribe));
+        c.apply(Update::Step(Step::Download("translategemma-12b")));
+        assert_eq!(c.step_name(), "Download translategemma-12b");
+        assert_eq!(
+            labels(&c)[..4],
+            ["Download models", "Read audio", "Transcribe", "Download models"]
+        );
     }
 }

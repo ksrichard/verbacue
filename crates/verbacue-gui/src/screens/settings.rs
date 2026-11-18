@@ -604,7 +604,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 models_card,
             ]
             .spacing(20)
-            .max_width(900),
+            .width(Length::Fill),
         )
         .padding([40, 56]),
     )

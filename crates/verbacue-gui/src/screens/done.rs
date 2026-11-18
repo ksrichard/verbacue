@@ -83,7 +83,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
 
     let cards = column(items.iter().map(|(index, item)| card(*index, item, a1, a2)))
         .spacing(12)
-        .max_width(620);
+        .width(Length::Fill);
 
     let again = button(text("Grill another one").font(theme::BODY_BOLD))
         .padding([14, 24])
@@ -97,6 +97,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         again
     ]
     .spacing(26)
+    .width(Length::Fill)
     .align_x(Alignment::Center);
     stack![
         canvas(Confetti { t })
