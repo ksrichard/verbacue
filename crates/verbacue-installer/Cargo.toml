@@ -14,7 +14,7 @@ reqwest = { version = "0.13", default-features = false, features = ["blocking", 
 serde = { version = "1.0.229", features = ["derive"] }
 sha2 = { version = "0.11.1" }
 tokio = { version = "1.54.1", features = ["rt", "sync"] }
-verbacue-core = { path = "../verbacue-core", version = "0.3.2", features = ["http"] }
+verbacue-core = { path = "../verbacue-core", version = "0.3.3", features = ["http"] }
 
 [lints]
 workspace = true

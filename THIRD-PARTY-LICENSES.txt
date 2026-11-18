@@ -12550,14 +12550,14 @@ SOFTWARE.
 ================================================================================
 MIT License (MIT)
 Used by:
-  - verbacue 0.3.2
-  - verbacue-app 0.3.2
-  - verbacue-core 0.3.2
-  - verbacue-dub 0.3.2
-  - verbacue-gui 0.3.2
-  - verbacue-media 0.3.2
-  - verbacue-transcribe 0.3.2
-  - verbacue-translate 0.3.2
+  - verbacue 0.3.3
+  - verbacue-app 0.3.3
+  - verbacue-core 0.3.3
+  - verbacue-dub 0.3.3
+  - verbacue-gui 0.3.3
+  - verbacue-media 0.3.3
+  - verbacue-transcribe 0.3.3
+  - verbacue-translate 0.3.3
   - block2 0.5.1
   - block2 0.6.2
   - block 0.1.6
