@@ -288,8 +288,8 @@ them from this repository, pinned to a release tag. For example, a program that 
 reads and writes subtitles uses one of these:
 
 ```toml
-verbacue = { git = "https://github.com/ksrichard/verbacue", tag = "v0.3.5", default-features = false }
-verbacue-core = { git = "https://github.com/ksrichard/verbacue", tag = "v0.3.5" }
+verbacue = { git = "https://github.com/ksrichard/verbacue", tag = "v0.3.6", default-features = false }
+verbacue-core = { git = "https://github.com/ksrichard/verbacue", tag = "v0.3.6" }
 ```
 
 Two traits let you connect your own parts:
