@@ -11,6 +11,8 @@ verbacue movie.mkv --to hu
 # writes movie.en.srt (the transcript) and movie.hu.srt (the translation)
 ```
 
+<p align="center"><img src="assets/screenshot.png" alt="The verbacue desktop app" width="800"></p>
+
 The pipeline has four steps:
 
 1. Decode the audio with FFmpeg. FFmpeg is built from source and linked statically.
@@ -18,6 +20,9 @@ The pipeline has four steps:
 3. Translate the subtitles with a local language model (llama.cpp, TranslateGemma 12B
    by default).
 4. Write SRT or WebVTT files. Optionally, also write a video with the subtitles.
+
+It can also dub the video: a new audio track speaks the translation in a voice close to
+each speaker's (see [Dubbing](#dubbing)).
 
 The binary needs no ffmpeg, Python, Ollama or other installed tools at run time. Only
 the model weights are separate files. verbacue downloads them on first use, checks
@@ -47,8 +52,6 @@ glossary, the subtitle format, the output folder, and the default subtitle style
 animation for new videos. The app saves them in `gui.toml`
 in the config folder (`~/.config/verbacue` on macOS and Linux, `%APPDATA%\verbacue` on
 Windows). Keys for online services stay where the command line reads them.
-
-[SCREENSHOT]
 
 ### Homebrew
 
@@ -106,129 +109,6 @@ All binaries include the app, except the Linux CPU binaries
 On Linux without a GPU, use `linux-*-cpu-gui`; it links glibc 2.35 or newer
 dynamically, because a static program cannot open a window. Without a display (for example
 over SSH), `verbacue` with no arguments prints the help.
-
-## Build
-
-Ready-made binaries are on the [releases page](https://github.com/ksrichard/verbacue/releases).
-They come from the `build` GitHub workflow
-(`.github/workflows/build.yml`). Start it by hand, or push a tag such as `v0.2.0`;
-a tag also attaches the binaries to a GitHub release.
-
-| Binary                                     | GPU                         | Needs on the target system                 |
-|--------------------------------------------|-----------------------------|--------------------------------------------|
-| `macos-universal-metal`                    | Metal                       | macOS 11 or newer, Apple Silicon or Intel  |
-| `linux-amd64-cpu`                          | none                        | nothing: fully static, runs on any Linux   |
-| `linux-arm64-cpu`                          | none                        | glibc 2.35 or newer                        |
-| `linux-amd64-cpu-gui`, `linux-arm64-cpu-gui` | none                      | glibc 2.35 or newer                        |
-| `linux-amd64-cuda`, `linux-arm64-cuda`     | NVIDIA (CUDA 13)            | glibc 2.35 or newer, NVIDIA driver 580+    |
-| `linux-amd64-vulkan`, `linux-arm64-vulkan` | AMD, Intel, NVIDIA (Vulkan) | glibc 2.39 or newer, Vulkan driver         |
-| `windows-x64-cpu`                          | none                        | Windows 10 or 11                           |
-| `windows-x64-cuda`                         | NVIDIA (CUDA 13)            | Windows 10 or 11, NVIDIA driver 580+       |
-| `windows-x64-vulkan`                       | AMD, Intel, NVIDIA (Vulkan) | Windows 10 or 11, GPU driver               |
-
-Use a CUDA binary for an NVIDIA GPU. Use a Vulkan binary for other GPUs, including the
-GPUs inside Intel and AMD processors.
-
-All binaries are self-contained. They need no FFmpeg, Python or other installed tools,
-and each build job checks what the binary links:
-
-- The Linux amd64 CPU binary is fully static, glibc included. It has no dynamic
-  dependencies and runs even in an empty container.
-- The Linux arm64 CPU binary links glibc dynamically. On arm64, the static glibc
-  cannot link a program of this size with ONNX Runtime.
-- The Linux CUDA binaries must load the NVIDIA driver (`libcuda.so`) at run time. A
-  static program cannot do that, so they link glibc and the driver dynamically.
-  CUDA and cuBLAS are inside the binary. Next to it are the two CUDA libraries of
-  ONNX Runtime for dubbing (`libonnxruntime_providers_*.so`). Keep them in the same
-  folder.
-- The Linux Vulkan binaries load the Vulkan loader (`libvulkan.so.1`) in the same way.
-  The GPU driver package installs it. glibc 2.39 means Ubuntu 24.04, Debian 13,
-  Fedora 40 or newer.
-- The Windows binaries need only the DLLs that are part of Windows and of the GPU
-  driver (`vulkan-1.dll` for Vulkan). The CUDA zip has
-  three CUDA DLLs next to `verbacue.exe`, because cuBLAS has no static library on
-  Windows. Every Windows zip also has Microsoft's ONNX Runtime DLLs for dubbing
-  (`onnxruntime.dll`; the CUDA zip also has its CUDA part), because ONNX Runtime has
-  no static build for Windows. Keep them in the same folder.
-- macOS does not allow fully static programs. The binary links only system
-  frameworks. It is universal: one file with code for Apple Silicon and for Intel.
-  ONNX Runtime has no prebuilt library for Intel Macs, so CI builds it from source
-  with `tools/build-onnxruntime.sh`.
-
-The binaries contain the Mozilla root certificates, so model downloads also work on
-systems without a certificate store. The x86_64 binaries and the Intel code of the macOS binary need a CPU with
-AVX2 (Intel since 2013, AMD since 2015). The arm64 Linux binaries need ARMv8.2 (for example AWS
-Graviton 2 or a Raspberry Pi 5).
-
-### Build in Docker (Linux and Windows)
-
-```sh
-docker/build.sh linux-arm64 windows-x64     # writes dist/<target>/
-```
-
-The targets are `linux-arm64`, `linux-amd64`, `linux-arm64-gui`, `linux-amd64-gui`,
-`linux-arm64-cuda`, `linux-amd64-cuda`,
-`linux-arm64-vulkan`, `linux-amd64-vulkan` and `windows-x64`. A target for another CPU
-type than the host's runs in emulation and is much slower. The Windows target is
-cross-compiled with MinGW-w64 and has no GPU support. It is for local builds only: the
-release binaries for Windows come from native MSVC builds in CI. For a Windows GPU build,
-use the workflow or build on Windows.
-
-### Build on macOS
-
-```sh
-xcode-select --install
-brew install cmake nasm pkg-config
-cargo build --release
-# the binary is target/release/verbacue (about 33 MB)
-```
-
-You need Rust 1.88 or newer (edition 2024). The first build downloads the FFmpeg
-source and compiles FFmpeg, whisper.cpp and llama.cpp. On an Apple M5 this takes
-about 2 minutes. Later builds take seconds. The binary links only system libraries,
-and the Metal shaders are inside it (check with `otool -L target/release/verbacue`).
-
-### Build on Linux
-
-```sh
-sudo apt install build-essential clang libclang-dev cmake nasm pkg-config git
-CC=clang CXX=clang++ cargo build --release
-```
-
-On arm64, clang is necessary: GCC 11 and 12 cannot compile the fp16 code of
-whisper.cpp and llama.cpp ("target specific option mismatch"). This binary links
-glibc and libstdc++ dynamically and is tuned for the build machine's CPU. For a
-static, portable binary, use `docker/build.sh`.
-
-### Build on Windows
-
-The easiest way is `docker/build.sh windows-x64` (CPU only). For a native build, for
-example with CUDA, install Visual Studio 2022 with the C++ tools, LLVM (for libclang),
-Rust and vcpkg, and the CUDA toolkit or the Vulkan SDK for a GPU build. The CI
-workflow uses these steps for all Windows builds.
-FFmpeg comes from vcpkg, because the FFmpeg source build of ffmpeg-sys-next does not
-support Windows targets. In a "Developer PowerShell for VS 2022":
-
-```powershell
-vcpkg install "ffmpeg[core,avcodec,avdevice,avfilter,avformat,swresample,swscale]:x64-windows-static"
-$env:VCPKG_ROOT = "<vcpkg folder>"
-$env:VCPKGRS_TRIPLET = "x64-windows-static"
-$env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-$env:RUSTFLAGS = "-C target-feature=+crt-static"
-$env:LLAMA_STATIC_CRT = "1"
-cargo build --release
-```
-
-### GPU features
-
-| Feature             | GPU                         | Platforms       | Build needs        |
-|---------------------|-----------------------------|-----------------|--------------------|
-| (always, on macOS)  | Apple GPU (Metal)           | macOS           | nothing            |
-| `--features cuda`   | NVIDIA                      | Linux, Windows  | CUDA toolkit 13    |
-| `--features vulkan` | AMD, Intel, NVIDIA (Vulkan) | Linux, Windows  | Vulkan SDK         |
-
-Without a GPU feature, Whisper and the translation model run on the CPU. This works,
-but it is much slower: plan for several hours for a full film.
 
 ## Usage
 
@@ -359,12 +239,13 @@ crates:
 | `cuda`, `vulkan` | GPU support on Linux and Windows | the GPU SDK |
 | `clap` | `clap::ValueEnum` for the option enums | clap |
 
-All default features except `clap` are on. For example, a program that only reads and
-writes subtitles uses one of these:
+All default features except `clap` are on. The crates are not on crates.io yet, so take
+them from this repository, pinned to a release tag. For example, a program that only
+reads and writes subtitles uses one of these:
 
 ```toml
-verbacue = { version = "0.1", default-features = false }
-verbacue-core = "0.1"
+verbacue = { git = "https://github.com/ksrichard/verbacue", tag = "v0.3.5", default-features = false }
+verbacue-core = { git = "https://github.com/ksrichard/verbacue", tag = "v0.3.5" }
 ```
 
 Two traits let you connect your own parts:
@@ -580,6 +461,129 @@ verbacue voices                         # list the studio voices
   plays up to 1.5 times faster with a warning, and it never plays over the next line.
 - `--dub-model` is `xtts-v2-int8` (default; about twice as fast on a CPU), `xtts-v2`
   (default in a CUDA build), or a folder with the model files.
+
+## Build
+
+Ready-made binaries are on the [releases page](https://github.com/ksrichard/verbacue/releases).
+They come from the `build` GitHub workflow
+(`.github/workflows/build.yml`). Start it by hand, or push a tag such as `v0.2.0`;
+a tag also attaches the binaries to a GitHub release.
+
+| Binary                                     | GPU                         | Needs on the target system                 |
+|--------------------------------------------|-----------------------------|--------------------------------------------|
+| `macos-universal-metal`                    | Metal                       | macOS 11 or newer, Apple Silicon or Intel  |
+| `linux-amd64-cpu`                          | none                        | nothing: fully static, runs on any Linux   |
+| `linux-arm64-cpu`                          | none                        | glibc 2.35 or newer                        |
+| `linux-amd64-cpu-gui`, `linux-arm64-cpu-gui` | none                      | glibc 2.35 or newer                        |
+| `linux-amd64-cuda`, `linux-arm64-cuda`     | NVIDIA (CUDA 13)            | glibc 2.35 or newer, NVIDIA driver 580+    |
+| `linux-amd64-vulkan`, `linux-arm64-vulkan` | AMD, Intel, NVIDIA (Vulkan) | glibc 2.39 or newer, Vulkan driver         |
+| `windows-x64-cpu`                          | none                        | Windows 10 or 11                           |
+| `windows-x64-cuda`                         | NVIDIA (CUDA 13)            | Windows 10 or 11, NVIDIA driver 580+       |
+| `windows-x64-vulkan`                       | AMD, Intel, NVIDIA (Vulkan) | Windows 10 or 11, GPU driver               |
+
+Use a CUDA binary for an NVIDIA GPU. Use a Vulkan binary for other GPUs, including the
+GPUs inside Intel and AMD processors.
+
+All binaries are self-contained. They need no FFmpeg, Python or other installed tools,
+and each build job checks what the binary links:
+
+- The Linux amd64 CPU binary is fully static, glibc included. It has no dynamic
+  dependencies and runs even in an empty container.
+- The Linux arm64 CPU binary links glibc dynamically. On arm64, the static glibc
+  cannot link a program of this size with ONNX Runtime.
+- The Linux CUDA binaries must load the NVIDIA driver (`libcuda.so`) at run time. A
+  static program cannot do that, so they link glibc and the driver dynamically.
+  CUDA and cuBLAS are inside the binary. Next to it are the two CUDA libraries of
+  ONNX Runtime for dubbing (`libonnxruntime_providers_*.so`). Keep them in the same
+  folder.
+- The Linux Vulkan binaries load the Vulkan loader (`libvulkan.so.1`) in the same way.
+  The GPU driver package installs it. glibc 2.39 means Ubuntu 24.04, Debian 13,
+  Fedora 40 or newer.
+- The Windows binaries need only the DLLs that are part of Windows and of the GPU
+  driver (`vulkan-1.dll` for Vulkan). The CUDA zip has
+  three CUDA DLLs next to `verbacue.exe`, because cuBLAS has no static library on
+  Windows. Every Windows zip also has Microsoft's ONNX Runtime DLLs for dubbing
+  (`onnxruntime.dll`; the CUDA zip also has its CUDA part), because ONNX Runtime has
+  no static build for Windows. Keep them in the same folder.
+- macOS does not allow fully static programs. The binary links only system
+  frameworks. It is universal: one file with code for Apple Silicon and for Intel.
+  ONNX Runtime has no prebuilt library for Intel Macs, so CI builds it from source
+  with `tools/build-onnxruntime.sh`.
+
+The binaries contain the Mozilla root certificates, so model downloads also work on
+systems without a certificate store. The x86_64 binaries and the Intel code of the macOS binary need a CPU with
+AVX2 (Intel since 2013, AMD since 2015). The arm64 Linux binaries need ARMv8.2 (for example AWS
+Graviton 2 or a Raspberry Pi 5).
+
+### Build in Docker (Linux and Windows)
+
+```sh
+docker/build.sh linux-arm64 windows-x64     # writes dist/<target>/
+```
+
+The targets are `linux-arm64`, `linux-amd64`, `linux-arm64-gui`, `linux-amd64-gui`,
+`linux-arm64-cuda`, `linux-amd64-cuda`,
+`linux-arm64-vulkan`, `linux-amd64-vulkan` and `windows-x64`. A target for another CPU
+type than the host's runs in emulation and is much slower. The Windows target is
+cross-compiled with MinGW-w64 and has no GPU support. It is for local builds only: the
+release binaries for Windows come from native MSVC builds in CI. For a Windows GPU build,
+use the workflow or build on Windows.
+
+### Build on macOS
+
+```sh
+xcode-select --install
+brew install cmake nasm pkg-config
+cargo build --release
+# the binary is target/release/verbacue (about 33 MB)
+```
+
+You need Rust 1.88 or newer (edition 2024). The first build downloads the FFmpeg
+source and compiles FFmpeg, whisper.cpp and llama.cpp. On an Apple M5 this takes
+about 2 minutes. Later builds take seconds. The binary links only system libraries,
+and the Metal shaders are inside it (check with `otool -L target/release/verbacue`).
+
+### Build on Linux
+
+```sh
+sudo apt install build-essential clang libclang-dev cmake nasm pkg-config git
+CC=clang CXX=clang++ cargo build --release
+```
+
+On arm64, clang is necessary: GCC 11 and 12 cannot compile the fp16 code of
+whisper.cpp and llama.cpp ("target specific option mismatch"). This binary links
+glibc and libstdc++ dynamically and is tuned for the build machine's CPU. For a
+static, portable binary, use `docker/build.sh`.
+
+### Build on Windows
+
+The easiest way is `docker/build.sh windows-x64` (CPU only). For a native build, for
+example with CUDA, install Visual Studio 2022 with the C++ tools, LLVM (for libclang),
+Rust and vcpkg, and the CUDA toolkit or the Vulkan SDK for a GPU build. The CI
+workflow uses these steps for all Windows builds.
+FFmpeg comes from vcpkg, because the FFmpeg source build of ffmpeg-sys-next does not
+support Windows targets. In a "Developer PowerShell for VS 2022":
+
+```powershell
+vcpkg install "ffmpeg[core,avcodec,avdevice,avfilter,avformat,swresample,swscale]:x64-windows-static"
+$env:VCPKG_ROOT = "<vcpkg folder>"
+$env:VCPKGRS_TRIPLET = "x64-windows-static"
+$env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+$env:RUSTFLAGS = "-C target-feature=+crt-static"
+$env:LLAMA_STATIC_CRT = "1"
+cargo build --release
+```
+
+### GPU features
+
+| Feature             | GPU                         | Platforms       | Build needs        |
+|---------------------|-----------------------------|-----------------|--------------------|
+| (always, on macOS)  | Apple GPU (Metal)           | macOS           | nothing            |
+| `--features cuda`   | NVIDIA                      | Linux, Windows  | CUDA toolkit 13    |
+| `--features vulkan` | AMD, Intel, NVIDIA (Vulkan) | Linux, Windows  | Vulkan SDK         |
+
+Without a GPU feature, Whisper and the translation model run on the CPU. This works,
+but it is much slower: plan for several hours for a full film.
 
 ## Tests
 
