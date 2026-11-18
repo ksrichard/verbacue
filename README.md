@@ -29,6 +29,50 @@ the model weights are separate files. verbacue downloads them on first use, chec
 their SHA256, and keeps them in the cache folder (`~/Library/Caches/verbacue/models` on
 macOS, `~/.cache/verbacue/models` on Linux, `%LOCALAPPDATA%\verbacue\models` on Windows).
 
+## System requirements
+
+**Every setup** needs one of these, with the matching [binary](#build):
+
+| System | Version | Processor |
+|---|---|---|
+| macOS | 11 or newer | Apple Silicon, or Intel with AVX2 (2013 or newer) |
+| Windows | 10 or 11, 64-bit | x86_64 with AVX2 (Intel 2013, AMD 2015 or newer) |
+| Linux | any distribution (amd64 command-line build), glibc 2.35+ (other CPU builds, desktop app, CUDA), glibc 2.39+ (Vulkan) | x86_64 with AVX2, or arm64 ARMv8.2 (for example Raspberry Pi 5, AWS Graviton 2) |
+
+A GPU is optional. Without one, everything runs on the CPU, which works but is much
+slower: plan for several hours for a full film with the default models. The GPU builds
+need:
+
+| GPU | Build | Needs |
+|---|---|---|
+| Any Mac GPU | `macos-universal-metal` (Metal, always on) | nothing more |
+| NVIDIA | `cuda` | NVIDIA driver 580 or newer. GPU dubbing also needs the CUDA 13 runtime (cuBLAS, cuRAND) and cuDNN 9, and on Linux glibc 2.38+; without them, dubbing runs on the CPU |
+| AMD, Intel, or NVIDIA without CUDA | `vulkan` | a Vulkan driver (part of the GPU driver) |
+
+**Memory and disk depend on what you turn on.** The models download once, on first use.
+On a GPU, the model memory is GPU memory (on Apple Silicon, the shared memory).
+
+| What you do | Models that run here | Memory (peak) | Disk for models | Internet |
+|---|---|---|---|---|
+| Transcript only (`--translator none`) | Whisper large-v3 | about 4 GB | 3.1 GB | first run only |
+| Transcript only, smaller model (`--model large-v3-turbo` / `small`) | Whisper | about 2 GB / 1 GB | 1.6 GB / 0.5 GB | first run only |
+| **Translate locally (default)** | Whisper, then TranslateGemma 12B | about 9 GB | 10.4 GB | first run only |
+| Translate locally, larger model (`translategemma-27b`, `gemma-4-26b-a4b`) | Whisper, then the 26–27B model | about 16 GB | 17–18 GB | first run only |
+| Translate online (`deepl`, `google`, `azure`) | Whisper | about 4 GB | 3.1 GB | always, with an API key |
+| Translate with your own server (`openai-compat`) or the Claude Code CLI (`claude`) | Whisper | about 4 GB | 3.1 GB | to your server or Claude |
+| **Dub**, original voices removed (default) | XTTS-v2 (int8), HTDemucs, CAM++ | about 9 GB | 1.1 GB more | first run only |
+| Dub, original audio only lowered (`--dub-original lower`) | XTTS-v2 (int8), CAM++ | about 1–2 GB | 0.8 GB more | first run only |
+| Dub with the full XTTS-v2 model (`--dub-model xtts-v2`, the default in CUDA builds) | as above, full precision | about 1 GB more | 1.1 GB more | first run only |
+
+Whisper is unloaded before the translation starts, so transcribing and translating do
+not add up. The local translation model stays loaded for the next video, though, so
+**local translation plus dubbing** with the voices removed needs about 17 GB; with
+`--dub-original lower`, about 10 GB. Online translation plus dubbing needs about 9 GB.
+Burned-in and embedded subtitles need no models and little memory.
+
+The dubbing figures were measured with the released Linux CPU build; the others come
+from the model sizes. Leave some room for the system and other programs.
+
 ## Desktop app
 
 `verbacue` with no arguments, or `verbacue gui`, opens the desktop app. A double-click
