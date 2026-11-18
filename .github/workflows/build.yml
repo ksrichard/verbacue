@@ -20,7 +20,23 @@ env:
   VULKAN_VERSION: "1.4.313.2"
 
 jobs:
+  # A tag such as v0.2.0 must match the version in Cargo.toml, which the binaries print.
+  # This runs first, so that a wrong tag fails at once and not after hours of builds.
+  version:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "${GITHUB_REF_NAME}" != "v$version" ]; then
+            echo "error: tag ${GITHUB_REF_NAME} does not match version $version in Cargo.toml" >&2
+            exit 1
+          fi
+
   linux:
+    needs: version
     name: linux-${{ matrix.arch }}-${{ matrix.gpu }}
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -75,6 +91,7 @@ jobs:
   # Windows builds use MSVC, the toolchain that whisper.cpp and llama.cpp support best.
   # docker/build.sh windows-x64 is a MinGW-w64 alternative for local builds only.
   windows:
+    needs: version
     name: windows-x64-${{ matrix.gpu }}
     runs-on: windows-2022
     strategy:
@@ -212,6 +229,7 @@ jobs:
   # the two into one universal binary. The GPU (Metal) is always on; there is no CUDA
   # on macOS.
   macos:
+    needs: version
     name: macos-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -340,6 +358,7 @@ jobs:
   # The installer: a small app that finds the build for the computer and installs it.
   # Linux builds it on Ubuntu 22.04, so it runs with glibc 2.35 or newer.
   installer-linux:
+    needs: version
     name: installer-linux-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     container: ubuntu:22.04
@@ -373,6 +392,7 @@ jobs:
 
   # One universal installer for Apple Silicon and Intel Macs.
   installer-macos:
+    needs: version
     name: installer-macos
     runs-on: macos-15
     env:
@@ -401,6 +421,7 @@ jobs:
           path: verbacue-installer-macos
 
   installer-windows:
+    needs: version
     name: installer-windows-x64
     runs-on: windows-2022
     defaults:
@@ -432,15 +453,6 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # A tag such as v0.2.0 must match the version in Cargo.toml, which the binaries print.
-      - name: Check the version
-        run: |
-          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          if [ "${GITHUB_REF_NAME}" != "v$version" ]; then
-            echo "error: tag ${GITHUB_REF_NAME} does not match version $version in Cargo.toml" >&2
-            exit 1
-          fi
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: verbacue-*
