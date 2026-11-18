@@ -47,7 +47,32 @@ pub fn model() -> Option<String> {
 }
 
 /// Presses Start, or picks the dub card, once the preview had time to load.
+/// `VERBACUE_GUI_SHOT_TARGET` sets the target language first, and
+/// `VERBACUE_GUI_SHOT_OUTPUTS=burn,dub` turns these outputs on before Start.
 pub fn start() -> Task<Message> {
+    if std::env::var_os("VERBACUE_GUI_SHOT_START").is_some() {
+        let mut messages = Vec::new();
+        if let Ok(target) = std::env::var("VERBACUE_GUI_SHOT_TARGET") {
+            messages.push(Message::Target(target));
+        }
+        for output in std::env::var("VERBACUE_GUI_SHOT_OUTPUTS")
+            .unwrap_or_default()
+            .split(',')
+        {
+            match output.trim() {
+                "burn" => messages.push(Message::Toggle(crate::screens::choose::Output::Burn)),
+                "dub" => messages.push(Message::Toggle(crate::screens::choose::Output::Dub)),
+                _ => {}
+            }
+        }
+        messages.push(Message::Start);
+        return Task::future(tokio::time::sleep(Duration::from_millis(1500))).then(move |()| {
+            messages
+                .clone()
+                .into_iter()
+                .fold(Task::none(), |task, m| task.chain(Task::done(m)))
+        });
+    }
     let message = if std::env::var_os("VERBACUE_GUI_SHOT_START").is_some() {
         Message::Start
     } else if std::env::var("VERBACUE_GUI_SHOT_SCREEN").is_ok_and(|s| s == "dub") {

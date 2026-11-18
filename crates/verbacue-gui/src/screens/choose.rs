@@ -9,7 +9,7 @@ use iced::{
     widget::{
         button, canvas,
         canvas::{Frame, Geometry, Path, gradient::Linear},
-        column, container, image, pick_list, row, stack, svg, text, text_input,
+        column, container, image, pick_list, row, scrollable, stack, svg, text, text_input,
     },
 };
 use verbacue::{audio::AudioTrack, pipeline::Redo};
@@ -399,11 +399,15 @@ pub fn view(app: &App) -> Element<'_, Message> {
         });
     let outputs = selection.outputs;
     let change = app.choose.mode_changed.elapsed().as_secs_f32().min(0.25) / 0.25;
+    let layout = card_layout(
+        right_column_width(app),
+        if cfg!(feature = "dub") { 3 } else { 2 },
+    );
     #[cfg_attr(
         not(feature = "dub"),
         expect(unused_mut, reason = "only dub adds a card")
     )]
-    let mut cards = row![
+    let mut cards: Vec<Element<'_, Message>> = vec![
         card(
             FILE_ICON,
             "Subtitle file",
@@ -423,6 +427,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
             change,
             Some(Output::Subtitles),
             a2,
+            layout,
         ),
         card(
             FLAME_ICON,
@@ -432,15 +437,15 @@ pub fn view(app: &App) -> Element<'_, Message> {
             change,
             Some(Output::Burn),
             a2,
+            layout,
         ),
-    ]
-    .spacing(14);
+    ];
     #[cfg(feature = "dub")]
     {
         let blocked = dub_blocked(&selection.target);
         let enabled = blocked.is_none();
         let body = blocked.unwrap_or_else(|| "A new MKV that speaks the translation.".into());
-        cards = cards.push(card(
+        cards.push(card(
             VOICE_ICON,
             "Dubbed voice",
             body,
@@ -448,8 +453,17 @@ pub fn view(app: &App) -> Element<'_, Message> {
             change,
             enabled.then_some(Output::Dub),
             if enabled { a2 } else { 0.45 * a2 },
+            layout,
         ));
     }
+
+    // Cards side by side while they have room for their words; else short lines one
+    // under the other, which take less height than the cards.
+    let cards: Element<'_, Message> = if layout == CardLayout::Compact {
+        column(cards).spacing(8).into()
+    } else {
+        row(cards).spacing(CARD_GAP).into()
+    };
 
     let languages = languages();
     let selected = languages
@@ -570,7 +584,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
             .width(Length::FillPortion(11)),
         container(right).width(Length::FillPortion(9)),
     ]
-    .spacing(28);
+    .spacing(COLUMN_GAP);
     let _ = a0;
 
     let mut page = column![
@@ -583,9 +597,51 @@ pub fn view(app: &App) -> Element<'_, Message> {
     if app.choose.confirm_replace {
         page = page.push(replace_dialog(selection));
     }
-    container(page).padding([40, 56]).into()
+    // The page scrolls when the window is too low for it.
+    scrollable(container(page).padding([40.0, PAGE_PADDING])).into()
 }
 
+/// The side padding of the page.
+const PAGE_PADDING: f32 = 56.0;
+/// The gap between the preview and the right column.
+const COLUMN_GAP: f32 = 28.0;
+/// The gap between the output cards.
+const CARD_GAP: f32 = 14.0;
+
+/// How the output cards are drawn, by the room they get.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CardLayout {
+    /// Side by side, as in the design.
+    Wide,
+    /// Side by side with less padding, so that the words still fit.
+    Narrow,
+    /// One line each: icon, title and check box.
+    Compact,
+}
+
+/// The layout for `count` cards in a column `width` wide.
+fn card_layout(width: f32, count: usize) -> CardLayout {
+    let count = count.max(1) as f32;
+    let each = (width - (count - 1.0) * CARD_GAP) / count;
+    if each >= 160.0 {
+        CardLayout::Wide
+    } else if each >= 120.0 {
+        CardLayout::Narrow
+    } else {
+        CardLayout::Compact
+    }
+}
+
+/// The width of the right column (11 : 9 with the preview), from the window size.
+fn right_column_width(app: &App) -> f32 {
+    let page = app.window.width - crate::widgets::nav::WIDTH - 2.0 * PAGE_PADDING;
+    (page - COLUMN_GAP) * 9.0 / 20.0
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each card differs in all of these; a struct would only rename them"
+)]
 fn card<'a>(
     icon: &'static [u8],
     title: &'a str,
@@ -595,6 +651,7 @@ fn card<'a>(
     // `None` shows the card without a click action.
     output: Option<Output>,
     alpha: f32,
+    layout: CardLayout,
 ) -> Element<'a, Message> {
     let border_alpha = if selected { 0.1 + 0.9 * change } else { 0.1 };
     let border_color = if selected {
@@ -610,7 +667,21 @@ fn card<'a>(
     } else {
         theme::CARD
     };
-    button(
+    let title_color = Color {
+        a: alpha,
+        ..theme::TEXT
+    };
+    let content: Element<'a, Message> = if layout == CardLayout::Compact {
+        row![
+            svg(svg::Handle::from_memory(icon)).width(24).height(24),
+            text(title).font(theme::HEADING).size(17).color(title_color),
+            iced::widget::space::horizontal(),
+            check_box(selected),
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center)
+        .into()
+    } else {
         column![
             row![
                 svg(svg::Handle::from_memory(icon)).width(30).height(30),
@@ -618,36 +689,40 @@ fn card<'a>(
                 check_box(selected),
             ]
             .align_y(Alignment::Center),
-            text(title).font(theme::HEADING).size(20).color(Color {
-                a: alpha,
-                ..theme::TEXT
-            }),
+            text(title).font(theme::HEADING).size(20).color(title_color),
             text(body).size(14).color(theme::MUTED).line_height(1.5),
         ]
-        .spacing(10),
-    )
-    .padding(22)
-    .width(Length::Fill)
-    .style(move |_, status| {
-        let lift = matches!(status, button::Status::Hovered);
-        button::Style {
-            background: Some(background.into()),
-            text_color: theme::TEXT,
-            border: Border {
-                color: border_color,
-                width: 2.0,
-                radius: 20.0.into(),
-            },
-            shadow: Shadow {
-                color: Color::from_rgba8(0, 0, 0, if lift { 0.35 } else { 0.0 }),
-                offset: Vector::new(0.0, if lift { 6.0 } else { 0.0 }),
-                blur_radius: 18.0,
-            },
-            snap: true,
-        }
-    })
-    .on_press_maybe(output.map(Message::Toggle))
-    .into()
+        .spacing(10)
+        .into()
+    };
+    let (padding, radius) = match layout {
+        CardLayout::Wide => (iced::Padding::new(22.0), 20.0),
+        CardLayout::Narrow => (iced::Padding::new(16.0), 18.0),
+        CardLayout::Compact => (iced::Padding::from([12.0, 16.0]), 14.0),
+    };
+    button(content)
+        .padding(padding)
+        .width(Length::Fill)
+        .style(move |_, status| {
+            let lift = matches!(status, button::Status::Hovered);
+            button::Style {
+                background: Some(background.into()),
+                text_color: theme::TEXT,
+                border: Border {
+                    color: border_color,
+                    width: 2.0,
+                    radius: radius.into(),
+                },
+                shadow: Shadow {
+                    color: Color::from_rgba8(0, 0, 0, if lift { 0.35 } else { 0.0 }),
+                    offset: Vector::new(0.0, if lift { 6.0 } else { 0.0 }),
+                    blur_radius: 18.0,
+                },
+                snap: true,
+            }
+        })
+        .on_press_maybe(output.map(Message::Toggle))
+        .into()
 }
 
 /// The check box in the corner of a card.
@@ -845,6 +920,16 @@ impl canvas::Program<Message> for Scan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cards_get_smaller_with_the_window() {
+        // The right column of a 1900, 1280 and 960 px wide window.
+        assert_eq!(card_layout(683.0, 3), CardLayout::Wide);
+        assert_eq!(card_layout(405.0, 3), CardLayout::Narrow);
+        assert_eq!(card_layout(261.0, 3), CardLayout::Compact);
+        // Two cards (a build without dubbing) stay side by side longer.
+        assert_eq!(card_layout(261.0, 2), CardLayout::Narrow);
+    }
 
     fn audio(language: Option<&str>) -> AudioTrack {
         AudioTrack {

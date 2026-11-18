@@ -179,6 +179,8 @@ pub struct App {
     pub studio_voices: Vec<String>,
     /// How much larger than the mockups the whole interface draws.
     pub scale: f32,
+    /// The window size in the units of the layout (after `scale`).
+    pub window: iced::Size,
     /// When the scale last changed.
     scale_changed: Option<Instant>,
     /// The pipeline thread; it starts with the first job.
@@ -225,13 +227,18 @@ impl App {
         settings.drop_missing();
         let mut app = Self::with_settings(settings, notice);
         app.config = verbacue::config_dir();
+        // A window that opens at its final size sends no resize event, so ask for it:
+        // the layout of some screens depends on the width.
+        let size = window::latest()
+            .and_then(window::size)
+            .map(Message::SizeChecked);
         #[cfg(debug_assertions)]
         if crate::devshot::rec_dir().is_some() {
             app.config = None;
             if let Some(model) = crate::devshot::model() {
                 app.settings.whisper_model = model;
             }
-            return (app, crate::devshot::rec_begin());
+            return (app, Task::batch([size, crate::devshot::rec_begin()]));
         }
         #[cfg(debug_assertions)]
         if crate::devshot::target().is_some() {
@@ -245,10 +252,14 @@ impl App {
             let setup = crate::devshot::setup().into_iter().map(Task::done);
             return (
                 app,
-                Task::batch(setup.chain([crate::devshot::start(), crate::devshot::take()])),
+                Task::batch(
+                    std::iter::once(size)
+                        .chain(setup)
+                        .chain([crate::devshot::start(), crate::devshot::take()]),
+                ),
             );
         }
-        (app, Task::none())
+        (app, size)
     }
 
     pub fn with_settings(settings: Settings, notice: Option<String>) -> Self {
@@ -274,6 +285,7 @@ impl App {
             film_notes_changed: now,
             studio_voices: Vec::new(),
             scale: 1.0,
+            window: iced::Size::new(1280.0, 800.0),
             scale_changed: None,
             worker: Arc::new(OnceLock::new()),
             config: None,
@@ -290,11 +302,13 @@ impl App {
     /// current scale). After a change it reads the size again when iced has applied
     /// the new scale.
     fn rescale(&mut self, size: iced::Size) -> Task<Message> {
+        self.window = size;
         let scale = ui_scale(size * self.scale);
         if scale == self.scale {
             self.scale_changed = None;
             return Task::none();
         }
+        self.window = size * (self.scale / scale);
         self.scale = scale;
         self.scale_changed = Some(Instant::now());
         // The sleep is made inside the task, so `update` works without a runtime.
@@ -1479,7 +1493,8 @@ mod tests {
         assert_eq!(a.convert.current, Some(0));
         update(&mut a, Update::Step(Step::Download("large-v3")));
         assert_eq!(a.convert.steps.len(), 6);
-        assert_eq!(a.convert.steps[1].label, "Download large-v3");
+        assert_eq!(a.convert.steps[1].label, "Download models");
+        assert_eq!(a.convert.step_name(), "Download large-v3");
         update(&mut a, Update::Step(Step::Transcribe));
         assert_eq!(a.convert.current, Some(2));
         update(

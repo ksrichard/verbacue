@@ -11,7 +11,7 @@ use iced::{
     widget::{
         button, canvas,
         canvas::{Frame, Geometry, Path, gradient::Linear},
-        column, container, responsive, row, scrollable, space, text, text_editor,
+        column, container, row, scrollable, space, text, text_editor,
     },
 };
 use verbacue::{
@@ -31,6 +31,18 @@ use crate::{
 const STEP_MIN_WIDTH: f32 = 120.0;
 /// The gap between the steps.
 const STEP_GAP: f32 = 8.0;
+
+/// The side padding of the screen.
+const SIDE_PADDING: f32 = 56.0;
+
+/// The width that the content of this screen gets: the window without the
+/// navigation, the padding and the scrollbar.
+fn content_width(app: &App) -> f32 {
+    app.window.width - crate::widgets::nav::WIDTH - 2.0 * SIDE_PADDING - SCROLLBAR_GAP
+}
+
+/// The room kept free for the scrollbar, so that it never covers the content.
+const SCROLLBAR_GAP: f32 = 16.0;
 
 /// How many steps of `count` fit side by side in `width`. Rows are filled evenly, so
 /// that the last row is not much shorter than the others.
@@ -314,6 +326,8 @@ pub fn view_screen(app: &App) -> Element<'_, Message> {
     .height(14);
     // The steps fill the width: as many side by side as fit, each at least
     // STEP_MIN_WIDTH wide, so that a label never gets narrower than its longest word.
+    // (iced's `responsive` widget would measure the width itself, but it stops the
+    // text next to it from drawing.)
     let cells: Vec<(String, Color, Color)> = c
         .steps
         .iter()
@@ -331,43 +345,37 @@ pub fn view_screen(app: &App) -> Element<'_, Message> {
             (format!("{mark} {}", s.label), color, background)
         })
         .collect();
-    let steps = responsive(move |size| {
-        let per_row = steps_per_row(size.width, cells.len());
-        column(cells.chunks(per_row).map(|line| {
-            let mut items: Vec<Element<'_, Message>> = line
-                .iter()
-                .map(|(label, color, background)| {
-                    let background = *background;
-                    container(text(label.clone()).size(13).color(*color))
-                        .padding([8, 10])
-                        .width(Length::Fill)
-                        .style(move |_| container::Style {
-                            background: Some(background.into()),
-                            border: Border {
-                                radius: 10.0.into(),
-                                ..Border::default()
-                            },
-                            ..container::Style::default()
-                        })
-                        .into()
-                })
-                .collect();
-            // The last row keeps the column widths of the rows above it.
-            while items.len() < per_row {
-                items.push(space().width(Length::Fill).into());
-            }
-            row(items).spacing(STEP_GAP).into()
-        }))
-        .spacing(STEP_GAP)
-        .into()
-    })
-    .height(Length::Shrink);
+    let per_row = steps_per_row(content_width(app), cells.len());
+    let steps = column(cells.chunks(per_row).map(|line| {
+        let mut items: Vec<Element<'_, Message>> = line
+            .iter()
+            .map(|(label, color, background)| {
+                let background = *background;
+                container(text(label.clone()).size(13).color(*color))
+                    .padding([8, 10])
+                    .width(Length::Fill)
+                    .style(move |_| container::Style {
+                        background: Some(background.into()),
+                        border: Border {
+                            radius: 10.0.into(),
+                            ..Border::default()
+                        },
+                        ..container::Style::default()
+                    })
+                    .into()
+            })
+            .collect();
+        // The last row keeps the column widths of the rows above it.
+        while items.len() < per_row {
+            items.push(space().width(Length::Fill).into());
+        }
+        row(items).spacing(STEP_GAP).into()
+    }))
+    .spacing(STEP_GAP);
     let progress = column![
         row![
-            text(step_name)
-                .size(14)
-                .color(theme::TEXT_SOFT)
-                .width(Length::Fill),
+            text(step_name).size(14).color(theme::TEXT_SOFT),
+            space().width(Length::Fill),
             text(format!("{percent}%")).size(14).color(theme::TEXT_SOFT),
         ],
         bar,
@@ -455,8 +463,8 @@ pub fn view_screen(app: &App) -> Element<'_, Message> {
     .spacing(26)
     .width(Length::Fill)
     .align_x(Alignment::Center);
-    container(scrollable(content))
-        .padding([40, 56])
+    container(scrollable(content).spacing(SCROLLBAR_GAP - 6.0))
+        .padding([40.0, SIDE_PADDING])
         .width(Length::Fill)
         .into()
 }
@@ -727,7 +735,13 @@ mod tests {
         c.apply(Update::Step(Step::Download("xtts-v2/gpt.onnx")));
         assert_eq!(c.step_name(), "Download xtts-v2/gpt.onnx");
         assert_eq!(labels(&c)[0], "Download models");
-        assert_eq!(labels(&c).iter().filter(|l| l.starts_with("Download")).count(), 1);
+        assert_eq!(
+            labels(&c)
+                .iter()
+                .filter(|l| l.starts_with("Download"))
+                .count(),
+            1
+        );
         c.apply(Update::Step(Step::Decode));
         assert_eq!(c.step_name(), "Read audio");
         assert_eq!(c.current, Some(1));
@@ -758,7 +772,12 @@ mod tests {
         assert_eq!(c.step_name(), "Download translategemma-12b");
         assert_eq!(
             labels(&c)[..4],
-            ["Download models", "Read audio", "Transcribe", "Download models"]
+            [
+                "Download models",
+                "Read audio",
+                "Transcribe",
+                "Download models"
+            ]
         );
     }
 }

@@ -7,6 +7,9 @@ use iced::{
 
 use crate::{app::Message, app::Screen, theme};
 
+/// The width of the navigation column.
+pub const WIDTH: f32 = 240.0;
+
 const LOGO: &[u8] = include_bytes!("../../assets/icon.png");
 
 /// The logo image. Keep one handle, so iced loads the image only once.
@@ -71,7 +74,7 @@ pub fn view<'a>(
         .spacing(6),
     )
     .padding([28, 18])
-    .width(240)
+    .width(WIDTH)
     .height(Length::Fill)
     .into()
 }

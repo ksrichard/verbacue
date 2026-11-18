@@ -457,7 +457,7 @@ mod download {
     use reqwest::{StatusCode, header};
     use sha2::{Digest, Sha256};
 
-    use super::{Kind, ModelSpec, human_size};
+    use super::{ModelSpec, human_size};
     use crate::{
         Progress, check_cancel,
         error::{Context as _, Result, bail},
